@@ -66,6 +66,7 @@
             <div id="floor-controls" class="floor-controls" hidden><label for="floor-select">Floor</label><select id="floor-select"><option value="">All floors</option></select><a id="download-ifc" class="secondary-button" hidden download>Download derived IFC ↗</a></div>
             <div class="model-switches"><label><input type="checkbox" id="highlight-answer" checked> Highlight answer</label><label><input type="checkbox" id="show-assumptions"> Show assumptions</label><label id="explode-control" hidden><input type="checkbox" id="explode-floors"> Separate floors vertically</label></div>
             <p id="layout-note" class="layout-note" hidden></p>
+            <div id="unresolved-model-notice" class="unresolved-model-notice" hidden><span id="unresolved-model-count"></span><button id="review-unresolved" class="text-button" type="button">Review source items ↗</button><small>? annotations identify approximate source regions, not model geometry.</small></div>
             <p id="no-model-geometry" class="layout-note" hidden>No 3D geometry was reconstructed. Inspect the unresolved source items below.</p>
             <div id="model-canvas-container" class="model-canvas-container"></div>
             <p class="viewer-caption">Drag to orbit · scroll to zoom · right-drag to pan · click an object to inspect its source.</p>

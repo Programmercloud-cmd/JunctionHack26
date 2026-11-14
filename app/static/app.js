@@ -306,6 +306,7 @@ function clearScene() {
   $("model-inventory").hidden = true;
   $("inventory-details").open = false;
   $("no-model-geometry").hidden = true;
+  $("unresolved-model-notice").hidden = true;
   $("model-canvas-container").hidden = false;
   setError("scene-error");
 }
@@ -348,7 +349,7 @@ async function loadScene(scene) {
   setView("model");
   try {
     const {BlueprintViewer} = await import("/static/viewer.js");
-    state.viewer = new BlueprintViewer($("model-canvas-container"), {onSelect: inspectElement});
+    state.viewer = new BlueprintViewer($("model-canvas-container"), {onSelect: inspectElement,onUnresolvedSelect: openUnresolvedAnnotation});
     window.blueprintViewer = state.viewer;
     state.viewer.loadScene(scene);
     if ($("explode-floors").checked) state.viewer.setExploded(true);
@@ -496,11 +497,31 @@ const svgNamespace = "http://www.w3.org/2000/svg";
 
 function comparisonElement(id) { return state.scene?.elements.find((element) => element.id === id); }
 
+function openUnresolvedAnnotation({floor,elements,floorLevel}) {
+  if (floorLevel) {
+    showSourceRegion(floor.source,`${floor.label} · unresolved items; precise locations not established`);
+    $("comparison-floor-select").value=floor.id;
+    state.selectedComparison=null;
+    $("comparison-selection").hidden=false;
+    $("comparison-selection-name").textContent=`${floor.label}: ${elements.length} unresolved ${elements.length===1 ? "item" : "items"}`;
+    $("comparison-selection-detail").textContent="Only the floor source region is available; no precise object location or geometry is established. Review the individual uncertainty reasons in the source inventory below.";
+    $("comparison-inspect").hidden=true;
+  } else {
+    showSourceRegion(elements[0].source,elements[0].name);
+    selectComparison(elements[0].id);
+  }
+  $("show-comparison").checked=true;
+  renderComparison();
+  renderInventory();
+  $("viewer").scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+
 function selectComparison(id) {
   const element = comparisonElement(id);
   if (!element) return;
   state.selectedComparison = id;
   $("comparison-selection").hidden = false;
+  $("comparison-inspect").hidden = false;
   $("comparison-selection-name").textContent = element.name || id;
   const entries = (state.scene.comparison || []).filter((entry) => entry.element_id === id);
   const methods = [...new Set(entries.map((entry) => entry.method))].join("; ");
@@ -571,10 +592,13 @@ function renderComparison() {
 function renderInventory() {
   const panel = $("model-inventory");
   panel.hidden = !state.scene?.derived;
-  if (panel.hidden) return;
+  if (panel.hidden) { $("unresolved-model-notice").hidden=true; return; }
   const floor = $(state.view === "drawing" ? "comparison-floor-select" : "floor-select").value;
   const page = state.document?.pages[state.pageIndex]?.page;
   const elements = state.scene.elements.filter((element) => (!floor || element.storey_id === floor) && (state.view !== "drawing" || element.source.page === page));
+  const modelUnresolved=state.scene.elements.filter((element)=>(element.representation === "unresolved" || !element.geometry) && (!$("floor-select").value || element.storey_id === $("floor-select").value));
+  $("unresolved-model-notice").hidden=!modelUnresolved.length;
+  $("unresolved-model-count").textContent=`${modelUnresolved.length} unresolved source ${modelUnresolved.length===1 ? "item" : "items"}${$("floor-select").value ? " on this floor" : ""}`;
   const counts = {reconstructed:0,schematic:0,unresolved:0};
   for (const element of elements) counts[element.representation || (element.geometry ? "reconstructed" : "unresolved")]++;
   $("inventory-counts").textContent = `${counts.reconstructed} reconstructed · ${counts.schematic} schematic · ${counts.unresolved} unresolved${state.view === "drawing" ? ` · page ${page}` : ""}${floor ? " · selected floor" : ""}.`;
@@ -603,7 +627,7 @@ function renderInventory() {
 
 function inspectElement(element) {
   state.selectedElement = element;
-  if (state.viewer && $("floor-select").value !== state.viewer.floorFilter) { $("floor-select").value = state.viewer.floorFilter; renderFloorDetails(); }
+  if (state.viewer && $("floor-select").value !== state.viewer.floorFilter) { $("floor-select").value = state.viewer.floorFilter; renderFloorDetails(); renderInventory(); }
   $("element-select").value = element.id;
   $("element-inspector").hidden = false;
   $("element-name").textContent = element.name || element.id;
@@ -682,6 +706,10 @@ $("show-model").addEventListener("click", () => setView("model"));
 $("highlight-answer").addEventListener("change", updateHighlights);
 $("show-assumptions").addEventListener("change", () => state.viewer?.setShowAssumptions($("show-assumptions").checked));
 $("fit-model").addEventListener("click", () => state.viewer?.fit());
+$("review-unresolved").addEventListener("click",() => {
+  $("unresolved-items").scrollIntoView({behavior:"smooth",block:"nearest"});
+  $("unresolved-items").querySelector("button")?.focus({preventScroll:true});
+});
 $("floor-select").addEventListener("change", () => setFloorFilter($("floor-select").value));
 $("show-comparison").addEventListener("change",renderComparison);
 $("comparison-opacity").addEventListener("input",renderComparison);

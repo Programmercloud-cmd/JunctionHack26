@@ -4,9 +4,11 @@ import { OrbitControls } from './vendor/three/OrbitControls.js';
 const COLORS = {wall:0xd2d9ce,room:0x7daa8c,outdoor:0xa5c58e,railing:0x91a6a5,open_edge:0x73a886,door:0xb58b64,window:0x78b4bf,stairs:0xc0a981,furniture:0xc7b6cc,fixture:0x9abac6,other:0xabb5ab};
 
 export class BlueprintViewer {
-  constructor(container, {onSelect = () => {}} = {}) {
+  constructor(container, {onSelect = () => {}, onUnresolvedSelect = () => {}} = {}) {
     this.container = container;
     this.onSelect = onSelect;
+    this.onUnresolvedSelect = onUnresolvedSelect;
+    this.annotations = [];
     this.elements = new Map();
     this.meshes = new Map();
     this.highlightIds = new Set();
@@ -27,6 +29,10 @@ export class BlueprintViewer {
     this.renderer.domElement.tabIndex = 0;
     this.renderer.domElement.dataset.ready = 'false';
     container.append(this.renderer.domElement);
+    this.annotationLayer = document.createElement('div');
+    this.annotationLayer.className = 'model-annotations';
+    this.annotationLayer.setAttribute('aria-label', 'Unresolved source annotations, not model geometry');
+    container.append(this.annotationLayer);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = .08;
@@ -92,6 +98,7 @@ export class BlueprintViewer {
     this.bounds = new THREE.Box3().setFromObject(this.group);
     const size = this.bounds.getSize(new THREE.Vector3());
     this.floorSeparation = Math.max(size.z * 1.2, Math.max(size.x,size.y) * .16, .1);
+    this.createAnnotations();
     this.applyAppearance();
     this.fit();
     this.renderer.domElement.dataset.ready = 'true';
@@ -100,7 +107,7 @@ export class BlueprintViewer {
   }
 
   setHighlights(ids, enabled = true) {
-    this.highlightIds = new Set((ids || []).filter((id) => this.elements.has(id)));
+    this.highlightIds = new Set((ids || []).filter((id) => this.elements.has(id) && this.elements.get(id).representation !== 'unresolved' && (!this.data?.derived || this.meshes.has(id))));
     this.highlightsEnabled = enabled;
     this.applyAppearance();
   }
@@ -129,6 +136,68 @@ export class BlueprintViewer {
   updateBounds() {
     this.bounds = new THREE.Box3();
     for (const mesh of this.meshes.values()) if (mesh.visible) this.bounds.union(new THREE.Box3().setFromObject(mesh));
+  }
+
+  createAnnotations() {
+    if (!this.data.derived) return;
+    const floors = new Map((this.data.floors || []).map((floor) => [floor.id,floor]));
+    const floorTops = new Map();
+    for (const [id,mesh] of this.meshes) {
+      const floorId=this.elements.get(id).storey_id;
+      floorTops.set(floorId,Math.max(floorTops.get(floorId) || 0,new THREE.Box3().setFromObject(mesh).max.z));
+    }
+    const coarse = new Map();
+    const append = (floor, elements, bbox, floorLevel) => {
+      const matrix = floor.transform;
+      if (!Array.isArray(matrix) || matrix.length !== 3 || matrix.some((row) => !Array.isArray(row) || row.length !== 3 || !row.every(Number.isFinite))) return;
+      const u=(bbox[0]+bbox[2])/2, v=(bbox[1]+bbox[3])/2;
+      const z=floorTops.get(floor.id) || 0;
+      const anchor=new THREE.Vector3(matrix[0][0]*u+matrix[0][1]*v+matrix[0][2],matrix[1][0]*u+matrix[1][1]*v+matrix[1][2],z+.08);
+      const button=document.createElement('button');
+      button.type='button';
+      button.className=`unresolved-annotation${floorLevel ? ' floor-annotation' : ''}`;
+      button.textContent=floorLevel ? `? ${elements.length} unresolved · ${floor.label}` : '?';
+      button.dataset.annotationKind=floorLevel ? 'floor' : 'source-region';
+      button.dataset.elementIds=JSON.stringify(elements.map((element)=>element.id));
+      const label=floorLevel ? `${elements.length} unresolved items on ${floor.label}; locations are not established. Inspect original source.` : `${elements[0].name}: unresolved source region, not model geometry. Approximate annotation position. Inspect original source.`;
+      button.title=label;
+      button.setAttribute('aria-label',label);
+      button.addEventListener('click',()=>this.onUnresolvedSelect({floor,elements,floorLevel}));
+      this.annotationLayer.append(button);
+      this.annotations.push({button,floorId:floor.id,elementIds:elements.map((element)=>element.id),floorLevel,anchor});
+    };
+    for (const element of this.elements.values()) {
+      if (element.representation !== 'unresolved' && element.geometry) continue;
+      const floor=floors.get(element.storey_id), box=element.source.bbox;
+      if (!floor || element.source.kind !== 'image' || !Array.isArray(box) || box.length !== 4 || !box.every(Number.isFinite)) continue;
+      const floorLevel=/unlocalized|coarse floor/i.test(element.note || '') || box.every((value,index)=>Math.abs(value-floor.source.bbox[index])<1e-6);
+      if (floorLevel) {
+        if (!coarse.has(floor.id)) coarse.set(floor.id,[]);
+        coarse.get(floor.id).push(element);
+      } else append(floor,[element],box,false);
+    }
+    for (const [floorId,elements] of coarse) { const floor=floors.get(floorId); append(floor,elements,floor.source.bbox,true); }
+  }
+
+  positionAnnotations() {
+    const width=this.container.clientWidth, height=this.container.clientHeight;
+    const occupied=[];
+    for (const item of this.annotations) {
+      const anchor=item.anchor.clone();
+      if (this.exploded) anchor.z+=(this.floorIndices.get(item.floorId) || 0)*this.floorSeparation;
+      anchor.project(this.camera);
+      item.button.hidden=Boolean((this.floorFilter && this.floorFilter!==item.floorId) || anchor.z < -1 || anchor.z > 1 || Math.abs(anchor.x)>1 || Math.abs(anchor.y)>1);
+      if (item.button.hidden) continue;
+      const halfWidth=Math.min(width/2,item.button.offsetWidth/2 || 14);
+      const x=Math.max(halfWidth,Math.min(width-halfWidth,(anchor.x+1)*width/2));
+      let y=Math.max(16,Math.min(height-16,(1-anchor.y)*height/2));
+      // Annotations may overlap in the drawing. Stack only their screen labels;
+      // source coordinates and all model geometry remain untouched.
+      while (occupied.some((other)=>Math.abs(other.x-x)<halfWidth+other.halfWidth+4 && Math.abs(other.y-y)<30) && y+30<height-16) y+=30;
+      occupied.push({x,y,halfWidth});
+      item.button.style.left=`${x}px`;
+      item.button.style.top=`${y}px`;
+    }
   }
 
   select(id) {
@@ -176,7 +245,7 @@ export class BlueprintViewer {
     const center = this.bounds.getCenter(new THREE.Vector3());
     const size = this.bounds.getSize(new THREE.Vector3());
     const extent = Math.max(size.x,size.y,size.z, .1);
-    const direction = new THREE.Vector3(.9,-1.2,.9).normalize();
+    const direction = new THREE.Vector3(.9,-1.2,this.data?.derived ? 1.65 : .9).normalize();
     const viewRotation = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(direction, new THREE.Vector3(), this.camera.up)).invert();
     const tanVertical = Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));
     const tanHorizontal = tanVertical * this.camera.aspect;
@@ -222,14 +291,16 @@ export class BlueprintViewer {
     this.renderer.setSize(width,height);
     this.render();
   }
-  render() { if (this.renderer && this.container.clientWidth) this.renderer.render(this.scene,this.camera); }
+  render() { if (this.renderer && this.container.clientWidth) { this.renderer.render(this.scene,this.camera); this.positionAnnotations(); } }
   getSnapshot() {
-    return {document_id:this.data?.document_id, mesh_count:this.meshes.size, element_count:this.elements.size, selected_id:this.selectedId, highlight_ids:[...this.highlightIds], highlights_enabled:this.highlightsEnabled, show_assumptions:this.showAssumptions, floor_filter:this.floorFilter, exploded:this.exploded, camera_position:this.camera.position.toArray(), up_axis:this.camera.up.toArray(), elements:[...this.meshes].map(([id,mesh])=>({id,visible:mesh.visible,opacity:mesh.material.opacity,display_offset_z:mesh.position.z-mesh.userData.baseZ}))};
+    return {document_id:this.data?.document_id, mesh_count:this.meshes.size, element_count:this.elements.size, selected_id:this.selectedId, highlight_ids:[...this.highlightIds], highlights_enabled:this.highlightsEnabled, show_assumptions:this.showAssumptions, floor_filter:this.floorFilter, exploded:this.exploded, camera_position:this.camera.position.toArray(), up_axis:this.camera.up.toArray(), annotations:this.annotations.map((item)=>({element_ids:item.elementIds,floor_id:item.floorId,floor_level:item.floorLevel,visible:!item.button.hidden})), elements:[...this.meshes].map(([id,mesh])=>({id,visible:mesh.visible,opacity:mesh.material.opacity,display_offset_z:mesh.position.z-mesh.userData.baseZ}))};
   }
   clearGeometry() {
     for (const mesh of this.meshes.values()) { mesh.geometry.dispose(); mesh.material.dispose(); for (const edge of mesh.children) { edge.geometry.dispose(); edge.material.dispose(); } }
     this.meshes.clear();
     this.group.clear();
+    this.annotations=[];
+    this.annotationLayer.replaceChildren();
   }
-  dispose() { this.renderer.setAnimationLoop(null); this.resizeObserver.disconnect(); this.controls.dispose(); this.clearGeometry(); this.renderer.dispose(); this.renderer.domElement.remove(); }
+  dispose() { this.renderer.setAnimationLoop(null); this.resizeObserver.disconnect(); this.controls.dispose(); this.clearGeometry(); this.renderer.dispose(); this.renderer.domElement.remove(); this.annotationLayer.remove(); }
 }
