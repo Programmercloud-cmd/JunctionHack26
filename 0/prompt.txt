@@ -1,0 +1,30 @@
+Implement the next reconstruction version using the established planning, independent plan review, bounded implementation and independent implementation review workflow.
+
+First diagnose any remaining live Gemini 400: capture the actual rejected request safely, isolate the cause with controlled tests, and verify real structured generation. Do not assume earlier fixes cover it or rely only on mocked SDK tests.
+
+Adopt this pipeline:
+
+Original image/PDF → Gemini building description → deterministic Python/IfcOpenShell generation → generated IFC → existing Three.js viewer.
+
+Gemini should describe depicted floors, room footprints, labels, openings, source regions, and known/unknown measurements. Our code—not model-generated Python or raw IFC text—must construct the IFC.
+
+Aim for visually compelling, source-faithful models. Predict missing geometry where useful, but clearly distinguish observed information, inferred geometry and display assumptions. Explain the IFC/UI representation of unknown scale before implementing it; never present arbitrary visualization dimensions as measured metres.
+
+Support multiple explicitly depicted floors, including diagrams within one image and floors across PDF pages, without manual cropping or rotation. Preserve original-page coordinates. Determine ordering, orientation, scale and alignment where supported; otherwise use a clearly schematic or exploded arrangement. Do not invent additional floors.
+
+Preserve stable IDs, cached models, clickable source evidence, validated answer highlights, background fading and separate assumption controls. Add generated-IFC download if straightforward.
+
+Critical: generated IFC is derived reconstruction, never authoritative evidence. Preserve page-region provenance and assumptions through generation, reopening and tessellation using IFC metadata and/or a linked manifest. Factual QA must still inspect original drawings or genuinely supplied IFC records. Keep Gemini’s sufficiency gate, citations, refusals and provider switch. Uncertain mappings must retain source evidence without invented highlights.
+
+Keep scope lean: floors, rooms and simple boundaries first; add doors/windows needed for the demo. Defer photorealism, detailed stairs/roofs, structural engineering, new formats, Blender and cloud rendering.
+
+Acceptance:
+
+- Process unchanged colorful-1794.png.
+- Locate original colorful-11397.png and reconstruct both depicted floors without user editing.
+- Answer a supported floor-specific question with corresponding highlights.
+- Refuse unsupported actual-height questions despite visible extrusions.
+- Reopen and render generated IFC while preserving provenance and assumptions.
+- Verify with live Gemini and focused regression tests.
+
+Before adding self-imposed constraints, explain what they restrict, why, whether they are external requirements or design choices, and how they could block valid inputs or the demo. Keep API schema constraints separate from necessary local validation. This requires communication, not blanket approval requests.
