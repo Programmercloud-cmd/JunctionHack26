@@ -1,0 +1,5 @@
+[297] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[298] assistant: Approved. This narrowly supports line-shaped boundary citations while preserving strict floor and QA regions.
+
+Validate segments against the original line before padding. Preserve the original citation, pad only for selection, and label that padding explicitly. Replay the five captured failures and test inconsistent, point, reversed and out-of-bounds cases.
