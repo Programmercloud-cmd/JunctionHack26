@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from app.building import BoundaryDescription
 from app.bundles import BuildingStore
 from app.jobs import JobRunner
-from app.provider import GeminiProvider,ProviderError,GEOMETRY_ENRICHMENT_INSTRUCTIONS,RECONSTRUCTION_PATCH_INSTRUCTIONS
+from app.providers.gemini import GeminiProvider,ProviderError,GEOMETRY_ENRICHMENT_INSTRUCTIONS,RECONSTRUCTION_PATCH_INSTRUCTIONS
 from app.review_schema import DescriptionPatch,ReconstructionReview
 from app.revisions import apply_patch
 from app.schemas import Usage
@@ -176,7 +176,7 @@ def test_reconstruction_catalog_keeps_source_format_and_normalization_warnings(s
 
 
 def test_serialized_gemini_patch_requires_record_key_idempotently(sdk_document):
-    from app.provider import gemini_wire_schema
+    from app.providers.gemini import gemini_wire_schema
     provider,document=sdk_document
     output={'base_revision_id':'fixture','operations':[]}
     requests=intercept(provider,output)
@@ -226,7 +226,7 @@ def test_explicit_null_reviewed_removal_remains_compatible(tmp_path):
 
 @pytest.mark.parametrize('bbox', [[.138,.69,.5,.69],[.138,.69,.138,.9]])
 def test_zero_area_review_issue_rejects_without_padding(sdk_document,bbox):
-    from app.provider import RECONSTRUCTION_REVIEW_INSTRUCTIONS
+    from app.providers.gemini import RECONSTRUCTION_REVIEW_INSTRUCTIONS
     provider,document=sdk_document
     issue={'id':'fixture-issue','object_ids':[],'source':region(bbox=bbox),'category':'extraction',
         'discrepancy':'Fixture source finding','evidence':'Fixture line','proposed_action':'Inspect source','actionable':False}

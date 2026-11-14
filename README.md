@@ -13,7 +13,7 @@ bash scripts/bootstrap.sh
 bash scripts/dev.sh
 ```
 
-Open http://127.0.0.1:8000. Uploads, previews and IFC import/viewing work without a key. Credentials stay on the server. Questions send source images or extracted IFC records to the explicitly selected provider. Image reconstruction also requires that provider. Three.js is pinned locally; there is no rendering service or CDN dependency.
+Open http://127.0.0.1:8000. Uploads, previews and IFC import/viewing work without a key. Credentials stay on the server. Questions send source images or extracted IFC records to Gemini. Source interpretation and image reconstruction also use Gemini. Three.js is pinned locally; there is no rendering service or CDN dependency.
 
 ## Try the two demo flows
 
@@ -28,24 +28,9 @@ Furniture and fixtures use raised schematic blocks, tops and basin symbols with 
 
 **Highlight answer** and **Show assumptions** are independent controls. A scene is cached once for all pages; asking questions only updates highlights. Download its generated IFC and upload it in a fresh session: stable object IDs, original source PNGs, assumptions and provenance travel with the file. Unmapped answers keep their source evidence and do not invent a 3D selection.
 
-## Switch providers
+## Gemini setup
 
-Set one variable in `.env.local` and restart the server:
-
-```dotenv
-# Temporary development (OpenAI Responses API)
-AI_PROVIDER=openai
-OPENAI_MODEL=gpt-6.1-sol
-# OPENAI_API_KEY must already be set locally.
-```
-
-```dotenv
-# Final sponsor demo (default if AI_PROVIDER is absent)
-AI_PROVIDER=gemini
-# GEMINI_API_KEY must be set locally and have access to the configured reconstruction, answer and Decisions models.
-```
-
-There is no automatic fallback. The UI identifies the active pipeline. OpenAI uses the same image-capable model for one structured sufficiency judgment and answer generation; the gate returns `confidence: null`. This is a development substitute for Gemini Decisions, not an equivalent calibrated decision model. OpenAI does document a separate Decisions endpoint, but this temporary adapter deliberately avoids a second model/access dependency. The original-source requirement, one-crop retry, citations and calculation checks are shared. Both pipelines can be confidently wrong; evaluate them separately before the Gemini demo. A Codex app login is not used: this adapter uses `OPENAI_API_KEY` with the Responses API.
+Set `GEMINI_API_KEY` in `.env.local` and restart the server. Defaults are Gemini 4 Hydrogen for answers (`GEMINI_MODEL`) and upload interpretation (`GEMINI_INTERPRETATION_MODEL`), Gemini 3.8 Flash for deciding whether to ask for clarification (`GEMINI_CLARIFICATION_MODEL`), Gemini 3.1 Pro Preview for explicit 3D reconstruction (`GEMINI_RECONSTRUCTION_MODEL`), and Gemini Decisions for sufficiency and answer review (`GEMINI_DECISION_MODEL`). Existing model overrides in `.env.local` take precedence. The app uses Gemini regardless of any existing `AI_PROVIDER` setting.
 
 ```sh
 .venv/bin/python scripts/doctor.py
@@ -68,7 +53,7 @@ The bootstrap creates a local `.venv` and installs pinned `requirements.txt`. On
 
 ## Scope and behavior
 
-Historical Gemini compatibility diagnosis is in [GEMINI_FIX.md](docs/GEMINI_FIX.md). The reconstruction default remains `gemini-3.1-pro-preview`; Hydrogen was not adopted. Default configurable design budgets are 300 seconds/65,536 output tokens per reconstruction or patch, 120 seconds/16,384 tokens per reconstruction review, 900 seconds per background job and two patch attempts. QA has a 180-second total budget, 90 seconds per Gemini draft or correction, 45 seconds for other Gemini calls, at most two support reviews and one meaningful correction. Budget exhaustion is operational, not proof of missing evidence. See `.env.example` and [the reviewed plan](docs/PRODUCT_PLAN.md).
+Historical Gemini compatibility diagnosis is in [GEMINI_FIX.md](docs/GEMINI_FIX.md). Default configurable design budgets are 300 seconds/65,536 output tokens per reconstruction or patch, 120 seconds/16,384 tokens per reconstruction review, 900 seconds per background job and two patch attempts. QA has a 180-second total budget, 90 seconds per Gemini draft or correction, 45 seconds for other Gemini calls, at most two support reviews and one meaningful correction. Budget exhaustion is operational, not proof of missing evidence. See `.env.example` and [the reviewed plan](docs/PRODUCT_PLAN.md).
 
 The API wire schema and necessary local validation remain separate. Invalid/ambiguous geometry stays as a source-linked unresolved record; an all-unresolved result explicitly says no 3D geometry was reconstructed. Valid walls/features do not depend on room polygons surviving. Source-based answers remain available.
 - Related JPG/PNG/PDF/SVG/DXF sources can be uploaded together or appended. Existing per-file drawing limits remain 10 MiB and, for PDF, five pages; oversized PDFs are rejected, not silently truncated. These are not whole-building page limits.
@@ -95,8 +80,6 @@ Read [AGENTS.md](AGENTS.md), [the active source-first specification](docs/SOURCE
 Use the same document/question pairs for ordinary Gemini and the gated pipeline. Measure answer coverage, error among answered questions, unsupported answers, unnecessary abstention, latency and token usage. Include deliberately incomplete and ambiguous drawings, as well as sparse JPGs with answerable questions. Split by drawing/building rather than translations or file formats. Keep reference answers out of runtime context.
 
 API references: [Decisions](https://aistudio.google.com/docs/decisions-api), [models](https://aistudio.google.com/docs/models). The Decisions SDK requires google-genai 3.2 or later; this environment pins the installed version. Model names are configurable because account access can differ.
-
-OpenAI references: [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs), [model catalog](https://developers.openai.com/api/docs/models), [native Decisions (not used by this temporary adapter)](https://developers.openai.com/api/docs/guides/decisions).
 
 ## Voice interaction
 

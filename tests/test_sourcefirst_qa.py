@@ -2,8 +2,7 @@
 import pytest
 from app.building import BuildingDescription
 from app.documents import DocumentStore
-from app.provider import GeminiProvider, ProviderError, INTERPRETATION_INSTRUCTIONS
-from app.openai_provider import OpenAIProvider
+from app.providers.gemini import GeminiProvider, ProviderError, INTERPRETATION_INSTRUCTIONS
 from app.reasoning import build_reasoning, retrieve_context
 from app.review_schema import DescriptionPatch
 from app.schemas import (Clarification, CropRequest, DraftAnswer, Evidence, GateResult,
@@ -45,20 +44,18 @@ def test_originals_available_before_extraction(drawing):
 
 
 def test_source_only_provider_stage_does_not_request_geometry_or_review(drawing):
-    for cls in (GeminiProvider,OpenAIProvider):
-        provider=cls.__new__(cls);provider.reconstruction_model='unchanged-model'
-        calls=[]
-        def generate(doc,question,instruction,schema,*args,**kwargs):
-            calls.append((doc,question,instruction,schema,kwargs))
-            return BuildingDescription(floors=[],limitations=[])
-        if cls is GeminiProvider:provider._generate=generate
-        else:provider._parse=generate
-        output=provider.extract_interpretation(drawing)
-        assert output.floors==[] and len(calls)==1
-        assert calls[0][2]==INTERPRETATION_INSTRUCTIONS
-        assert calls[0][0].scene is None and calls[0][0].description is None
-        assert 'Do NOT trace' in calls[0][2]
-        if cls is GeminiProvider:assert calls[0][4]['model']=='unchanged-model'
+    provider=GeminiProvider.__new__(GeminiProvider);provider.interpretation_model='source-model'
+    calls=[]
+    def generate(doc,question,instruction,schema,*args,**kwargs):
+        calls.append((doc,question,instruction,schema,kwargs))
+        return BuildingDescription(floors=[],limitations=[])
+    provider._generate=generate
+    output=provider.extract_interpretation(drawing)
+    assert output.floors==[] and len(calls)==1
+    assert calls[0][2]==INTERPRETATION_INSTRUCTIONS
+    assert calls[0][0].scene is None and calls[0][0].description is None
+    assert 'Do NOT trace' in calls[0][2]
+    assert calls[0][4]['model']=='source-model'
 
 
 def test_geometry_enrichment_uses_typed_patch_and_exact_saved_interpretation(drawing):
@@ -169,7 +166,7 @@ def test_drawing_only_guard_survives_intent_rewrite(drawing):
 
 def test_integer_coordinate_convention_is_explicitly_rejected_and_retained(drawing):
     from pydantic import ValidationError
-    from app.provider import INTERPRETATION_INSTRUCTIONS, GEOMETRY_ENRICHMENT_INSTRUCTIONS
+    from app.providers.gemini import INTERPRETATION_INSTRUCTIONS, GEOMETRY_ENRICHMENT_INSTRUCTIONS
     raw={"floors":[{"label":"Fixture floor","source":{"page":1,"bbox":{"left":100,"top":200,"right":800,"bottom":900}}}],"limitations":[]}
     with pytest.raises(ValidationError):BuildingDescription.model_validate(raw)
     assert raw["floors"][0]["source"]["bbox"]["left"]==100

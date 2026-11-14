@@ -42,7 +42,7 @@ class AnnotationProvider(SemanticFixtureProvider):
 def annotation_server(tmp_path,monkeypatch):
     import uvicorn
     from app.main import create_app
-    monkeypatch.setenv("AI_PROVIDER","gemini");monkeypatch.setenv("GEMINI_API_KEY","fixture-never-sent")
+    monkeypatch.setenv("GEMINI_API_KEY","fixture-never-sent")
     AnnotationProvider.unresolved_only=False
     app=create_app(provider_factory=AnnotationProvider,storage_root=tmp_path/"uploads")
     sock=socket.socket();sock.bind(("127.0.0.1",0))

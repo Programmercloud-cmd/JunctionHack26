@@ -38,7 +38,7 @@ class FixtureProvider:
 
     def gate(self, document, question, crop=None):
         from app.schemas import GateResult
-        from app.provider import ProviderError
+        from app.providers.gemini import ProviderError
         if "failure" in question:
             raise ProviderError("Fixture provider unavailable; no evidence conclusion was made.")
         decision = "insufficient" if "height" in question else "unclear" if "ambiguous" in question else "sufficient"
@@ -187,17 +187,12 @@ def test_unconfigured_preview_remains_usable(server, browser_page):
     expect(page.locator("#page-image")).to_be_visible()
 
 
-def test_openai_pipeline_is_identified(server, browser_page):
+def test_gemini_pipeline_is_identified(server, browser_page):
     from playwright.sync_api import expect
     page = browser_page
-    page.route("**/api/health", lambda route: route.fulfill(json={"status": "ok", "provider_ready": True,
-        "provider": "openai", "provider_label": "OpenAI", "credential_env": "OPENAI_API_KEY",
-        "gate_kind": "structured_classification", "model": "fixture-openai", "decision_model": "fixture-openai",
-        "limits": {"max_upload_mb": 10, "max_pages": 5}}))
     page.goto(server)
-    expect(page.locator("#connection-label")).to_have_text("OpenAI configured")
-    expect(page.locator("#provider-mode")).to_contain_text("Final demo uses Gemini")
+    expect(page.locator("#connection-label")).to_have_text("Gemini configured")
     upload(page)
     ask(page, "Count rooms")
     expect(page.locator("#answer-text")).to_have_text("Fixture: one labeled room.")
-    expect(page.locator("#run-details-list")).to_contain_text("Structured classification (no confidence score)")
+    expect(page.locator("#run-details-list")).to_contain_text("Gemini Decisions")

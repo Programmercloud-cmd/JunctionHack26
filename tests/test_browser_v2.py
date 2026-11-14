@@ -51,7 +51,6 @@ class BuildingFixtureProvider(FixtureProvider):
 def building_server(tmp_path, monkeypatch):
     import uvicorn
     from app.main import create_app
-    monkeypatch.setenv("AI_PROVIDER","gemini")
     monkeypatch.setenv("GEMINI_API_KEY","fixture-never-sent")
     BuildingFixtureProvider.calls = 0
     BuildingFixtureProvider.calibrated = False

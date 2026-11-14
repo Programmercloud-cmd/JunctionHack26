@@ -10,7 +10,7 @@ import pytest
 
 from app.documents import DocumentError
 from app.main import create_app
-from app.provider import GeminiProvider, ProviderError
+from app.providers.gemini import GeminiProvider, ProviderError
 from app.reconstruction_errors import LOGGER, reconstruction_error
 from test_backend import png
 from test_ifc_generate import description

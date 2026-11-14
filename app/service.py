@@ -4,7 +4,7 @@ import json
 from copy import deepcopy
 from time import monotonic
 
-from .provider import ProviderError, configured_number
+from .providers.gemini import ProviderError, configured_number
 from .schemas import Answer, DraftAnswer, Usage, AnswerClaim, NativeCalculation, QuestionIntent
 from .highlights import validated_highlights, whole_model_count_kind
 from .reasoning import ensure_reasoning, retrieve_context, execute_native_calculation, source_only_question

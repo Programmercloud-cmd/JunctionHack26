@@ -1,6 +1,6 @@
 """Explicit review fixtures verify routing/progress; these are not live inference claims."""
 from app.documents import DocumentStore
-from app.provider import ProviderError
+from app.providers.gemini import ProviderError
 from app.schemas import DraftAnswer,GateResult,Usage,CropRequest,AnswerClaim
 from app.review_schema import AnswerReview
 from app.service import ask

@@ -10,7 +10,7 @@ from app.documents import DocumentError, DocumentStore
 from app.highlights import validated_highlights
 from app.ifc_generate import generate_ifc
 from app.ifc_import import import_ifc
-from app.provider import ProviderError
+from app.providers.gemini import ProviderError
 from app.scene import Property
 from app.schemas import CropRequest, DraftAnswer, GateResult, Usage
 from app.service import ask, validate_draft

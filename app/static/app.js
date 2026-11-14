@@ -71,8 +71,6 @@ async function checkHealth() {
     state.providerReady = health.provider_ready === true;
     const providerLabel = health.provider_label || "Gemini";
     $("connection-label").textContent = state.providerReady ? `${providerLabel} configured` : "Setup needed";
-    $("provider-mode").hidden = health.provider !== "openai";
-    $("provider-mode").textContent = "OpenAI development pipeline · structured evidence check. Final demo uses Gemini.";
     $("provider-banner").hidden = state.providerReady;
     if (!state.providerReady) {
       $("provider-title").textContent = `${providerLabel} is not configured yet`;
@@ -441,7 +439,7 @@ function renderResult(result, preserveView = false) {
   $("run-details-list").replaceChildren();
   addDetail("Source support decision", result.gate?.decision || "Not reported");
   addDetail("Provider", state.health?.provider_label || "Gemini");
-  addDetail("Evidence check", state.health?.gate_kind === "structured_classification" ? "Structured classification (no confidence score)" : "Gemini Decisions");
+  addDetail("Evidence check", "Gemini Decisions");
   addDetail("Inspection passes", String(result.inspection_passes ?? 0));
   if(result.answered_revision_id)addDetail("Answered revision",result.answered_revision_id);
   if (state.health?.model) addDetail("Answer model", state.health.model);

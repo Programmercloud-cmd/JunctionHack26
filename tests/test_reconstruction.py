@@ -6,7 +6,7 @@ from app.building import BuildingDescription
 from app.documents import DocumentError, DocumentStore
 from app.highlights import validated_highlights
 from app.main import create_app
-from app.provider import ProviderError
+from app.providers.gemini import ProviderError
 from app.reconstruction import reconstruct_scene
 from app.schemas import DraftAnswer
 from app.source_context import source_context
@@ -106,35 +106,23 @@ def test_reconstruction_provider_failure_sanitized(tmp_path):
     finally:store.close()
 
 
-@pytest.mark.parametrize('provider_name',['gemini','openai'])
-def test_actual_sdk_building_schema_sees_all_original_pages(tmp_path,monkeypatch,provider_name):
+def test_actual_sdk_building_schema_sees_all_original_pages(tmp_path,monkeypatch):
     import httpx2
-    from app.provider import GeminiProvider
-    from app.openai_provider import OpenAIProvider
-    from test_openai_provider import intercept,response
-    monkeypatch.setenv('GEMINI_API_KEY','offline-only');monkeypatch.setenv('OPENAI_API_KEY','offline-only')
+    from app.providers.gemini import GeminiProvider
+    monkeypatch.setenv('GEMINI_API_KEY','offline-only')
     calls=[]
     output=description(floor('Ground',source=region(1)),floor('Upper',source=region(2)))
     def handler(request):
         body=json.loads(request.content);calls.append(body)
-        if provider_name=='openai':
-            content=body['input'][0]['content']
-            assert len([p for p in content if p['type']=='input_image'])==2
-            assert any('page 2' in p.get('text','') for p in content)
-            assert body['text']['format']['strict'] is True
-            assert '"default"' not in json.dumps(body['text']['format']['schema'])
-            return httpx2.Response(200,json=response(output.model_dump()))
         parts=body['contents'][0]['parts']
         assert len([p for p in parts if 'inlineData' in p])==2
         assert any('page 2' in p.get('text','') for p in parts)
         schema=body['generationConfig']['responseJsonSchema']
         assert schema['$defs']['RoomDescription']['properties']['polygon']['items']['type']=='object'
         return httpx2.Response(200,json={'candidates':[{'content':{'parts':[{'text':output.model_dump_json()}],'role':'model'},'finishReason':'STOP'}],'usageMetadata':{'promptTokenCount':1,'candidatesTokenCount':1}})
-    provider=GeminiProvider() if provider_name=='gemini' else OpenAIProvider()
-    if provider_name=='gemini':
-        provider.client._api_client._httpx_client.close()
-        provider.client._api_client._httpx_client=httpx2.Client(transport=httpx2.MockTransport(handler))
-    else:intercept(provider,handler)
+    provider=GeminiProvider()
+    provider.client._api_client._httpx_client.close()
+    provider.client._api_client._httpx_client=httpx2.Client(transport=httpx2.MockTransport(handler))
     store=DocumentStore(tmp_path)
     try:
         doc=store.add(pdf(2),'two.pdf')

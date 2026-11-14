@@ -418,9 +418,7 @@ Development subagents are for implementation and review. The application itself 
 
 PROVIDER AND EXECUTION POLICY
 
-Gemini remains the final-demo provider.
-
-Preserve the explicit provider switch and current reconstruction-model default. The Hydrogen experiment was not adopted. Do not reopen model selection as part of this goal without concrete evidence that it blocks implementation.
+Use Gemini for inference. Keep the configurable reconstruction model default.
 
 Use existing credentials for live tests necessary to establish compatibility and acceptance. Do not print secrets or raw sensitive requests.
 

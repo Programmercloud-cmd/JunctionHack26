@@ -5,7 +5,7 @@ COLORS={"walls":(218,66,38,150),"openings":(0,133,205,180),"spaces":(25,150,55,4
 
 
 def overlay_views(document,scene,prefix="Current"):
-    from .provider import image_bytes
+    from .providers.gemini import image_bytes
     result=[]
     for page in document.pages:
         with page.image()as source:
@@ -28,7 +28,7 @@ def overlay_views(document,scene,prefix="Current"):
 
 
 def issue_crops(document,issues):
-    from .provider import image_bytes
+    from .providers.gemini import image_bytes
     result=[]
     seen=set()
     for issue in issues:

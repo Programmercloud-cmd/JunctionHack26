@@ -14,9 +14,9 @@ from .documents import DocumentError, DocumentStore, MAX_UPLOAD, MAX_IFC_UPLOAD
 from .scene import Scene
 from .schemas import StrictModel
 from pydantic import Field
-from .provider import create_provider, ProviderError, settings
+from .providers.gemini import create_provider, ProviderError, settings
 from .schemas import Answer, AskRequest
-from .service import ask
+from .vlm import VLM
 from .bundles import BuildingStore
 from .jobs import JobRunner
 from .user_inputs import RefinementRequest, assumptions
@@ -60,11 +60,9 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
 
     @application.get("/api/health")
     def health():
-        try:
-            config = settings()
-        except ProviderError as error:
-            raise HTTPException(error.status, error.message) from None
+        config = settings()
         return {"status": "ok", "provider_ready": bool(config["api_key"]), "model": config["model"],
+                "interpretation_model": config["interpretation_model"], "clarification_model": config["clarification_model"],
                 "reconstruction_model": config["reconstruction_model"],
                 "provider": config["name"], "provider_label": config["label"],
                 "credential_env": config["credential_env"], "gate_kind": config["gate_kind"],
@@ -219,7 +217,7 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
             message=user_message(document,request)
             application.state.documents.append_conversation(document.id,message)
             provider = application.state.provider_factory()
-            answer = ask(document, request.question, provider)
+            answer = VLM(provider).answer(document, request.question)
             latest = application.state.documents.get(document.id)
             answer.building_id = document.id
             answer.answered_revision_id = document.revision_id

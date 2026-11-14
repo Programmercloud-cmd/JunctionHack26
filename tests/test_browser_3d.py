@@ -49,7 +49,6 @@ class SceneFixtureProvider(FixtureProvider):
 def scene_server(tmp_path, monkeypatch):
     import uvicorn
     from app.main import create_app
-    monkeypatch.setenv("AI_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_API_KEY", "fixture-never-sent")
     SceneFixtureProvider.reconstruction_calls = 0
     app = create_app(provider_factory=SceneFixtureProvider, storage_root=tmp_path / "uploads")

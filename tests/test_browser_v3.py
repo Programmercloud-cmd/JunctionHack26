@@ -39,7 +39,7 @@ class SemanticFixtureProvider(FixtureProvider):
 def semantic_server(tmp_path,monkeypatch):
     import uvicorn
     from app.main import create_app
-    monkeypatch.setenv("AI_PROVIDER","gemini"); monkeypatch.setenv("GEMINI_API_KEY","fixture-never-sent")
+    monkeypatch.setenv("GEMINI_API_KEY","fixture-never-sent")
     SemanticFixtureProvider.unresolved_only=False
     app=create_app(provider_factory=SemanticFixtureProvider,storage_root=tmp_path/"uploads")
     sock=socket.socket(); sock.bind(("127.0.0.1",0))

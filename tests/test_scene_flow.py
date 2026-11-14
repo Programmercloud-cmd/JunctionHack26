@@ -13,7 +13,7 @@ from app.main import create_app
 from app.scene import Assumption, Geometry, Property, Scene, SceneElement, SourceRef
 from app.schemas import DraftAnswer, GateResult, Usage
 from app.service import ask, validate_draft
-from app.provider import ProviderError
+from app.providers.gemini import ProviderError
 from app.source_context import source_context
 
 

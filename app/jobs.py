@@ -10,14 +10,14 @@ import uuid
 
 from .building import BuildingDescription,BUILDING_PROMPT
 from .documents import DocumentError
-from .provider import ProviderError,configured_number,settings
+from .providers.gemini import ProviderError,configured_number,settings
 from .identities import assign_identities,assign_replacement_identities
 from .ifc_generate import generate_ifc
 from .ifc_artifact import load_artifact
 from .reasoning import build_reasoning
 from .revisions import apply_patch,apply_enrichment,needs_geometry,regression_findings,description_hash,normalize_views
 from .review_schema import ReconstructionReview
-from .service import ask
+from .vlm import VLM
 from .highlights import validated_highlights
 
 TERMINAL={"complete","needs_attention","failed","budget_exhausted","stopped","interrupted"}
@@ -30,13 +30,14 @@ class JobBudget(Exception):pass
 def pipeline_config():
     config=settings()
     return {"pipeline_version":"progressive-v1","provider":config["name"],"model":config["model"],
+        "interpretation_model":config["interpretation_model"],
         "reconstruction_model":config["reconstruction_model"],"decision_model":config["decision_model"],
         "prompt_sha256":hashlib.sha256(BUILDING_PROMPT.encode()).hexdigest(),
         "reconstruction_call_seconds":configured_number("RECONSTRUCTION_CALL_SECONDS",300),
         "reconstruction_max_tokens":configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True),
         "reconstruction_review_seconds":configured_number("RECONSTRUCTION_REVIEW_SECONDS",120),
         "reconstruction_review_tokens":configured_number("RECONSTRUCTION_REVIEW_TOKENS",16384,integer=True),
-        "temperature":0,"reconstruction_thinking_level":"high" if config["name"]=="gemini" else None,
+        "temperature":0,"reconstruction_thinking_level":"high",
         "schema_sha256":hashlib.sha256(json.dumps(BuildingDescription.model_json_schema(),sort_keys=True).encode()).hexdigest(),
         "job_seconds":configured_number("RECONSTRUCTION_JOB_SECONDS",900),
         "patch_attempts":configured_number("RECONSTRUCTION_PATCH_ATTEMPTS",2,integer=True)}
@@ -181,7 +182,7 @@ class JobRunner:
             if cached is None:
                 source=self.store.source_document(document,source_id)
                 self._update(identity,status="running",phase="extraction_provider",message="Extracting source-linked interpretation; 3D is optional.")
-                output=provider.extract_interpretation(source,include_geometry=False)
+                output=VLM(provider).extract(source)
                 self._check(identity,deadline)
                 self._update(identity,phase="interpretation_validation",message="Validating and saving source interpretation.")
                 cached=normalize_views(BuildingDescription.model_validate(output))
@@ -469,7 +470,7 @@ class JobRunner:
                 self._check(identity,float("inf"))
                 self._update(identity,status="running",phase=phase,message=phase)
             from .voice_format import with_spoken_answers
-            answer=with_spoken_answers(ask(snapshot,question,provider,progress=progress), question)
+            answer=with_spoken_answers(VLM(provider).answer(snapshot,question,progress=progress), question)
             self._check(identity,float("inf"))
             displayed=self.store.get(snapshot.id)
             answer.building_id=snapshot.id;answer.answered_revision_id=snapshot.revision_id

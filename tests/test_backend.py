@@ -10,7 +10,7 @@ import pytest
 
 from app.documents import DocumentStore, MAX_UPLOAD
 from app.main import create_app
-from app.provider import GeminiProvider, views
+from app.providers.gemini import GeminiProvider, views
 from app.schemas import CropRequest, DraftAnswer, GateResult, Usage
 
 

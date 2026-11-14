@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from .building import BuildingDescription
 from .documents import DocumentError
-from .provider import ProviderError
+from .providers.gemini import ProviderError
 
 
 LOGGER = logging.getLogger("blueprint.reconstruction")

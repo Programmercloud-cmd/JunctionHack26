@@ -41,7 +41,7 @@ class ProgressiveFixtureProvider(ConceptFixtureProvider):
 def progressive_server(tmp_path,monkeypatch):
     import uvicorn
     from app.main import create_app
-    monkeypatch.setenv('AI_PROVIDER','gemini');monkeypatch.setenv('GEMINI_API_KEY','fixture-never-sent')
+    monkeypatch.setenv('GEMINI_API_KEY','fixture-never-sent')
     ProgressiveFixtureProvider.unresolved_only=False
     provider=ProgressiveFixtureProvider();app=create_app(provider_factory=lambda:provider,storage_root=tmp_path/'uploads')
     sock=socket.socket();sock.bind(('127.0.0.1',0));server=uvicorn.Server(uvicorn.Config(app,log_level='error'))

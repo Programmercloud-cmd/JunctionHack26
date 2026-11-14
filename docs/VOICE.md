@@ -14,7 +14,7 @@ Configure `.env.local` using the placeholders in `.env.example`:
 - `ELEVENLABS_MODEL_ID=eleven_multilingual_v2`.
 - `VOICE_CONNECT_TIMEOUT_SECONDS=20`, `VOICE_FINALIZATION_TIMEOUT_SECONDS=15`, `VOICE_SPEECH_TIMEOUT_SECONDS=60`: configurable stalled-operation deadlines.
 
-The official ElevenLabs Python SDK is pinned in the lockfile and uses the existing HTTP transport with automatic retries disabled. Voice uses server-side credentials; the browser sends audio only to the local app. `AI_PROVIDER` continues to select the question-answering provider independently, with no fallback. Readiness means configuration exists, not that provider access is verified. Diagnose with `.venv/bin/python scripts/doctor.py`, run with `bash scripts/dev.sh` and open http://127.0.0.1:8000. Microphone capture needs localhost or HTTPS and browser microphone permission.
+The official ElevenLabs Python SDK is pinned in the lockfile and uses the existing HTTP transport with automatic retries disabled. Voice uses server-side credentials; the browser sends audio only to the local app. Readiness means configuration exists, not that provider access is verified. Diagnose with `.venv/bin/python scripts/doctor.py`, run with `bash scripts/dev.sh` and open http://127.0.0.1:8000. Microphone capture needs localhost or HTTPS and browser microphone permission.
 
 ## Use
 

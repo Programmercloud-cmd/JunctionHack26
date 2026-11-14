@@ -4,7 +4,7 @@ import json
 import math
 import re
 from copy import deepcopy
-from .provider import ProviderError
+from .providers.gemini import ProviderError
 
 
 def build_reasoning(document):

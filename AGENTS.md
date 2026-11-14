@@ -11,7 +11,8 @@ Current source-first scope is docs/SOURCE_FIRST_SPEC.md with reviewed docs/SOURC
 - Before introducing self-imposed constraints, explicitly communicate what they restrict, why they are needed, whether they are an external requirement or our design choice, and how they might block valid inputs or the demo. Prefer the smallest justified set for this hackathon. Do not silently introduce arbitrary caps or turn this into a blanket approval bureaucracy.
 - Read docs/PLAN.md, docs/CONTRACT.md and docs/HANDOFF.md before changing behavior.
 - Setup: `bash scripts/bootstrap.sh`. Run: `bash scripts/dev.sh`. Check: `bash scripts/test.sh`. Diagnose: `.venv/bin/python scripts/doctor.py`. Make targets are optional aliases when make is installed.
-- Python 3.12+, FastAPI, plain HTML/CSS/JS, server-side Gemini (final demo) or explicit temporary OpenAI adapter. `AI_PROVIDER=gemini|openai`; default Gemini, never auto-failover. One process; no frontend build tool.
+- Python 3.12+, FastAPI, plain HTML/CSS/JS, server-side Gemini for inference. One process; no frontend build tool.
+- By default, Gemini 4 Hydrogen interprets uploads and answers questions. Gemini 3.8 Flash handles intent and clarification. Gemini Decisions handles evidence sufficiency and answer review. Explicit 3D reconstruction defaults to Gemini 3.1 Pro Preview.
 - Dependencies live in requirements.in; requirements.txt is the reproducible resolved lock. Coordinate dependency changes with the orchestrator.
 - Use `.venv/bin/python`; do not modify system Python. Local sandbox may fail with bwrap: use approved escalated calls if required.
 - Never print or commit `.env*` secrets, uploads, provider request bodies, or dataset answers. `.env.example` contains placeholders only.

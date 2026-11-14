@@ -1,4 +1,5 @@
 """Gemini wire compatibility never relaxes the application's response validation."""
+from contextlib import closing
 from copy import deepcopy
 import json
 
@@ -7,8 +8,9 @@ from pydantic import ValidationError
 import pytest
 
 from app.documents import DocumentError, DocumentStore
-from app.provider import GeminiProvider, ProviderError, gemini_wire_schema
+from app.providers.gemini import GeminiProvider, ProviderError, gemini_wire_schema
 from app.reconstruction import reconstruct_scene
+from app.review_schema import AnswerReview
 from app.building import BuildingDescription
 from test_ifc_generate import description, floor, room, region
 from app.schemas import CropRequest, DraftAnswer, GateResult
@@ -184,9 +186,38 @@ def test_reconstruction_and_qa_timeouts_are_scoped(sdk_document):
             assert "generationConfig" not in body and "thinkingConfig" not in body
 
 
+def test_default_gemini_model_routes(sdk_document, monkeypatch):
+    _, document = sdk_document
+    for key in ("GEMINI_MODEL", "GEMINI_INTERPRETATION_MODEL",
+                "GEMINI_CLARIFICATION_MODEL", "GEMINI_RECONSTRUCTION_MODEL"):
+        monkeypatch.delenv(key, raising=False)
+    question = "How many rooms?"
+    gate = GateResult(decision="sufficient")
+    models = []
+    outputs = iter([FLOOR, {"action": "answer", "resolved_question": question},
+                    ANSWER, CROP, ANSWER, FLOOR])
+
+    def handler(request):
+        models.append(request.url.path.rsplit("/", 1)[1].split(":")[0])
+        return httpx2.Response(200, json={"candidates": [{"content": {"role": "model", "parts": [
+            {"text": json.dumps(next(outputs))}]}, "finishReason": "STOP"}]})
+
+    with closing(GeminiProvider()) as routed:
+        routed.client._api_client._httpx_client.close()
+        routed.client._api_client._httpx_client = httpx2.Client(transport=httpx2.MockTransport(handler))
+        routed.extract_interpretation(document)
+        routed.resolve_intent(document, question)
+        draft = routed.answer(document, question, gate)
+        routed.choose_crop(document, question)
+        routed.revise_answer(document, question, draft, gate, AnswerReview(decision="unsupported"))
+        routed.reconstruct(document)
+    assert models == ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-4-hydrogen",
+                      "gemini-4-hydrogen", "gemini-4-hydrogen", "gemini-3.1-pro-preview"]
+
+
 def test_patch_record_wire_string_keeps_exact_local_types_strict():
     from app.review_schema import DescriptionPatch
-    from app.provider import gemini_wire_schema
+    from app.providers.gemini import gemini_wire_schema
     from pydantic import ValidationError
     original=DescriptionPatch.model_json_schema()
     wire=gemini_wire_schema(original)

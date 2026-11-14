@@ -7,7 +7,7 @@ import pytest
 from app.bundles import BuildingStore
 from app.jobs import JobRunner
 from app.main import create_app
-from app.provider import ProviderError
+from app.providers.gemini import ProviderError
 from app.schemas import Usage, AskRequest, DraftAnswer, QuestionIntent, Clarification
 from app.review_schema import ReconstructionReview, DescriptionPatch
 from app.user_inputs import RefinementRequest, prepare_inputs, assumptions

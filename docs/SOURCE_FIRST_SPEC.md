@@ -90,7 +90,7 @@ Plans, sections and elevations should contribute their supported information wit
 
 The user’s selected building and source content should establish grouping; filename similarity can suggest it. Keep this lean: extend the existing building bundle and reasoning representation rather than introducing a new subsystem.
 
-Preserve building-type agnosticism, original labels, neutral concept styling, stable IDs, portable provenance, source-based QA, refusals, conservative highlights and independent assumption controls. Gemini remains the final-demo provider; keep the provider switch and current model default.
+Preserve building-type agnosticism, original labels, neutral concept styling, stable IDs, portable provenance, source-based QA, refusals, conservative highlights and independent assumption controls. Use Gemini for inference and keep the configurable reconstruction model default.
 
 Verify the changed flows using colorful-34.png, colorful-11397.png, colorful-1794.png, native duplex IFC and a related non-residential document set. Include live Gemini checks, original-coordinate overlays, actual reopened geometry, restart/reupload reuse and independent browser review. Report remaining fidelity gaps honestly.
 

@@ -31,7 +31,7 @@ class ConceptFixtureProvider(SemanticFixtureProvider):
 def concept_server(tmp_path,monkeypatch):
     import uvicorn
     from app.main import create_app
-    monkeypatch.setenv('AI_PROVIDER','gemini');monkeypatch.setenv('GEMINI_API_KEY','fixture-never-sent')
+    monkeypatch.setenv('GEMINI_API_KEY','fixture-never-sent')
     ConceptFixtureProvider.unresolved_only=False
     app=create_app(provider_factory=ConceptFixtureProvider,storage_root=tmp_path/'uploads')
     sock=socket.socket();sock.bind(('127.0.0.1',0));server=uvicorn.Server(uvicorn.Config(app,log_level='error'))
