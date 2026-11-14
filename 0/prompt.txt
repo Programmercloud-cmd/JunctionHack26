@@ -1,0 +1,14 @@
+[136] tool exec call: text(await tools.exec_command({cmd:"cat docs/3D_PLAN.md","sandbox_permissions":"require_escalated","justification":"May I read the proposed 3D implementation plan for the independent review before implementation?","max_output_tokens":10000}));
+
+[138] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[139] assistant: Plan approved with these narrow changes:
+
+- Use strict whole-model count patterns; defer model-parsed intent and storey filters.
+- Attach coverage metadata to bounded IFC records. Omitted records must not support whole-model counts or claims that information is absent.
+- Represent zero-count evidence as complete catalog scope, without fabricated object IDs.
+- Require one identifiable floor for image reconstruction; otherwise request clarification.
+- Make scene creation atomic and cached by document/page. Reject attempts to replace the selected page silently.
+- Specify conservative image-to-object matching before coding. Start with uniquely matched room evidence; broad page boxes and ambiguous overlaps yield no highlight.
+
+The existing safeguards for unchanged IFC GlobalIds, geometry-less elements, unit conversion, visible assumptions, and separation of generated geometry from factual evidence are appropriate.
