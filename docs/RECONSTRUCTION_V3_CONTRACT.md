@@ -50,3 +50,13 @@ BoundaryDescription.source now uses BoundaryRegion: area or normalized positive-
 ## Shared uncalibrated page scale
 
 Uncalibrated floor transforms use a page-derived factor `10/max(page.width/page.height,1)` rather than independently normalizing each floor bbox. Floor boxes affect centering only. This preserves drawn proportions among uncalibrated diagrams on one page; it does not prove physical scale or equal drawing scales, especially for independently resized diagrams. Separate page frames remain schematic. Supported physical calibration is unchanged. New `page_extent` assumptions disclose the convention; the UI checks those markers before making the claim. Existing artifacts retain stored transforms and original IDs; no automatic migration. See FLOOR_SCALE_FIX.md.
+
+## Depicted wall bands and schematic visibility
+
+A supplied boundary segment is a reference line, not necessarily a centerline. A valid perpendicular thickness segment establishes signed face offsets in the aspect-correct source plane. Validate contact before display rotation; extrude between those faces. This retains depicted relative widths at unknown scale. Missing/invalid widths keep explicit display defaults. Supported band contacts form junctions without endpoint snapping or filling positive gaps.
+
+Opening range and normal-offset checks use the same source plane and named host. Gap endpoints retain their longitudinal positions. Void and fill are centered normally within the supported band (or assumed default band), with an explicit placement assumption; voids cut the full band. A previously accepted opening outside the actual supported band is not grandfathered in.
+
+Feature footprints and source classifications remain fallible drawing interpretations. Raised schematics improve visibility without establishing vertical measurements. Relative to the existing assumed wall height H, display heights are table .30H; chair/bed .20H; sofa/sink/toilet .25H; cabinet .50H; appliance .40H; shower/bath/stairs/other .10H. Motifs and dimensions are portable assumptions. Support symbols do not establish leg counts; chair facing and stair ascent/rise/travel direction are not inferred. New geometry must remain inside the existing footprint.
+
+Unresolved canvas annotations are HTML source links, not IFC geometry or answer highlights. Precise source regions use the stored source transform; coarse/unlocalized records use a labeled floor badge. Annotation screen positions may be separated for legibility without changing source coordinates or exported geometry. A more elevated derived-model camera exposes interiors; native IFC camera behavior is unchanged. See SCHEMATIC_FIDELITY_PLAN.md and SCHEMATIC_FIDELITY_RESULTS.md.

@@ -22,6 +22,8 @@ Open http://127.0.0.1:8000. Uploads, previews and IFC import/viewing work withou
 
 **Source comparison** overlays the actual reopened IFC footprints, wall sections and openings on the original page. Toggle layers to check missing features, invented walls and displaced openings. The interpreted inventory links every generated or unresolved record to its source; it is not a claim that every source feature was found. Stairs, furnishings and fixtures use simple schematic geometry. Terraces/balconies are outdoor spaces; room polygons never create walls.
 
+Furniture and fixtures use raised schematic blocks, tops and basin symbols with labeled assumed heights. Stair marks remain level symbols, not measured steps or rise. Orbit toward an overhead view to inspect features hidden behind walls. Click a **?** marker to inspect an unresolved source region; these annotations are separate from model geometry and answer highlights. A floor badge means a precise location is unavailable. See [the fidelity results](docs/SCHEMATIC_FIDELITY_RESULTS.md) for known extraction errors.
+
 **Highlight answer** and **Show assumptions** are independent controls. A scene is cached once for all pages; asking questions only updates highlights. Download its generated IFC and upload it in a fresh session: stable object IDs, original source PNGs, assumptions and provenance travel with the file. Unmapped answers keep their source evidence and do not invent a 3D selection.
 
 ## Switch providers

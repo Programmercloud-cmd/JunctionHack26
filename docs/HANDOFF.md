@@ -4,7 +4,19 @@
 
 V3 implements explicit physical boundaries, real wall-hosted openings, indoor/outdoor spaces, schematic stairs/furnishings/fixtures, persistent unresolved records and an original-page comparison of actual reopened IFC geometry. **Full visual fidelity acceptance is not yet met.** Live source comparisons still find omitted/misplaced features; do not confuse passing API, IFC or browser checks with complete reconstruction.
 
-Read [RECONSTRUCTION_V3_PLAN.md](RECONSTRUCTION_V3_PLAN.md), [RECONSTRUCTION_V3_CONTRACT.md](RECONSTRUCTION_V3_CONTRACT.md) and [RECONSTRUCTION_V3_DIAGNOSIS.md](RECONSTRUCTION_V3_DIAGNOSIS.md). V2 verification is historical. No commits, pushes, deployment, new dependencies or services.
+Read [RECONSTRUCTION_V3_PLAN.md](RECONSTRUCTION_V3_PLAN.md), [RECONSTRUCTION_V3_CONTRACT.md](RECONSTRUCTION_V3_CONTRACT.md) and [RECONSTRUCTION_V3_DIAGNOSIS.md](RECONSTRUCTION_V3_DIAGNOSIS.md). V2 verification is historical. The user now explicitly requests suitable progress commits; no pushes or deployment. No new dependencies or services.
+
+## Latest wall and schematic fidelity iteration
+
+See [SCHEMATIC_FIDELITY_PLAN.md](SCHEMATIC_FIDELITY_PLAN.md) and [SCHEMATIC_FIDELITY_RESULTS.md](SCHEMATIC_FIDELITY_RESULTS.md). Replayed exact saved descriptions with unchanged originals, no new Gemini call. Source-plane signed wall bands retain depicted face placement and relative width, including five previously discarded 11397 thicknesses. Supported contacts now meet without endpoint snapping; opening projection survives rotation and voids cut the actual band. Independent wall review checkpoint: `db5988a`.
+
+Raised furniture/fixture schematics and level stair symbols retain their exact source footprints. All heights and motifs remain explicit portable display assumptions, excluded from factual QA. The derived-model camera is more elevated. Source-linked unresolved HTML annotations and floor badges remain separate from geometry and highlights; independent browser/code review checkpoint: `6ba092d`.
+
+Final regenerated artifacts: `/tmp/junction-fidelity-v4/schematics/11397.ifc` and `1794.ifc`. Import these to inspect the saved-description result without another extraction. Existing cached/imported artifacts retain their original geometry; this is not a silent migration. All original pages, stable IDs, shared-page transforms and source projections survive reopening. 11397 has 78 rendered records and 7 unresolved;1794 has 36 rendered records. These are interpretation counts, not completeness scores. The final results document records tests and actual-browser review.
+
+Final verification: 344 backend tests and all 13 optional browser checks pass; doctor passes. The independent reviewer directly interacted with both final artifacts and inspected original-page overlays, with no scoped implementation blockers. Feature checkpoint: `82bc8cf`. QA browser tests use fake providers; no new live-provider claim is made. Actual reopened feature projections are unchanged for all 37 supplied features.
+
+Known extraction errors remain, including 1794's thick kitchen/bath partition and balcony-crossing wall, and conflicting 11397 upper facade/open-edge descriptions with unresolved openings. More visible furniture does not correct omitted/misclassified source features. Full reconstruction fidelity remains partial.
 
 ## Latest floor-scale repair
 
@@ -35,7 +47,7 @@ Gemini is the default/final demo provider. Reconstruction alone makes one high-t
 - Room polygons make floor plates only. Explicit walls/shared boundaries are independent of rooms; invalid rooms cannot suppress valid walls/openings/features. Door leaves, swing arcs and furnishing outlines never automatically create walls.
 - Door/window records name an explicit same-floor wall key. Valid gaps create actual IFC void/fill relationships. Invalid/ambiguous hosts stay unresolved, retaining source, stable ID and reason; no nearest-wall attachment.
 - Outdoor space footprints do not imply enclosure. Open-edge polylines make flat markers; railings require explicit depicted support. No inferred hidden floors.
-- Stairs/furniture/fixtures may be flat schematics when vertical shape is unknown. Stair marks are level symbols, not measured treads/rise or travel direction. Empty feature polygons request an explicit bbox schematic; malformed supplied geometry stays unresolved.
+- Stairs/furniture/fixtures use raised schematic motifs with explicitly assumed heights when vertical shape is unknown. Stair marks remain level symbols, not measured treads/rise or travel direction. Empty feature polygons request an explicit bbox schematic; malformed supplied geometry stays unresolved. Old flat artifacts remain valid.
 - V3 source boxes may provide context beyond the approximate floor bbox if the same-page regions overlap. Geometry anchors must remain in both floor and source region. Wrong-page/disjoint sources do not acquire invented geometry. V2 keeps its former containment validation.
 - Unknown scale is `UNSCALED_DISPLAY_UNIT`, never measured metres. Supported calibration affects plan scale only. All missing vertical dimensions, opening heights/sills, symbol thicknesses and layout offsets remain assumptions.
 - Generated IFC always reopens as derived drawing visualization, never as a factual native IFC catalog. Original embedded PNGs are validated by hash/dimensions; manifest, IFC properties, classes and storeys must agree. Original source QA excludes generated properties, geometry and assumed heights. The object index is only a fallible association aid. Unknown/ambiguous source associations retain citations without highlights.
