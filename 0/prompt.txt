@@ -1,0 +1,83 @@
+Implement a chat-first UI redesign in this isolated worktree. The main session is separately improving reconstruction and refinement reliability. Keep those efforts independent, agree on shared interfaces, and do not duplicate or rewrite its pipelines.
+
+Use planning, independent plan review, bounded implementation and independent implementation review. Reviewers must directly interact with the browser. Make focused commits; do not push or modify the other worktree.
+
+Read AGENTS.md and the current product, source-first, reconstruction and handoff documentation before implementation.
+
+### Product direction
+
+Create a minimal interface using the actual light and dark colour schemes from my Chronicle project. Locate its theme files; if unavailable, ask for their location rather than inventing an approximation.
+
+Initially, show a clean chat interface with blueprint attachments. When visual inspection is requested, move chat to the left and reveal a workspace on the right.
+
+All application operations should be accessible through conversation. Keep manual orbit, zoom and pan. Citations and compact action controls may appear inside chat; avoid separate toolbars, floor selectors and settings panels.
+
+### Target workflow
+
+Support this conversational sequence:
+
+1. Upload blueprint(s).
+2. Show “Reading your drawings…” while originals are saved and Gemini creates a validated interpretation.
+3. Show that the drawings are ready; source-grounded QA works before 3D.
+4. “Show me all windows in the 3D model.”
+   - Reuse the current saved model, or invoke the existing reconstruction workflow.
+   - Show progress in chat.
+   - Open the workspace, highlight reliably associated modeled windows, fade other geometry and frame the selection.
+5. “Show this from above.”
+   - Move the camera to top-down while preserving selection.
+6. “Show the windows individually.”
+   - Start a tour that focuses each selected window with a useful close-up orientation.
+7. “Show this window in the original blueprint.”
+   - Immediately pause the tour and capture the focused object when the message is submitted.
+   - Open its original page and highlight its stored evidence region.
+8. “Back to the model; next window.”
+   - Restore the model and continue the same tour.
+9. A requested refinement uses the existing attributed-input, validation and review workflow. Accepted changes update the workspace; rejected changes retain the previous usable model and explain the outcome.
+
+### Architecture
+
+Maintain explicit workspace state: document/revision, view mode, selected IDs, focused ID, camera, tour position, highlighting and assumption visibility.
+
+Use:
+
+Message + captured workspace context → typed action → validation → existing operation → updated chat/workspace
+
+Gemini interprets language; application code resolves and validates identities; deterministic viewer code controls selection, cameras, tours and source navigation. Do not require a VLM to rediscover the focused object from screenshots.
+
+Distinguish navigation commands, factual questions and persistent refinements. Navigation should not unnecessarily invoke the factual QA pipeline. Ask focused clarifications for genuine ambiguity; avoid blanket confirmation steps.
+
+Agree on a small action/result contract before dependent implementation. Own frontend presentation and viewer interaction. Coordinate any backend routing changes with the main session. Do not add a new agent runtime or parallel implementation of reconstruction, QA or persistence.
+
+### Preserve correctness
+
+- Keep Gemini, the provider switch, source-sufficiency gate, citations and refusals.
+- Preserve original coordinates, stable IDs, revision-pinned evidence, cached models and portable IFC provenance.
+- Generated geometry and display assumptions never become authoritative factual evidence.
+- Keep answer highlighting and assumption visibility independently controllable through chat.
+- “All modeled windows” must not imply complete extraction of every real window.
+- Unresolved objects retain source evidence; never fabricate meshes, matches or tighter source regions.
+- Use reliable geometry/host orientation for close-ups; label uncertain orientations appropriately.
+- Preserve original labels and building-type agnosticism.
+- Keep failed operations and partial models visibly distinguishable from completed, reviewed results.
+
+### Verification and scope
+
+Start with deterministic interaction fixtures to establish layout, navigation and interruption behavior. Clearly distinguish fixtures from real inference. Then verify the workflow against actual saved models and real backend responses.
+
+Independent browser review must exercise both themes, chat/workspace transitions, selections, camera changes, tours, interruption with “this object,” source navigation, assumptions and recoverable failures. Use a real model with renderable windows where available; separately test unresolved objects honestly.
+
+Reuse existing capabilities first. No new formats, models, rendering engines, photorealism or infrastructure. Explain new constraints before introducing them.
+
+Deliver the reviewed implementation, action contract, focused commits and a handoff stating what was verified with fixtures, actual artifacts and live providers, plus remaining gaps.
+
+---
+
+<send_user_message_question_reply>
+[{"answer":"https://github.com/Programmercloud-cmd/AI_Chronicle_UI","question":"I couldn’t find Chronicle in the local project locations. What is the path or repository URL for its light and dark theme files? I’ll continue the interaction and contract work while waiting, and won’t invent replacement colours.","questionItemId":"[\"request_user_input_async\",\"call_5ac5369f27394ae9ba221e97c310e189\",0]"}]
+</send_user_message_question_reply>
+
+---
+
+<send_user_message_question_reply>
+[{"answer":"Yes, create the isolated UI worktree from committed HEAD and leave the main session’s uncommitted changes untouched.\n\nUse /tmp/junction-ui-coordination.md for coordination. Write your proposed action/routing contract there, including:\n\nWorkspace context and typed actions/results.\nExisting endpoints you intend to reuse.\nAny required backend changes and proposed file ownership.\nProgress, failure and revision-handling behavior.\n\nInclude your worktree path, branch and base commit. I’ll ask the main session to review the proposal and record its response in that file.\n\nMeanwhile, proceed with Chronicle theme discovery, layout and deterministic viewer interactions behind an adapter. Keep backend routing changes pending until the contract is agreed. Commit the finalized contract into the UI branch’s documentation.","question":"The supplied working directory contains the main session’s uncommitted reliability changes. I’ll create a separate UI worktree from its committed HEAD to avoid touching those files. How can I reach the main session to agree on the action/routing contract? A session identifier or shared coordination-file location is enough.","questionItemId":"[\"request_user_input_async\",\"call_48ea1b050ae44b6eb9d283d8f1aa147d\",0]"}]
+</send_user_message_question_reply>
