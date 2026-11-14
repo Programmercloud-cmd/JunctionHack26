@@ -7,10 +7,129 @@ from .building import (BuildingDescription, FloorDescription, RoomDescription, B
                        OpeningDescription, FeatureDescription, UnresolvedDescription, UnmodeledView)
 from .documents import DocumentError
 from .identities import COLLECTIONS, records, new_identity, validate_identities, frame_signature
-from .review_schema import DescriptionPatch
+from .review_schema import DescriptionPatch, AdditionalTargetRequest, AuthorizationReview
+from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 TYPES={"floors":FloorDescription,"rooms":RoomDescription,"boundaries":BoundaryDescription,
        "openings":OpeningDescription,"features":FeatureDescription,"unresolved":UnresolvedDescription}
+
+
+class PatchRejection(DocumentError):
+    def __init__(self, code, explanation, *, expected_contract="Correct the cited contract without changing unrelated records.", **context):
+        super().__init__(explanation,422)
+        self.feedback={"code":code,"explanation":explanation,"expected_contract":expected_contract,**context}
+
+
+_GRANT_SEAL=object()
+class SupplementalAuthorization(BaseModel):
+    model_config=ConfigDict(frozen=True)
+    base_revision_id: str
+    request_id: str
+    issue_id: str
+    target_id: str
+    floor_id: str | None
+    collection: str
+    evidence: dict
+    reason: str
+    _seal: object = PrivateAttr(default=None)
+    _bound: str = PrivateAttr(default="")
+
+
+def proposal_fingerprint(patch):
+    value=DescriptionPatch.model_validate(patch).model_dump(mode="json")
+    for group in ("operations","floor_metadata_updates","additional_target_requests","transform_updates"):
+        for item in value[group]:
+            item.pop("reason",None);item.pop("request_id",None)
+            if "issue_ids" in item:item["issue_ids"]=sorted(item["issue_ids"])
+            if group=="floor_metadata_updates":item["changes"]=sorted(item["changes"],key=lambda change:change["field"])
+        value[group]=sorted(value[group],key=lambda item:json.dumps(item,sort_keys=True))
+    return hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
+
+
+def _request_failure(code, message, document, request=None):
+    context={"base_revision_id":document.revision_id}
+    if request:context.update(request_id=request.request_id,target_id=request.target_id,issue_ids=[request.issue_id],floor_id=request.floor_id)
+    raise PatchRejection(code,message,**context)
+
+
+def validate_target_requests(document,review,requests):
+    requests=[AdditionalTargetRequest.model_validate(r) for r in requests]
+    issues={i.id:i for i in review.issues};seen=set();targets=set()
+    owners={}
+    for current_floor in document.description.floors:
+        owners[current_floor.persistent_id]=current_floor.persistent_id
+        for collection in COLLECTIONS:
+            owners.update({item.persistent_id:current_floor.persistent_id for item in getattr(current_floor,collection)})
+    for request in requests:
+        if request.request_id in seen or (request.issue_id,request.target_id) in targets:
+            _request_failure("duplicate_target_request","Target requests must identify each issue/target exactly once.",document,request)
+        seen.add(request.request_id);targets.add((request.issue_id,request.target_id))
+        if request.base_revision_id!=document.revision_id:
+            raise DocumentError("Stale target request; current revision was retained.",409)
+        issue=issues.get(request.issue_id)
+        if not issue or not issue.actionable or issue.category!="extraction" or not request.reason.strip():
+            _request_failure("invalid_target_issue","Additional targets require an actionable extraction issue and specific rationale.",document,request)
+        floor=next((f for f in document.description.floors if f.persistent_id==request.floor_id),None)
+        if request.collection=="floors":
+            target=next((f for f in document.description.floors if f.persistent_id==request.target_id),None)
+            if request.floor_id not in (None,request.target_id):target=None
+        else:
+            target=next((r for r in getattr(floor,request.collection,[]) if r.persistent_id==request.target_id),None)
+        if target is None:
+            _request_failure("unknown_target","Requested target must exist in the specified floor and collection.",document,request)
+        if issue.object_ids:
+            if any(identity not in owners for identity in issue.object_ids):
+                _request_failure("unknown_issue_target","Reviewed issue contains an unavailable object; refresh its source review before extending authority.",document,request)
+            issue_floors={owners[identity] for identity in issue.object_ids}
+            if owners[request.target_id] not in issue_floors:
+                _request_failure("cross_floor_target","Additional target must belong to a floor explicitly identified by the reviewed issue.",document,request)
+        try:_evidence(document,request.evidence)
+        except DocumentError:_request_failure("invalid_target_source","Requested target evidence must identify an available original source.",document,request)
+        region=_record_region(target,floor)
+        if (not region or not _overlap(issue.source,request.evidence) or not _regions_touch(region,request.evidence)
+                or (not issue.object_ids and not _regions_touch(region,issue.source))):
+            _request_failure("unrelated_target_source","Requested target and reviewed issue must share inspected original-source context.",document,request)
+    return requests
+
+
+def authorize_targets(document,review,requests,decision):
+    requests=validate_target_requests(document,review,requests)
+    decision=AuthorizationReview.model_validate(decision)
+    if decision.base_revision_id!=document.revision_id:raise DocumentError("Stale target decision; current revision was retained.",409)
+    expected={r.request_id:r for r in requests};seen=set();grants=[]
+    for item in decision.decisions:
+        request=expected.get(item.request_id)
+        if not request or item.request_id in seen or item.issue_id!=request.issue_id or item.target_id!=request.target_id:
+            _request_failure("invalid_target_decision","Reviewer must return exactly one matching decision for each requested target.",document)
+        seen.add(item.request_id)
+        try:_evidence(document,item.evidence)
+        except DocumentError:_request_failure("invalid_target_decision_source","Reviewer evidence must identify an available original source.",document,request)
+        if not item.reason.strip() or not _overlap(item.evidence,request.evidence):
+            _request_failure("invalid_target_decision_source","Reviewer must cite the requested original context and explain its decision.",document,request)
+        if item.decision=="approved":
+            inspected=request.model_copy(update={"evidence":item.evidence,"reason":item.reason})
+            validate_target_requests(document,review,[inspected])
+            grant=SupplementalAuthorization(base_revision_id=document.revision_id,request_id=request.request_id,issue_id=request.issue_id,
+                target_id=request.target_id,floor_id=request.floor_id,collection=request.collection,evidence=item.evidence.model_dump(),reason=item.reason)
+            grant._seal=_GRANT_SEAL
+            grant._bound=hashlib.sha256(grant.model_dump_json().encode()).hexdigest()
+            grants.append(grant)
+    if seen!=set(expected):_request_failure("missing_target_decision","Reviewer omitted a requested target decision.",document)
+    return grants
+
+
+def _with_authorizations(document,review,authorizations):
+    result=review.model_copy(deep=True) if review else None
+    for grant in authorizations:
+        if not isinstance(grant,SupplementalAuthorization) or grant._seal is not _GRANT_SEAL or grant._bound!=hashlib.sha256(grant.model_dump_json().encode()).hexdigest() or grant.base_revision_id!=document.revision_id:
+            raise PatchRejection("invalid_authorization","Only server-validated grants for this exact revision may authorize targets.")
+        issue=next((i for i in result.issues if i.id==grant.issue_id),None) if result else None
+        if not issue or not issue.actionable or issue.category!="extraction":raise PatchRejection("invalid_authorization","Grant issue is no longer actionable.")
+        # Revalidate registry/source membership even for a previously approved grant.
+        validate_target_requests(document,review,[AdditionalTargetRequest(request_id=grant.request_id,base_revision_id=grant.base_revision_id,
+            issue_id=grant.issue_id,target_id=grant.target_id,floor_id=grant.floor_id,collection=grant.collection,evidence=grant.evidence,reason=grant.reason)])
+        if issue.object_ids and grant.target_id not in issue.object_ids:issue.object_ids.append(grant.target_id)
+    return result
 
 
 def description_hash(description):
@@ -50,7 +169,48 @@ def _record_region(record,floor=None):
     return None
 
 
-def apply_patch(document,patch,review=None,*,enrichment=False):
+def apply_patch(document,patch,review=None,*,enrichment=False,authorizations=()):
+    patch=DescriptionPatch.model_validate(patch)
+    context={"base_revision_id":patch.base_revision_id,"proposal_sha256":proposal_fingerprint(patch)}
+    if patch.base_revision_id!=document.revision_id:raise DocumentError("Stale description patch; current revision was retained.",409)
+    review=_with_authorizations(document,review,authorizations)
+    expanded=patch.model_copy(deep=True)
+    metadata_indices={};seen=set()
+    for index,update in enumerate(patch.floor_metadata_updates):
+        fields=[change.field for change in update.changes]
+        if not fields or len(fields)!=len(set(fields)) or update.floor_id in seen:
+            raise PatchRejection("conflicting_metadata","Metadata edits must be nonempty with unique fields and floor targets.",metadata_update_index=index,**context)
+        seen.add(update.floor_id)
+        if any(o.collection=="floors" and o.target_id==update.floor_id for o in patch.operations):
+            raise PatchRejection("conflicting_metadata","Do not combine a legacy floor replacement and metadata changes for the same floor.",metadata_update_index=index,**context)
+        floor=next((f for f in document.description.floors if f.persistent_id==update.floor_id),None)
+        if floor is None:raise PatchRejection("unknown_metadata_floor","Metadata edits require an existing floor.",metadata_update_index=index,**context)
+        changed=floor.model_copy(deep=True)
+        for change in update.changes:setattr(changed,change.field,change.value)
+        from .review_schema import RecordPatch
+        metadata_indices[len(expanded.operations)]=index
+        expanded.operations.append(RecordPatch(action="replace",collection="floors",target_id=update.floor_id,record=changed,
+            evidence=update.evidence,reason=update.reason,issue_ids=update.issue_ids))
+    try:return _apply_patch(document,expanded,review,enrichment=enrichment,_context=context)
+    except PatchRejection:raise
+    except DocumentError as error:
+        if error.status!=422:raise
+        mapping={
+          "A floor metadata patch cannot change nested identity order or length.":("nested_floor_edit","Use floor_metadata_updates for metadata; use separate explicit operations for nested objects."),
+          "A floor metadata patch cannot rewrite unrelated nested objects.":("nested_floor_edit","Use floor_metadata_updates; preserve unrelated records."),
+          "Correction targets an object not identified by the reviewed issue.":("unauthorized_target","Request this exact additional target with original evidence and rationale; only reviewer-approved targets may change."),
+          "Correction is missing its typed description record.":("missing_record","Provide the collection's typed record for add/replace; use explicit null only for remove."),
+          "Correction record does not match its declared collection.":("wrong_record_type","Provide the typed record corresponding to collection."),
+          "Conflicting repeated operations on the same object are not applied.":("conflicting_operations","Provide one explicit operation per object."),
+          "The proposed correction makes no material description change.":("no_material_change","Provide a supported material correction or leave the finding unresolved."),
+        }
+        if error.message not in mapping:raise
+        code,expected=mapping[error.message]
+        if context.get("operation_index") in metadata_indices:context["metadata_update_index"]=metadata_indices[context["operation_index"]]
+        raise PatchRejection(code,error.message,expected_contract=expected,**context) from None
+
+
+def _apply_patch(document,patch,review=None,*,enrichment=False,_context=None):
     patch=DescriptionPatch.model_validate(patch)
     if patch.base_revision_id!=document.revision_id:
         raise DocumentError("Stale description patch; current revision was retained.",409)
@@ -65,7 +225,8 @@ def apply_patch(document,patch,review=None,*,enrichment=False):
     changed=set();removed=set();added=set()
     base_floors={floor.persistent_id:floor for floor in document.description.floors}
     declared_replacements=_declared_nested_replacements(patch)
-    for operation in patch.operations:
+    for operation_index,operation in enumerate(patch.operations):
+        if _context is not None:_context.update(operation_index=operation_index,target_id=operation.target_id,floor_id=operation.floor_id,issue_ids=operation.issue_ids)
         _evidence(document,operation.evidence)
         supported=[issues[i]for i in operation.issue_ids if i in issues and issues[i].actionable
                    and issues[i].category=="extraction"]

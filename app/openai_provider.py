@@ -16,6 +16,7 @@ from .provider import (
     remaining_timeout, configured_number, RECONSTRUCTION_REVIEW_INSTRUCTIONS,
     RECONSTRUCTION_PATCH_INSTRUCTIONS, ANSWER_REVIEW_INSTRUCTIONS, ANSWER_REPAIR_INSTRUCTIONS,
     _begin_call, _finish_call, _source_catalog, _patch_targets,
+    _json_data, _reconstruction_review_schema, CANDIDATE_REVIEW_INSTRUCTIONS, TARGET_REVIEW_INSTRUCTIONS,
 )
 from .schemas import CropRequest, DraftAnswer, GateResult, StrictModel, Usage, QuestionIntent
 from .source_context import source_context
@@ -167,23 +168,41 @@ class OpenAIProvider:
             DescriptionPatch,timeout=configured_number("RECONSTRUCTION_CALL_SECONDS",300),include_qa_context=False,max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True),
             extra_data={"base_revision_id":document.revision_id,"description":document.description.model_dump(mode="json"),"user_edits":edits})
 
-    def review_reconstruction(self, document, description, scene, *, previous_description=None, previous_scene=None, previous_review=None):
-        from .review_schema import ReconstructionReview
+    def review_reconstruction(self, document, description, scene, *, previous_description=None, previous_scene=None, previous_review=None, change_context=None, previous_user_values=None):
         from .review_render import overlay_views,issue_crops
         images=overlay_views(document,scene)
         if previous_scene:images+=overlay_views(document,previous_scene,"Previous usable revision")
         if previous_review:images+=issue_crops(document,previous_review.issues)
-        return self._parse(document,"Review source reconstruction and possible candidate regressions.",RECONSTRUCTION_REVIEW_INSTRUCTIONS,ReconstructionReview,
+        data={"base_revision_id":document.revision_id,"description":description.model_dump(mode="json"),"user_values":document.user_values,"previous_description":previous_description.model_dump(mode="json")if previous_description else None,"previous_review":previous_review.model_dump(mode="json")if previous_review else None,
+            "actual_geometry_inventory":[{"id":e.id,"name":e.name,"representation":e.representation,"has_geometry":e.geometry is not None,"note":e.note}for e in scene.elements]}
+        if change_context is not None:data["change_context"]=_json_data(change_context)
+        if previous_user_values is not None:data["previous_user_values"]=_json_data(previous_user_values)
+        instructions=RECONSTRUCTION_REVIEW_INSTRUCTIONS+("\n"+CANDIDATE_REVIEW_INSTRUCTIONS if change_context is not None else "")
+        return self._parse(document,"Review source reconstruction and possible candidate regressions.",instructions,_reconstruction_review_schema(change_context),
           timeout=configured_number("RECONSTRUCTION_REVIEW_SECONDS",120),include_qa_context=False,max_tokens=configured_number("RECONSTRUCTION_REVIEW_TOKENS",16384,integer=True),extra_views=images,
-          extra_data={"base_revision_id":document.revision_id,"description":description.model_dump(mode="json"),"user_values":document.user_values,"previous_description":previous_description.model_dump(mode="json")if previous_description else None,"previous_review":previous_review.model_dump(mode="json")if previous_review else None,
-            "actual_geometry_inventory":[{"id":e.id,"name":e.name,"representation":e.representation,"has_geometry":e.geometry is not None,"note":e.note}for e in scene.elements]})
+          extra_data=data)
 
-    def patch_reconstruction(self, document, description, scene, review):
+    def patch_reconstruction(self, document, description, scene, review, *, validation_feedback=None, authorizations=None):
         from .review_schema import DescriptionPatch
         from .review_render import overlay_views,issue_crops
+        data={"base_revision_id":document.revision_id,"description":description.model_dump(mode="json"),"review":review.model_dump(mode="json"),"user_values":document.user_values,"issue_target_scopes":_patch_targets(review)}
+        if validation_feedback is not None:data["validation_feedback"]=_json_data(validation_feedback)
+        if authorizations is not None:data["authorizations"]=_json_data(authorizations)
         return self._parse(document,"Propose only supported targeted description corrections.",RECONSTRUCTION_PATCH_INSTRUCTIONS,DescriptionPatch,
           timeout=configured_number("RECONSTRUCTION_CALL_SECONDS",300),include_qa_context=False,max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True),extra_views=overlay_views(document,scene)+issue_crops(document,review.issues),
-          extra_data={"base_revision_id":document.revision_id,"description":description.model_dump(mode="json"),"review":review.model_dump(mode="json"),"user_values":document.user_values,"issue_target_scopes":_patch_targets(review)})
+          extra_data=data)
+
+    def review_target_requests(self, document, description, scene, review, requests, *, validation_feedback=None):
+        from .review_schema import AuthorizationReview
+        from .review_render import overlay_views,issue_crops
+        data={"base_revision_id":document.revision_id,"description":description.model_dump(mode="json"),
+              "user_values":document.user_values,"review":review.model_dump(mode="json"),
+              "issue_target_scopes":_patch_targets(review),"additional_target_requests":_json_data(requests),
+              "actual_geometry_inventory":[{"id":e.id,"name":e.name,"representation":e.representation,"has_geometry":e.geometry is not None,"note":e.note}for e in scene.elements]}
+        if validation_feedback is not None:data["validation_feedback"]=_json_data(validation_feedback)
+        return self._parse(document,"Inspect original evidence for the exact requested additional targets.",TARGET_REVIEW_INSTRUCTIONS,AuthorizationReview,
+          timeout=configured_number("RECONSTRUCTION_REVIEW_SECONDS",120),max_tokens=configured_number("RECONSTRUCTION_REVIEW_TOKENS",16384,integer=True),include_qa_context=False,
+          extra_views=overlay_views(document,scene)+issue_crops(document,review.issues),extra_data=data)
 
     def review_answer(self, document, question, draft, gate, crop=None, *, validation=None):
         from .review_schema import AnswerReview
