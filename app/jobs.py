@@ -256,6 +256,27 @@ class JobRunner:
                 previous=self._carry_findings(previous or saved,saved)
         return previous
 
+    @staticmethod
+    def _geometry_loss_feedback(before,after,failures):
+        """Only completed same-identity mesh losses are recoverable here.
+
+        Diagnostics never authorize another target or excuse a geometry loss.
+        Mixed frame/missing-object failures retain their existing terminal path.
+        """
+        if before.scene is None or after.scene is None:return None
+        old={element.id:element for element in before.scene.elements}
+        new={element.id:element for element in after.scene.elements}
+        lost=sorted(key for key in old.keys()&new.keys() if old[key].geometry and not new[key].geometry)
+        expected={"Previously renderable object became unresolved/unrenderable: "+key for key in lost}
+        if not lost or set(failures)!=expected:return None
+        return {"code":"geometry_regression",
+            "explanation":"Proposed geometry made previously renderable objects unresolved.",
+            "expected_contract":"Correct the identified geometry using original evidence and existing reviewed authority. "
+                "Preserve other usable objects; request any additional target explicitly. Do not pad, snap or invent geometry to bypass validation.",
+            "geometry_losses":[{"target_id":key,"floor_id":new[key].storey_id,
+                "before_representation":old[key].representation,"after_representation":new[key].representation,
+                "candidate_diagnostic":new[key].note}for key in lost]}
+
     def _recovery_event(self,identity,**event):
         events=deepcopy(self.jobs[identity].get("recovery_events",[]));events.append(event)
         self._update(identity,recovery_events=events)
@@ -641,9 +662,19 @@ class JobRunner:
                 failures=regression_findings(current,candidate,changes)
                 if failures:
                     candidate_path=self.store.save_candidate(candidate,review,failures,config)
+                    self._update(identity,attempts=self.jobs[identity]["attempts"]+
+                        [{"candidate":candidate_path,"accepted":False,"findings":failures}])
+                    geometry_feedback=self._geometry_loss_feedback(current,candidate,failures)
+                    if geometry_feedback:
+                        feedback={**geometry_feedback,"base_revision_id":current.revision_id,
+                            "proposal_sha256":fingerprint,"rejected_proposal":patch.model_dump(mode="json")}
+                        self._recovery_event(identity,kind="rejection",attempt=attempt+1,
+                            feedback={key:value for key,value in feedback.items()if key!="rejected_proposal"},
+                            message=geometry_feedback["explanation"])
+                        self._update(identity,last_validation_feedback=feedback)
+                        if attempt+1<config["patch_attempts"]:continue
                     self._update(identity,status="needs_attention",phase="complete",
-                        message="Candidate rejected: geometry disappeared or an unchanged frame moved. Previous usable revision retained.",
-                        attempts=self.jobs[identity]["attempts"]+[{"candidate":candidate_path,"accepted":False,"findings":failures}])
+                        message="Candidate rejected: geometry disappeared or an unchanged frame moved. Previous usable revision retained.")
                     return
                 self._check(identity,deadline)
                 context=build_revision_delta(current,candidate,[],changes)

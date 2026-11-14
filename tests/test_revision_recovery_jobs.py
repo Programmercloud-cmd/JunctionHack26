@@ -239,3 +239,53 @@ def test_carried_findings_dedupe_only_application_provenance_prefix():
     assert {i.id for i in result.issues}=={'floor','different'}
     assert current.model_dump()==original
     assert len(JobRunner._carry_findings(current,None).issues)==2
+
+
+class GeometryLossRecovery:
+    def __init__(self,mode='recover'):
+        self.usage=Usage();self.calls=0;self.feedback=[];self.review_calls=0;self.mode=mode
+    def close(self):pass
+    def review_reconstruction(self,document,description,scene,**kwargs):
+        self.review_calls+=1
+        if kwargs.get('change_context'):
+            return ReconstructionReview(candidate_supported=True,summary='Fixture valid corrected geometry',candidate_assessment=assessment())
+        return ReconstructionReview(candidate_supported=False,summary='Fixture wall source annotation',
+            issues=[finding(description.floors[0].boundaries[0].persistent_id,'wall')])
+    def patch_reconstruction(self,document,description,scene,review,**kwargs):
+        self.calls+=1;self.feedback.append(deepcopy(kwargs.get('validation_feedback')))
+        floor=description.floors[0];wall=floor.boundaries[0];record=wall.model_dump()
+        if self.calls==1 or self.mode=='repeat':record['segment']=[[.1,.2],[.4,.3],[.7,.2]]
+        else:record['note']='Corrected fixture source annotation'
+        return DescriptionPatch(base_revision_id=document.revision_id,operations=[dict(action='replace',collection='boundaries',
+            floor_id=floor.persistent_id,target_id=wall.persistent_id,record=record,evidence=region(),reason='Fixture targeted change',issue_ids=['wall'])])
+
+
+@pytest.mark.parametrize('mode',['recover','repeat'])
+def test_geometry_loss_feedback_uses_only_remaining_attempt_and_preserves_candidate(saved,mode):
+    store,current=saved;provider=GeometryLossRecovery(mode);before=current.description.model_dump()
+    job=run(store,current,provider)
+    assert provider.calls==2
+    assert provider.feedback[1]['code']=='geometry_regression'
+    losses=provider.feedback[1]['geometry_losses']
+    assert current.description.floors[0].boundaries[0].persistent_id in {x['target_id']for x in losses}
+    assert all(x['candidate_diagnostic']for x in losses)
+    assert provider.feedback[1]['base_revision_id']==current.revision_id
+    assert job['attempts'][0]['accepted']is False
+    assert (store.directory(current.id)/job['attempts'][0]['candidate']/'model.ifc').exists()
+    assert current.description.model_dump()==before
+    if mode=='recover':
+        assert job['attempts'][1]['accepted'] and provider.review_calls==2
+        assert store.get(current.id).revision_id!=current.revision_id
+    else:
+        assert job['status']=='needs_attention'and provider.review_calls==1
+        assert store.get(current.id).revision_id==current.revision_id
+        assert job['recovery_events'][-1]['kind']=='stopped'
+
+
+def test_geometry_feedback_does_not_retry_mixed_or_missing_failures(saved):
+    store,current=saved;candidate=current.snapshot();element=next(e for e in candidate.scene.elements if e.geometry)
+    element.geometry=None;element.note='Synthetic local unresolved reason'
+    loss='Previously renderable object became unresolved/unrenderable: '+element.id
+    assert JobRunner._geometry_loss_feedback(current,candidate,[loss])
+    assert JobRunner._geometry_loss_feedback(current,candidate,[loss,'An unchanged source/display frame moved: fixture'])is None
+    assert JobRunner._geometry_loss_feedback(current,candidate,['Unrequested object disappeared: fixture'])is None
