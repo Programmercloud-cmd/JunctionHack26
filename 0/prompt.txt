@@ -1,0 +1,29 @@
+[142] tool exec call: text(await tools.exec_command({cmd:"sed -n '199,240p' app/provider.py\nrg -n -C3 'MEDIUM|LOW|thinking|8192|timeout' tests/test_gemini_schema.py | tail -52\nrg -n 'timeout|retry_options' app/provider.py","workdir":"/home/jcb/dev/github/JunctionHack26","sandbox_permissions":"require_escalated","max_output_tokens":2400}));
+
+[143] tool exec result: Script completed
+Wall time 3.0 seconds
+Output:
+
+{"chunk_id":"7ad009","wall_time_seconds":0.000018074,"exit_code":0,"original_token_count":1061,"output":"        usage = getattr(response, \"usage\", None)\n        self.usage.input_tokens += getattr(usage, \"total_input_tokens\", 0) or 0\n        self.usage.output_tokens += getattr(usage, \"total_output_tokens\", 0) or 0\n        return GateResult(decision=answer.choice, confidence=answer.confidence)\n\n    def _generate(self, document, question, instruction, schema, crop=None, *, thinking_level=None):\n        parts = [types.Part.from_text(text=json.dumps({\"question\": question}))]\n        if context := source_context(document):\n            parts.append(types.Part.from_text(text=context))\n        for label, png in views(document, crop):\n            parts.extend([types.Part.from_text(text=label), types.Part.from_bytes(data=png, mime_type=\"image/png\")])\n        response = self.client.models.generate_content(\n            model=self.model, contents=parts,\n            config=types.GenerateContentConfig(system_instruction=instruction, temperature=0,\n                                               response_mime_type=\"application/json\", response_json_schema=gemini_wire_schema(schema.model_json_schema()),\n                                               max_output_tokens=8192,\n                                               thinking_config=types.ThinkingConfig(thinking_level=thinking_level) if thinking_level is not None else None),\n        )\n        usage = response.usage_metadata\n        self.usage.input_tokens += getattr(usage, \"prompt_token_count\", 0) or 0\n        self.usage.output_tokens += (getattr(usage, \"candidates_token_count\", 0) or 0) + (getattr(usage, \"thoughts_token_count\", 0) or 0)\n        if any(candidate.finish_reason == types.FinishReason.MAX_TOKENS for candidate in response.candidates or []):\n            raise ProviderError(\"Gemini reached its output token limit be<truncated omitted_approx_tokens="141" />.building import BuildingDescription, BUILDING_PROMPT\n        source = replace(document, scene=None)\n        return self._generate(source, \"Describe every explicitly depicted floor across these original pages.\",\n                              BUILDING_PROMPT, BuildingDescription,\n                              thinking_level=\"medium\")\n143-    assert document.scene is None\n144-\n145-\n146:def test_reconstruction_thinking_is_scoped_and_original_budgets_unchanged(sdk_document):\n147-    provider, document = sdk_document\n148-    requests = []\n149-    outputs = iter([FLOOR, ANSWER, CROP])\n150-\n151-    def handler(request):\n152-        body = json.loads(request.content)\n153:        requests.append((body, request.extensions[\"timeout\"]))\n154-        if str(request.url).endswith(\"/decisions\"):\n155-            return httpx2.Response(200, json={\"answers\": {\"sufficiency\": {\"type\": \"choice\", \"choice\": \"sufficient\",\n156-                \"confidence\": .8, \"probabilities\": {\"sufficient\": .8, \"insufficient\": .1, \"unclear\": .1}}}})\n--\n163-    generate(provider, document, \"crop\")\n164-    provider.gate(document, \"How many rooms?\")\n165-    assert len(requests) == 4\n166:    for index, (body, timeout) in enumerate(requests):\n167:        assert timeout[\"read\"] == 45\n168-        if index < 3:\n169:            assert body[\"generationConfig\"][\"maxOutputTokens\"] == 8192\n170-            assert \"httpOptions\" not in body[\"generationConfig\"]\n171-            if index == 0:\n172:                assert body[\"generationConfig\"][\"thinkingConfig\"] == {\"thinking_level\": \"MEDIUM\"}\n173-            else:\n174:                assert \"thinkingConfig\" not in body[\"generationConfig\"]\n175-        else:\n176:            assert \"generationConfig\" not in body and \"thinkingConfig\" not in body\n168:            \"api_version\": \"v1beta\", \"timeout\": 45000,\n169:            \"retry_options\": {\"attempts\": 1},\n"}
+
+[144] tool exec call: text(await tools.exec_command({cmd:".venv/bin/python -m pytest -q tests/test_gemini_schema.py::test_reconstruction_thinking_is_scoped_and_original_budgets_unchanged","workdir":"/home/jcb/dev/github/JunctionHack26","sandbox_permissions":"require_escalated","yield_time_ms":1000,"max_output_tokens":700}));
+
+[145] tool exec result: Script completed
+Wall time 3.8 seconds
+Output:
+
+{"chunk_id":"bf8feb","wall_time_seconds":1.001383536,"session_id":35722,"original_token_count":0,"output":""}
+
+[146] tool exec call: text(await tools.write_stdin({session_id:35722,chars:"",yield_time_ms:1000,max_output_tokens:700}));
+
+[147] tool exec result: Script completed
+Wall time 0.0 seconds
+Output:
+
+{"chunk_id":"8bdd36","wall_time_seconds":0.000018144,"exit_code":0,"original_token_count":25,"output":".                                                                        [100%]\n1 passed in 2.55s\n"}
+
+[148] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[149] assistant: Scoped change approved; the SDK scoping test passed.
+
+Only reconstruction uses medium thinking. Other stages, budgets and timeouts remain unchanged. No new code blockers. Record the limited timeout margin and remaining reconstruction uncertainty.
