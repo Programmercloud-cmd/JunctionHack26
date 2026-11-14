@@ -14,6 +14,9 @@ class AskRequest(StrictModel):
     question: str = Field(min_length=1, max_length=2000)
     revision_id: str | None = None
     request_id: str | None = None
+    conversation_id: str | None = None
+    reply_to: str | None = None
+    clarification_response: str | None = None
 
     @field_validator("question", mode="before")
     @classmethod
@@ -22,7 +25,9 @@ class AskRequest(StrictModel):
 
 
 class Evidence(StrictModel):
-    page: int = Field(ge=1, le=5)
+    source_id: str | None = None
+    source_page: int | None = Field(default=None, ge=1)
+    page: int = Field(ge=1)
     bbox: list[float] = Field(min_length=4, max_length=4)
     label: str = Field(min_length=1, max_length=200)
     observation: str = Field(min_length=1, max_length=1000)
@@ -57,6 +62,7 @@ class Calculation(StrictModel):
 
 
 class ModelEvidence(StrictModel):
+    source_id: str | None = None
     element_id: str | None = None
     label: str = Field(min_length=1, max_length=200)
     observation: str = Field(min_length=1, max_length=2000)
@@ -83,6 +89,27 @@ class AnswerClaim(StrictModel):
     text: str
 
 
+class Clarification(StrictModel):
+    message: str = Field(min_length=1)
+    suggestions: list[str] = Field(default_factory=list)
+    free_text_allowed: Literal[True] = True
+
+
+class QuestionIntent(StrictModel):
+    action: Literal["answer", "clarify"]
+    resolved_question: str = ""
+    clarification: Clarification | None = None
+    evidence_scope: Literal["sources_only", "sources_and_user"] = "sources_only"
+
+    @model_validator(mode="after")
+    def consistent_intent(self):
+        if self.action == "clarify" and self.clarification is None:
+            raise ValueError("Clarification needs a question and optional suggestions")
+        if self.action == "answer" and self.clarification is not None:
+            raise ValueError("Resolved intent cannot also request clarification")
+        return self
+
+
 class DraftAnswer(StrictModel):
     status: Literal["answered", "insufficient", "unclear"]
     answer: str = Field(min_length=1, max_length=6000)
@@ -96,10 +123,12 @@ class DraftAnswer(StrictModel):
     native_calculation: NativeCalculation | None = None
     claims: list[AnswerClaim] = Field(default_factory=list)
     retained_claim_ids: list[str] | None = None
+    support_summary: str = ""
+    user_value_evidence: list[str] = Field(default_factory=list)
 
 
 class CropRequest(StrictModel):
-    page: int = Field(ge=1, le=5)
+    page: int = Field(ge=1)
     bbox: list[float] = Field(min_length=4, max_length=4)
     reason: str = Field(min_length=1, max_length=1000)
 
@@ -118,14 +147,14 @@ class Usage(StrictModel):
 
 
 class Answer(StrictModel):
-    status: Literal["answered", "insufficient", "unclear"]
+    status: Literal["answered", "insufficient", "unclear", "clarification"]
     answer: str
     evidence: list[Evidence]
     missing_information: list[str]
     next_action: str
     proposal: Proposal | None
     inspected_pages: list[int]
-    gate: GateResult
+    gate: GateResult | None
     inspection_passes: int
     usage: Usage
     highlight_ids: list[str] = Field(default_factory=list)
@@ -137,3 +166,8 @@ class Answer(StrictModel):
     review_passes: int = 0
     review_note: str = ""
     calculation_results: list[dict] = Field(default_factory=list)
+    clarification: Clarification | None = None
+    resolved_question: str | None = None
+    support_summary: str = ""
+    user_value_evidence: list[str] = Field(default_factory=list)
+    user_value_attributions: list[dict] = Field(default_factory=list)

@@ -19,17 +19,24 @@ from .schemas import Answer, AskRequest
 from .service import ask
 from .bundles import BuildingStore
 from .jobs import JobRunner
+from .user_inputs import RefinementRequest, assumptions
+from .conversation import question_context, user_message, assistant_message
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 class SceneRequest(StrictModel):
-    page: int = Field(default=1, ge=1, le=5)
+    page: int = Field(default=1, ge=1)
 
 
 class ReconstructionRequest(StrictModel):
     base_revision_id: str | None = None
     mode: Literal["refine", "reconstruct"] = "refine"
+
+
+class ExtractionRequest(StrictModel):
+    source_ids: list[str] | None = None
+    retry: bool = True
 
 
 def create_app(*, provider_factory=create_provider, storage_root=None):
@@ -62,32 +69,84 @@ def create_app(*, provider_factory=create_provider, storage_root=None):
                 "credential_env": config["credential_env"], "gate_kind": config["gate_kind"],
                 "decision_model": config["decision_model"], "limits": {"max_upload_mb": 10, "max_ifc_mb": 25, "max_pages": 5}}
 
-    @application.post("/api/documents")
-    async def upload(file: UploadFile = File(...)):
+    async def save_uploads(uploads,building_id=None):
+        if not uploads:raise HTTPException(422,"Choose at least one source file.")
         try:
-            data = await file.read(MAX_IFC_UPLOAD + 1)
+            payloads=[(await upload.read(MAX_IFC_UPLOAD+1),upload.filename or "Untitled source") for upload in uploads]
             def save():
-                store = application.state.documents
+                store=application.state.documents
+                initial_id=building_id or hashlib.sha256(payloads[0][0]).hexdigest()
                 with store.lock:
-                    identity = hashlib.sha256(data).hexdigest()
-                    reused = (store.directory(identity) / "CURRENT.json").exists()
-                    document = store.add(data, file.filename or "Untitled plan")
-                    return {**document.public(), "is_new_upload": not reused}
+                    existed=(store.directory(initial_id)/"CURRENT.json").exists()
+                    previous=store.get(initial_id) if existed else None
+                    previous_sources={source["source_id"] for source in previous.sources} if previous else set()
+                    document=store.add_many(payloads,building_id=building_id)
+                    new_ids=[source["source_id"] for source in document.sources if source["source_id"] not in previous_sources]
+                extraction_jobs=application.state.jobs.extract(document.id,new_ids,retry=False) if new_ids and document.interpretation_status!="complete" else []
+                return {**document.public(),"is_new_upload":not existed,"added_source_ids":new_ids,"extraction_jobs":extraction_jobs}
             return await run_in_threadpool(save)
-        except DocumentError as error:
-            raise HTTPException(error.status, error.message) from None
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
         finally:
-            await file.close()
+            for upload in uploads:await upload.close()
+
+    @application.post("/api/documents")
+    async def upload(file: UploadFile | None = File(None), files: list[UploadFile] | None = File(None)):
+        return await save_uploads(([file] if file else [])+(files or []))
+
+    @application.post("/api/buildings/{building_id}/sources")
+    async def add_sources(building_id: str,file: UploadFile | None = File(None),files: list[UploadFile] | None = File(None)):
+        return await save_uploads(([file] if file else [])+(files or []),building_id)
 
     @application.get("/api/documents/{document_id}/pages/{page}")
     def preview(document_id: str, page: int):
         try:
             document = application.state.documents.get(document_id)
-            if not 1 <= page <= len(document.pages):
+            selected=next((p for p in document.pages if p.number==page),None)
+            if selected is None:
                 raise DocumentError("Page not found.", 404)
-            return FileResponse(document.pages[page - 1].path, media_type="image/png", headers={"Cache-Control": "no-store"})
+            return FileResponse(selected.path, media_type="image/png", headers={"Cache-Control": "no-store"})
         except DocumentError as error:
             raise HTTPException(error.status, error.message) from None
+
+    @application.get("/api/buildings/{building_id}/revisions/{revision_id}/pages/{page}")
+    def revision_page(building_id: str,revision_id: str,page: int):
+        try:
+            document=application.state.documents.revision(building_id,revision_id)
+            selected=next((p for p in document.pages if p.number==page),None)
+            if selected is None:raise DocumentError("Page not present in this answered revision.",404)
+            return FileResponse(selected.path,media_type="image/png",headers={"Cache-Control":"no-store"})
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    @application.get("/api/buildings/{building_id}/sources/{source_id}/original")
+    def original_source(building_id: str,source_id: str):
+        try:
+            document=application.state.documents.get(building_id)
+            if source_id not in document.source_files:raise DocumentError("Original source not found.",404)
+            return Response(document.source_files[source_id],media_type="application/octet-stream",
+                headers={"Content-Disposition":"attachment; filename=original-source","Cache-Control":"no-store"})
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    @application.post("/api/buildings/{building_id}/extraction",status_code=202)
+    def extraction_job(building_id: str,request: ExtractionRequest):
+        try:return {"jobs":application.state.jobs.extract(building_id,request.source_ids,retry=request.retry)}
+        except (DocumentError,ProviderError) as error:raise HTTPException(error.status,error.message) from None
+
+    @application.get("/api/buildings/{building_id}/conversation")
+    def conversation(building_id: str):
+        try:
+            application.state.documents.get(building_id)
+            return {"conversation_id":building_id,"messages":application.state.documents.conversation(building_id)}
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    @application.get("/api/buildings/{building_id}/assumptions")
+    def assumption_rows(building_id: str):
+        try:return assumptions(application.state.documents.get(building_id))
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    @application.post("/api/buildings/{building_id}/refinements",status_code=202)
+    def refinement_job(building_id: str,request: RefinementRequest):
+        try:return application.state.jobs.refine_inputs(building_id,request)
+        except (DocumentError,ProviderError) as error:raise HTTPException(error.status,error.message) from None
 
     @application.get("/api/buildings")
     def buildings():
@@ -155,6 +214,9 @@ def create_app(*, provider_factory=create_provider, storage_root=None):
             document = application.state.documents.get(request.document_id).snapshot()
             if request.revision_id and request.revision_id != document.revision_id:
                 raise DocumentError("The building revision changed; refresh before asking.", 409)
+            document.conversation_context=question_context(application.state.documents,document,request)
+            message=user_message(document,request)
+            application.state.documents.append_conversation(document.id,message)
             provider = application.state.provider_factory()
             answer = ask(document, request.question, provider)
             latest = application.state.documents.get(document.id)
@@ -165,6 +227,7 @@ def create_app(*, provider_factory=create_provider, storage_root=None):
                 from .highlights import validated_highlights
                 answer.highlight_ids = validated_highlights(answer, latest)
                 answer.review_note += " Building updated while answering; highlights were rechecked and original citations retained."
+            application.state.documents.append_conversation(document.id,assistant_message(document,answer,reply_to=message["id"]))
             return answer
         except (DocumentError, ProviderError) as error:
             raise HTTPException(error.status, error.message) from None
@@ -185,37 +248,17 @@ def create_app(*, provider_factory=create_provider, storage_root=None):
 
     @application.post("/api/documents/{document_id}/scene", response_model=Scene)
     def generate_scene(document_id: str, request: SceneRequest):
-        provider = None
-        acquired = False
         try:
-            document = application.state.documents.get(document_id)
-            with document.scene_lock:
-                if document.scene:
-                    return document.scene
-                if any(job["kind"] == "reconstruction" and job["status"] in {"queued", "running"}
-                       for job in application.state.jobs.for_building(document_id)):
-                    raise DocumentError("Background reconstruction is already running; inspect its job progress.", 409)
-                if not 1 <= request.page <= len(document.pages):
-                    raise DocumentError("Page not found.", 404)
-                acquired = application.state.inference_slots.acquire(blocking=False)
-                if not acquired:
-                    raise DocumentError("Two model requests are already processing. Please retry shortly.", 429)
-                from .reconstruction import reconstruct_scene
-                provider = application.state.provider_factory()
-                candidate = application.state.documents.prepare(document)
-                scene = reconstruct_scene(candidate, request.page, provider)
-                candidate.scene = scene
-                from .reasoning import build_reasoning
-                candidate.reasoning = build_reasoning(candidate)
-                return application.state.documents.commit(candidate, document.revision_id,
-                    status="preview_unreviewed", config={"operation": "legacy_synchronous_reconstruction"}).scene
-        except (DocumentError, ProviderError) as error:
-            raise HTTPException(error.status, error.message) from None
-        finally:
-            if acquired:
-                application.state.inference_slots.release()
-            if provider:
-                provider.close()
+            document=application.state.documents.get(document_id)
+            if document.scene:return document.scene
+            if request.page not in {p.number for p in document.pages}:raise DocumentError("Page not found.",404)
+            job=application.state.jobs.reconstruct(document_id,document.revision_id,"reconstruct")
+            application.state.jobs.futures[job["id"]].result()
+            saved=application.state.documents.get(document_id)
+            if saved.scene:return saved.scene
+            result=application.state.jobs.get(job["id"])
+            raise DocumentError(result["message"],502 if result["status"]=="failed" else 422)
+        except (DocumentError,ProviderError) as error:raise HTTPException(error.status,error.message) from None
 
     @application.get("/api/documents/{document_id}/model.ifc")
     def download_model(document_id: str):

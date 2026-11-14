@@ -7,7 +7,7 @@ from openai import OpenAI
 from pydantic import Field
 
 from .provider import (
-    ANSWER_INSTRUCTIONS,
+    ANSWER_INSTRUCTIONS, INTENT_INSTRUCTIONS, INTERPRETATION_INSTRUCTIONS, GEOMETRY_ENRICHMENT_INSTRUCTIONS,
     CROP_INSTRUCTIONS,
     GATE_INSTRUCTIONS,
     ProviderError,
@@ -16,7 +16,7 @@ from .provider import (
     remaining_timeout, configured_number, RECONSTRUCTION_REVIEW_INSTRUCTIONS,
     RECONSTRUCTION_PATCH_INSTRUCTIONS, ANSWER_REVIEW_INSTRUCTIONS, ANSWER_REPAIR_INSTRUCTIONS,
 )
-from .schemas import CropRequest, DraftAnswer, GateResult, StrictModel, Usage
+from .schemas import CropRequest, DraftAnswer, GateResult, StrictModel, Usage, QuestionIntent
 from .source_context import source_context
 
 
@@ -102,6 +102,7 @@ class OpenAIProvider:
             result = response.output_parsed
             if not isinstance(result, schema):
                 raise ProviderError("OpenAI did not return the required structured response. Please retry; no evidence conclusion was made.")
+            self.last_structured_output=result.model_dump(mode="json")
             return schema.model_validate(result.model_dump())
         except ProviderError:
             raise
@@ -123,12 +124,35 @@ class OpenAIProvider:
                              WireDraftAnswer, crop=crop)
         return DraftAnswer.model_validate(result.model_dump())
 
-    def reconstruct(self, document, page=None):
+    def resolve_intent(self, document, question):
+        return self._parse(document, question, INTENT_INSTRUCTIONS, QuestionIntent)
+
+    def extract_interpretation(self, document, *, include_geometry=False):
         from dataclasses import replace
         from .building import BuildingDescription, BUILDING_PROMPT
         source = replace(document, scene=None,description=None,reasoning=None,question_context=None)
-        return self._parse(source, "Describe every explicitly depicted floor across these original pages.",
-                           BUILDING_PROMPT, BuildingDescription, max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True),timeout=configured_number("RECONSTRUCTION_CALL_SECONDS",300))
+        return self._parse(source, "Interpret the supplied original sources." if not include_geometry else
+                           "Describe every explicitly depicted floor across these original pages.",
+                           BUILDING_PROMPT if include_geometry else INTERPRETATION_INSTRUCTIONS, BuildingDescription,
+                           max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True),timeout=configured_number("RECONSTRUCTION_CALL_SECONDS",300))
+
+    def reconstruct(self, document, page=None):
+        return self.extract_interpretation(document, include_geometry=True)
+
+    def enrich_geometry(self, document):
+        from .review_schema import DescriptionPatch
+        if document.description is None:
+            raise ProviderError("Save a source interpretation before requesting geometry.")
+        return self._parse(document,"Fill only missing source-supported geometry.",GEOMETRY_ENRICHMENT_INSTRUCTIONS,DescriptionPatch,
+            max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True),timeout=configured_number("RECONSTRUCTION_CALL_SECONDS",300),
+            extra_data={"base_revision_id":document.revision_id,"description":document.description.model_dump(mode="json")})
+
+    def refine_user_inputs(self, document, edits):
+        from .review_schema import DescriptionPatch
+        return self._parse(document,"Review supplied interpretation corrections against original sources.",
+            GEOMETRY_ENRICHMENT_INSTRUCTIONS+"\nInspect supplied user edits, retain user attribution, and correct only supported interpretations. User statements are not source observations. Preserve supplied calibration and connectivity.",
+            DescriptionPatch,timeout=configured_number("RECONSTRUCTION_CALL_SECONDS",300),max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True),
+            extra_data={"base_revision_id":document.revision_id,"description":document.description.model_dump(mode="json"),"user_edits":edits})
 
     def review_reconstruction(self, document, description, scene, *, previous_description=None, previous_scene=None, previous_review=None):
         from .review_schema import ReconstructionReview
@@ -138,7 +162,7 @@ class OpenAIProvider:
         if previous_review:images+=issue_crops(document,previous_review.issues)
         return self._parse(document,"Review source reconstruction and possible candidate regressions.",RECONSTRUCTION_REVIEW_INSTRUCTIONS,ReconstructionReview,
           timeout=configured_number("RECONSTRUCTION_REVIEW_SECONDS",120),max_tokens=configured_number("RECONSTRUCTION_REVIEW_TOKENS",16384,integer=True),extra_views=images,
-          extra_data={"base_revision_id":document.revision_id,"description":description.model_dump(mode="json"),"previous_description":previous_description.model_dump(mode="json")if previous_description else None,"previous_review":previous_review.model_dump(mode="json")if previous_review else None,
+          extra_data={"base_revision_id":document.revision_id,"description":description.model_dump(mode="json"),"user_values":document.user_values,"previous_description":previous_description.model_dump(mode="json")if previous_description else None,"previous_review":previous_review.model_dump(mode="json")if previous_review else None,
             "actual_geometry_inventory":[{"id":e.id,"name":e.name,"representation":e.representation,"has_geometry":e.geometry is not None,"note":e.note}for e in scene.elements]})
 
     def patch_reconstruction(self, document, description, scene, review):

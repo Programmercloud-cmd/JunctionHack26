@@ -180,3 +180,19 @@ def test_reconstruction_budgets_are_scoped_and_qa_budgets_unchanged(sdk_document
                 assert "thinkingConfig" not in body["generationConfig"]
         else:
             assert "generationConfig" not in body and "thinkingConfig" not in body
+
+
+def test_patch_record_wire_object_keeps_exact_local_types_strict():
+    from app.review_schema import DescriptionPatch
+    from app.provider import gemini_wire_schema
+    from pydantic import ValidationError
+    original=DescriptionPatch.model_json_schema()
+    wire=gemini_wire_schema(original)
+    assert len(original['$defs']['RecordPatch']['properties']['record']['anyOf'])==7
+    record=wire['$defs']['RecordPatch']['properties']['record']['anyOf'][0]
+    assert record['type']=='object' and 'properties' not in record
+    assert 'Local validation' in record['description']
+    import pytest
+    with pytest.raises(ValidationError):
+        DescriptionPatch.model_validate({'base_revision_id':'test','operations':[{'action':'add','collection':'rooms',
+            'record':{'label':'Unsupported','execute_python':'forbidden'},'evidence':{'page':1,'bbox':[0,0,1,1]},'reason':'fixture'}]})

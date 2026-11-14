@@ -3,6 +3,7 @@ import hashlib
 import json
 import math
 import re
+from copy import deepcopy
 from .provider import ProviderError
 
 
@@ -10,17 +11,95 @@ def build_reasoning(document):
     if document.kind=="ifc" and document.scene and not document.scene.derived:
         from .ifc_reasoning import extract_native_reasoning
         if document.source_bytes:
-            return extract_native_reasoning(document.source_bytes,document.scene)
+            result=extract_native_reasoning(document.source_bytes,document.scene)
+            source_id=hashlib.sha256(document.source_bytes).hexdigest()
+            result["source_id"]=source_id
+            for record in result["objects"]:
+                record["source_id"]=source_id
+                record.setdefault("source",{})["source_id"]=source_id
+                for value in record.get("values",{}).values():
+                    if isinstance(value.get("source"),dict):value["source"]["source_id"]=source_id
+            return result
         # Compatibility for caller-created Documents: retained scene properties are a partial view.
         return {"version":1,"source_kind":"native_ifc","objects":[{"id":e.id,"ifc_type":e.ifc_type,"kind":e.kind,"name":e.name,"source":e.source.model_dump(),"storey_id":e.storey_id,
           "type_groups":[e.ifc_type]+({"wall":["IfcWall"],"room":["IfcSpace"],"door":["IfcDoor"],"window":["IfcWindow"]}.get(e.kind,[])),
           "values":{p.name:{"value":p.value,"unit":p.unit,"provenance":"supplied","source":e.source.model_dump()}for p in e.properties if p.origin=="source"},"geometry_available":e.geometry is not None,"missing":["Original IFC bytes unavailable; retained property view only."]}for e in document.scene.elements],
           "relationships":[],"coverage":{"catalog_complete":document.scene.catalog_complete,"property_complete":False,"relationship_complete":False,"missing_containment_ids":[e.id for e in document.scene.elements if not e.storey_id],"warnings":["Original bytes unavailable; property/relationship coverage incomplete."]}}
     scene=document.scene
-    objects=[{"id":e.id,"kind":e.kind,"name":e.name,"floor_id":e.storey_id,"source":e.source.model_dump(),"provenance":"interpretation","evidence_basis":e.evidence_basis,"representation":e.representation,"environment":e.environment,"note":e.note}for e in scene.elements]if scene else[]
-    return {"version":1,"source_kind":"drawing","source_note":"Interpretation JSON is fallible. Original pages are authoritative; inferred geometry, display dimensions and concept proposals are not evidence.",
-      "objects":objects,"relationships":[],"interpretation":document.description.model_dump(mode="json")if document.description else None,
-      "coverage":{"catalog_complete":False,"property_complete":False,"relationship_complete":False,"inspected_pages":[p.number for p in document.pages],"warnings":document.warnings}}
+    description=document.description
+    objects=[];floors=[]
+    scene_elements={e.id:e for e in scene.elements} if scene else {}
+    if description:
+        for floor in description.floors:
+            source=floor.source.model_dump(mode="json")
+            floors.append({"id":floor.persistent_id,"label":floor.label,**source,"order":floor.order})
+            for collection,kind in (("rooms","room"),("boundaries","wall"),("openings","opening"),("features","feature"),("unresolved","unresolved")):
+                for item in getattr(floor,collection):
+                    region=getattr(item,"source",None)
+                    item_source={"kind":"image",**(region.model_dump(mode="json") if region else deepcopy(source))}
+                    if not region and getattr(item,"polygon",None):
+                        points=item.polygon
+                        if all(len(point)==2 for point in points):
+                            xs,ys=zip(*points)
+                            if min(xs)<max(xs) and min(ys)<max(ys):item_source["bbox"]=[min(xs),min(ys),max(xs),max(ys)]
+                    associated=scene_elements.get(item.persistent_id)
+                    objects.append({"id":item.persistent_id,"kind":getattr(item,"kind",kind),"name":item.label,
+                        "floor_id":floor.persistent_id,"source":item_source,"provenance":"interpretation",
+                        "evidence_basis":getattr(item,"basis","unknown"),"environment":getattr(item,"environment",None),
+                        "note":getattr(item,"note",getattr(item,"reason","")),
+                        "geometry_available":bool(associated and associated.geometry),
+                        "representation":associated.representation if associated else "not_generated"})
+    elif scene:
+        # Older portable artifacts may not contain an exact description. Keep their
+        # fallible association inventory, never reinterpret it as a native catalog.
+        objects=[{"id":e.id,"kind":e.kind,"name":e.name,"floor_id":e.storey_id,"source":e.source.model_dump(),"provenance":"interpretation","evidence_basis":e.evidence_basis,"representation":e.representation,"environment":e.environment,"note":e.note}for e in scene.elements]
+        floors=[{"id":f.id,"label":f.label,**f.source.model_dump()}for f in scene.floors]
+    observations=[value.model_dump(mode="json") if hasattr(value,"model_dump") else deepcopy(value)
+                  for value in getattr(description,"observations",[])] if description else []
+    return {"version":2,"source_kind":"drawing","source_note":"Interpretation JSON is fallible. Original pages are authoritative; missing extracted records do not establish missing source evidence. Inferred geometry, display dimensions and concept proposals are not evidence.",
+      "objects":objects,"floors":floors,"relationships":[r.model_dump(mode="json") if hasattr(r,"model_dump") else deepcopy(r) for r in getattr(description,"relationships",[])],
+      "observations":observations,"interpretation":description.model_dump(mode="json")if description else None,
+      "coverage":{"catalog_complete":False,"property_complete":False,"relationship_complete":False,
+        "available_pages":[p.number for p in document.pages],"inspected_pages":[p.number for p in document.pages] if description else [],
+        "interpretation_status":getattr(document,"interpretation_status","complete" if description else "pending"),
+        "sources":source_catalog(document),"warnings":document.warnings}}
+
+
+def source_catalog(document):
+    """Only public provenance metadata, never original bytes or filesystem paths."""
+    sources=getattr(document,"sources",[]) or []
+    entries=[{key:deepcopy(value) for key,value in source.items() if key in
+             {"source_id","filename","filenames","kind","media_type","interpretation_status","warnings"}}for source in sources]
+    return {"files":entries,"pages":[{"page":page.number,"source_id":getattr(page,"source_id",None),
+        "source_page":getattr(page,"source_page",None),"width":page.width,"height":page.height} for page in document.pages]}
+
+
+def without_user_provided(value):
+    """Remove attributed geometry inputs from drawing-only factual context, without mutating saved data."""
+    if isinstance(value,dict):
+        if value.get("provenance")=="user_provided":return None
+        return {key:without_user_provided(child) for key,child in value.items()}
+    if isinstance(value,list):
+        return [cleaned for child in value if (cleaned:=without_user_provided(child)) is not None]
+    return value
+
+
+def source_only_question(question):
+    """Conservative extra guard: explicit original-source requests never use supplied values."""
+    authority=r"(?:drawing|drawings|blueprint|blueprints|plan|plans|source|original IFC)"
+    return bool(re.search(r"\b(?:according to|shown (?:on|in)|printed (?:on|in)|established by|from|in) (?:the |these |this )?(?:original )?"+authority+r"\b|\b"+authority+r".*\b(?:establish|show|specif|state|indicat|provid|say)|\b"+authority+r"[ -]only\b",question,re.I))
+
+
+def relevant_user_values(document,question,*,allow=False):
+    if not allow or source_only_question(question):return []
+    tokens=set(re.findall(r"[\w]+",question.casefold()))
+    values=[]
+    for value in getattr(document,"user_values",[]) or []:
+        if not isinstance(value,dict):continue
+        property_words=set(re.findall(r"[\w]+",str(value.get("property","")).casefold().replace("_"," ")))
+        if property_words & tokens or tokens & {"provided","supplied","values","inputs"}:
+            values.append({**deepcopy(value),"provenance":"user_provided","evidence_rule":"Provided by user; not observed in original sources."})
+    return values
 
 
 def ensure_reasoning(document):
@@ -30,10 +109,20 @@ def ensure_reasoning(document):
 
 def retrieve_context(document, question=""):
     reasoning=ensure_reasoning(document)
+    conversational=getattr(document,"conversation_context",None)
+    evidence_scope="sources_only" if source_only_question(question) else (conversational or {}).get("evidence_scope","sources_only")
+    common={"building_id":document.building_id or document.id,"revision_id":document.revision_id,
+        "sources":source_catalog(document),"conversation_context":deepcopy(conversational),
+        "conversation_rule":"Earlier assistant answers resolve references only; they are not factual evidence.",
+        "user_values":relevant_user_values(document,question,allow=evidence_scope=="sources_and_user"),
+        "evidence_scope":evidence_scope}
     if reasoning["source_kind"]!="native_ifc":
-        return {"source_kind":"drawing","building_id":document.building_id or document.id,"revision_id":document.revision_id,
-          "evidence_rule":reasoning["source_note"],"coverage":reasoning["coverage"],"interpretation":reasoning.get("interpretation"),"objects":reasoning["objects"],
-          "floors":[{"id":f.id,"label":f.label,"page":f.source.page,"bbox":f.source.bbox}for f in document.scene.floors]if document.scene else[]}
+        interpretation=deepcopy(reasoning.get("interpretation"))
+        if evidence_scope=="sources_only":interpretation=without_user_provided(interpretation)
+        return {**common,"source_kind":"drawing",
+          "evidence_rule":reasoning["source_note"],"coverage":reasoning["coverage"],"interpretation":interpretation,"objects":reasoning["objects"],
+          "observations":reasoning.get("observations",[]),"relationships":reasoning.get("relationships",[]),
+          "floors":reasoning.get("floors",[{"id":f.id,"label":f.label,"page":f.source.page,"bbox":f.source.bbox}for f in document.scene.floors]if document.scene else[])}
     tokens=set(re.findall(r"[\w]+",question.casefold()))-{"what","which","the","this","that","these","those","are","is","was","were","be","been","being","of","in","on","at","to","for","from","by","with","as","a","an","and","or","it","its","their","there","does","do","did","have","has","had","model","building","please","how","many"}
     types=[]
     for word,kind in (("wall","IfcWall"),("door","IfcDoor"),("window","IfcWindow"),("room","IfcSpace"),("space","IfcSpace"),("storey","IfcBuildingStorey"),("floor","IfcBuildingStorey"),("slab","IfcSlab"),("stair","IfcStair")):
@@ -46,7 +135,7 @@ def retrieve_context(document, question=""):
         records.append({**{k:v for k,v in r.items()if k!="values"},"values":values,"omitted_value_count":len(r["values"])-len(values)})
     selected_ids={r["id"]for r in selected}
     relationships=[r for r in reasoning["relationships"]if any(rid in json.dumps(r)for rid in selected_ids)]
-    return {"source_kind":"native_ifc","building_id":document.building_id or document.id,"revision_id":document.revision_id,
+    return {**common,"source_kind":"native_ifc",
       "evidence_rule":reasoning.get("source_note","Facts describe supplied IFC records, not as-built guarantees."),"coverage":reasoning["coverage"],
       "catalog":[{k:r.get(k)for k in ("id","ifc_type","type_groups","name","storey_id","source")}for r in objects],
       "retrieval":{"question":question,"selected_records":len(records),"total_records":len(objects),"all_records_selected":len(records)==len(objects),"property_view_complete":all(r["omitted_value_count"]==0 for r in records),"note":"A selected subset is not the full catalog. Omitted values may exist; calculations use original complete records."},

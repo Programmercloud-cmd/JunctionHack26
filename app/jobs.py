@@ -15,7 +15,7 @@ from .identities import assign_identities,assign_replacement_identities
 from .ifc_generate import generate_ifc
 from .ifc_artifact import load_artifact
 from .reasoning import build_reasoning
-from .revisions import apply_patch,regression_findings,description_hash,normalize_views
+from .revisions import apply_patch,apply_enrichment,needs_geometry,regression_findings,description_hash,normalize_views
 from .review_schema import ReconstructionReview
 from .service import ask
 from .highlights import validated_highlights
@@ -46,7 +46,7 @@ class JobRunner:
     def __init__(self,store,provider_factory):
         self.store=store;self.provider_factory=provider_factory
         self.executor=ThreadPoolExecutor(max_workers=2,thread_name_prefix="building")
-        self.lock=threading.RLock();self.jobs={};self.events={};self.futures={};self.active={};self.deadlines={};self.closing=False
+        self.lock=threading.RLock();self.jobs={};self.events={};self.futures={};self.active={};self.deadlines={};self.closing=False;self.source_locks={}
         for building in store.list():
             for job in store.saved_jobs(building["building_id"]):self.jobs[job["id"]]=job
 
@@ -104,14 +104,104 @@ class JobRunner:
             self.futures[identity]=self.executor.submit(self._reconstruct,identity,document.snapshot(),mode)
             return self.get(identity)
 
+    def extract(self,building_id,source_ids=None,*,retry=False):
+        document=self.store.get(building_id)
+        wanted=set(source_ids) if source_ids else {s["source_id"] for s in document.sources}
+        available={s["source_id"]:s for s in document.sources}
+        if not wanted<=set(available):raise DocumentError("Extraction source does not belong to this building.",422)
+        result=[]
+        if document.description is not None and document.interpretation_status=="complete":return result
+        with self.lock:
+            for source_id in sorted(wanted):
+                if available[source_id]["kind"]=="ifc" or source_id in document.source_interpretations:continue
+                previous=[j for j in self.jobs.values() if j["building_id"]==building_id and j["kind"]=="extraction" and j.get("source_id")==source_id]
+                active=next((j for j in previous if j["status"] not in TERMINAL),None)
+                if active:result.append(deepcopy(active));continue
+                if previous and not retry:continue
+                identity=self._new(document,"extraction");self.jobs[identity]["source_id"]=source_id
+                self._update(identity,source_id=source_id)
+                self.futures[identity]=self.executor.submit(self._extract,identity,source_id)
+                result.append(self.get(identity))
+        return result
+
+    def _source_interpretation(self,identity,source_id,provider,deadline):
+        with self.lock:source_lock=self.source_locks.setdefault(source_id,threading.Lock())
+        with source_lock:
+            self._check(identity,deadline)
+            document=self.store.get(self.jobs[identity]["building_id"])
+            if source_id in document.source_interpretations:return document
+            cached=self.store.cached_interpretation(source_id)
+            if cached is None:
+                source=self.store.source_document(document,source_id)
+                self._update(identity,status="running",phase="extraction_provider",message="Extracting source-linked interpretation; 3D is optional.")
+                output=provider.extract_interpretation(source,include_geometry=False)
+                self._check(identity,deadline)
+                self._update(identity,phase="interpretation_validation",message="Validating and saving source interpretation.")
+                cached=normalize_views(BuildingDescription.model_validate(output))
+                from .revisions import _validate_all_sources,_provided_fields
+                _validate_all_sources(source,cached.model_dump(mode="json"))
+                if _provided_fields(cached.model_dump(mode="json")):
+                    raise DocumentError("Source extraction cannot invent user-provided provenance.",422)
+                self.store.save_interpretation(source_id,cached)
+            self._check(identity,deadline)
+            current=self.store.merge_interpretation(document.id,source_id,cached,job_guard=lambda:self._valid(identity) and monotonic()<self.deadlines.get(identity,float("inf")))
+            self._update(identity,revision_id=current.revision_id,revision_number=current.revision_number)
+            return current
+
+    def _extract(self,identity,source_id):
+        provider=None
+        try:
+            deadline=monotonic()+pipeline_config()["job_seconds"];self.deadlines[identity]=deadline
+            self._check(identity,deadline)
+            # Cache reuse does not construct a credential-requiring provider.
+            cached=self.store.cached_interpretation(source_id)
+            if cached is not None:
+                current=self.store.merge_interpretation(self.jobs[identity]["building_id"],source_id,cached,job_guard=lambda:self._valid(identity) and monotonic()<self.deadlines.get(identity,float("inf")))
+            else:
+                self._update(identity,status="running",phase="extraction_provider",message="Preparing source interpretation.")
+                provider=self.provider_factory();provider.request_deadline=deadline
+                current=self._source_interpretation(identity,source_id,provider,deadline)
+            self._check(identity,deadline)
+            self._update(identity,status="complete",phase="complete",message="Source interpretation saved. Ask questions now or explicitly generate 3D.",
+                revision_id=current.revision_id,revision_number=current.revision_number,interpretation_status=current.interpretation_status)
+        except JobStopped:self._update(identity,status="stopped",phase="stopped",message="Extraction stopped; original sources remain saved.")
+        except JobBudget:self._update(identity,status="budget_exhausted",phase="complete",message="Extraction execution budget reached; original sources remain saved.")
+        except Exception as error:self._failure(identity,error,provider)
+        finally:
+            if provider:
+                self._update(identity,usage=provider.usage.model_dump() if hasattr(provider,"usage") else {})
+                provider.close()
+
+    def refine_inputs(self,building_id,request):
+        from .user_inputs import prepare_inputs
+        document=self.store.get(building_id)
+        candidate,submitted,needs_model,conflicts,changes=prepare_inputs(document,request)
+        with self.lock:
+            active=self.active.get(building_id)
+            if active and self.jobs[active]["status"] not in TERMINAL:
+                raise DocumentError("Another geometry/refinement job is active; stop it or apply after it completes.",409)
+            identity=self._new(document,"refinement")
+            self.active[building_id]=identity
+            self._update(identity,submitted_values=submitted,conflicts=conflicts)
+            self.futures[identity]=self.executor.submit(self._refine_inputs,identity,document.snapshot(),candidate,submitted,needs_model,conflicts,changes)
+            return self.get(identity)
+
     def question(self,request):
+        from .conversation import question_context,user_message
         document=self.store.get(request.document_id)
         if request.revision_id and request.revision_id!=document.revision_id:
             raise DocumentError("The building updated before this question started; refresh its revision and ask again.",409)
         with self.lock:
+            if request.request_id:
+                prior=next((j for j in self.jobs.values() if j["kind"]=="question" and j["building_id"]==document.id and j.get("request_id")==request.request_id),None)
+                if prior:return self.get(prior["id"])
+            context=question_context(self.store,document,request)
             identity=self._new(document,"question",request.request_id)
-            self.jobs[identity]["question"]=request.question
-            self.futures[identity]=self.executor.submit(self._question,identity,document.snapshot(),request.question)
+            message=user_message(document,request,identity)
+            self.store.append_conversation(document.id,message)
+            snapshot=document.snapshot();snapshot.conversation_context=context
+            self._update(identity,question=request.question,user_message_id=message["id"],conversation_id=document.id)
+            self.futures[identity]=self.executor.submit(self._question,identity,snapshot,request.question)
             return self.get(identity)
 
     def stop(self,identity):
@@ -127,7 +217,7 @@ class JobRunner:
     def _valid(self,identity):
         job=self.jobs[identity]
         return not self.closing and not self.events[identity].is_set() and (
-            job["kind"]!="reconstruction" or self.active.get(job["building_id"])==identity)
+            job["kind"] not in {"reconstruction","refinement"} or self.active.get(job["building_id"])==identity)
 
     def _check(self,identity,deadline):
         if not self._valid(identity):raise JobStopped()
@@ -141,8 +231,18 @@ class JobRunner:
         return result
 
     def _geometry(self,candidate):
-        candidate.ifc_bytes=generate_ifc(candidate.description,candidate)
-        candidate.scene=load_artifact(candidate.ifc_bytes,candidate.id)[0]
+        candidate.geometry_status="available";candidate.geometry_revision_id=candidate.revision_id
+        try:candidate.ifc_bytes=generate_ifc(candidate.description,candidate)
+        except Exception as error:
+            error.error_stage="ifc_generation"
+            raise
+        try:
+            restored=load_artifact(candidate.ifc_bytes,candidate.id)
+            if restored is None:raise DocumentError("Generated IFC lost original drawing provenance.",422)
+            candidate.scene=restored[0]
+        except Exception as error:
+            error.error_stage="ifc_reopening"
+            raise
         candidate.reasoning=build_reasoning(candidate)
 
     def _finish_review(self,identity,current,review,config,status,message):
@@ -157,52 +257,96 @@ class JobRunner:
             config=pipeline_config();deadline=monotonic()+config["job_seconds"]
             self.deadlines[identity]=deadline
             self._check(identity,deadline)
+            self._update(identity,status="running",phase="provider_setup",message="Preparing requested geometry processing.")
             provider=self.provider_factory();provider.request_deadline=deadline
             review=None
-            self._update(identity,status="running",phase="describing" if not current.scene or mode=="reconstruct" else "reviewing",
-                         message="Describing original source." if not current.scene else "Reviewing original source and generated geometry.",config=config)
-            if not current.scene or mode=="reconstruct":
-                output=provider.reconstruct(current)
-                self._check(identity,deadline)
-                candidate=self.store.prepare(current)
-                description=normalize_views(BuildingDescription.model_validate(output))
-                candidate.description=(assign_replacement_identities(candidate,description)if current.scene
-                                       else assign_identities(candidate,description))
-                candidate.reasoning=None
-                if not description.floors:
-                    candidate.scene=None;candidate.ifc_bytes=None;candidate.reasoning=build_reasoning(candidate)
-                    if current.scene:
-                        path=self.store.save_candidate(candidate,None,"Replacement removed all existing floor geometry.",config)
-                        self._update(identity,status="needs_attention",phase="complete",
-                            message="Replacement contains no floor geometry; previous usable model retained. Use targeted refinement to review supported changes.",
-                            attempts=[{"candidate":path,"accepted":False}])
-                        return
-                    self._publish(identity,candidate,current.revision_id,status="source_only",config=config)
-                    self._update(identity,status="needs_attention",phase="complete",message="Original evidence is available; no supported floor-plan geometry was reconstructed.",
-                                 unresolved_views=[v.model_dump()for v in description.unresolved_views])
+            modern=callable(getattr(provider,"extract_interpretation",None))
+            if modern:
+                while True:
+                    pending=[] if current.description is not None and current.interpretation_status=="complete" else [source for source in current.sources if source["kind"]!="ifc" and source["source_id"] not in current.source_interpretations]
+                    if not pending:break
+                    for source in pending:
+                        current=self._source_interpretation(identity,source["source_id"],provider,deadline)
+                if current.description is None:
+                    raise DocumentError("No saved drawing interpretation is available to generate geometry.",422)
+                if not current.description.floors:
+                    self._update(identity,status="needs_attention",phase="complete",message="Source interpretation is saved; no floor-plan geometry is established by these views.")
                     return
-                self._update(identity,phase="generating",message="Generating and reopening the first model.")
-                self._geometry(candidate)
-                self._check(identity,deadline)
-                if current.scene:
-                    failures=regression_findings(current,candidate,{})
-                    if failures:
-                        path=self.store.save_candidate(candidate,None,failures,config)
-                        self._update(identity,status="needs_attention",phase="complete",
-                            message="Replacement lost or could not reliably match existing objects; previous model retained. Use targeted refinement for supported changes.",
-                            attempts=[{"candidate":path,"accepted":False,"findings":failures}])
-                        return
-                    self._update(identity,phase="checking_revision",message="Checking replacement against original source and previous geometry before publication.")
-                    review=ReconstructionReview.model_validate(provider.review_reconstruction(candidate,candidate.description,candidate.scene,
-                        previous_description=current.description,previous_scene=current.scene))
+                if not current.scene or current.geometry_status=="stale" or mode=="reconstruct" or needs_geometry(current.description):
+                    candidate=current.snapshot()
+                    if needs_geometry(current.description):
+                        self._update(identity,status="running",phase="geometry_enrichment",message="Adding only missing source-supported geometry to the saved interpretation.")
+                        patch=provider.enrich_geometry(current)
+                        self._check(identity,deadline)
+                        candidate,changes=apply_enrichment(current,patch)
+                    else:changes={}
+                    candidate=self.store.prepare(candidate)
+                    self._update(identity,status="running",phase="ifc_generation",message="Generating IFC locally from saved interpretation.")
+                    self._geometry(candidate);self._check(identity,deadline)
+                    if current.scene:
+                        failures=regression_findings(current,candidate,changes)
+                        if failures:
+                            path=self.store.save_candidate(candidate,None,failures,config)
+                            self._update(identity,status="needs_attention",phase="complete",message="Candidate lost usable geometry; previous model and saved interpretation retained.",attempts=[{"candidate":path,"accepted":False,"findings":failures}]);return
+                        self._update(identity,phase="checking_revision",message="Checking candidate against original sources and prior geometry.")
+                        review=ReconstructionReview.model_validate(provider.review_reconstruction(candidate,candidate.description,candidate.scene,previous_description=current.description,previous_scene=current.scene))
+                        if not review.candidate_supported:
+                            path=self.store.save_candidate(candidate,review,"Candidate not supported by source review.",config)
+                            self._update(identity,status="needs_attention",phase="complete",message="Candidate not supported; previous model retained.",attempts=[{"candidate":path,"accepted":False}]);return
+                    current=self._publish(identity,candidate,current.revision_id,status="preview_reviewing",config=config)
+                    self._update(identity,phase="reviewing",message="Preview · review in progress")
+            else:
+                review=None
+                self._update(identity,status="running",phase="describing" if not current.scene or mode=="reconstruct" else "reviewing",
+                             message="Describing original source." if not current.scene else "Reviewing original source and generated geometry.",config=config)
+                if not current.scene or mode=="reconstruct":
+                    self._update(identity,phase="extraction_provider",message="Interpreting original source.")
+                    output=provider.reconstruct(current)
                     self._check(identity,deadline)
-                    if not review.candidate_supported:
-                        path=self.store.save_candidate(candidate,review,"Replacement not supported against original source.",config)
-                        self._update(identity,status="needs_attention",phase="complete",message="Replacement was not supported by source review; previous usable model retained.",
-                            attempts=[{"candidate":path,"accepted":False}],candidate_issues=[i.model_dump()for i in review.issues])
+                    self._update(identity,phase="interpretation_validation",message="Validating returned interpretation.")
+                    candidate=self.store.prepare(current)
+                    description=normalize_views(BuildingDescription.model_validate(output))
+                    candidate.description=(assign_replacement_identities(candidate,description)if current.scene
+                                           else assign_identities(candidate,description))
+                    candidate.reasoning=None
+                    if not description.floors:
+                        candidate.scene=None;candidate.ifc_bytes=None;candidate.reasoning=build_reasoning(candidate)
+                        if current.scene:
+                            path=self.store.save_candidate(candidate,None,"Replacement removed all existing floor geometry.",config)
+                            self._update(identity,status="needs_attention",phase="complete",
+                                message="Replacement contains no floor geometry; previous usable model retained. Use targeted refinement to review supported changes.",
+                                attempts=[{"candidate":path,"accepted":False}])
+                            return
+                        self._publish(identity,candidate,current.revision_id,status="source_only",config=config)
+                        self._update(identity,status="needs_attention",phase="complete",message="Original evidence is available; no supported floor-plan geometry was reconstructed.",
+                                     unresolved_views=[v.model_dump()for v in description.unresolved_views])
                         return
-                current=self._publish(identity,candidate,current.revision_id,status="preview_reviewing",config=config)
-                self._update(identity,phase="reviewing",message="Preview · review in progress")
+                    if not current.scene:
+                        candidate.interpretation_status="complete";candidate.reasoning=build_reasoning(candidate)
+                        current=self._publish(identity,candidate,current.revision_id,status="interpreted",config=config)
+                        candidate=self.store.prepare(current)
+                    self._update(identity,phase="generating",message="Generating and reopening the first model.")
+                    self._geometry(candidate)
+                    self._check(identity,deadline)
+                    if current.scene:
+                        failures=regression_findings(current,candidate,{})
+                        if failures:
+                            path=self.store.save_candidate(candidate,None,failures,config)
+                            self._update(identity,status="needs_attention",phase="complete",
+                                message="Replacement lost or could not reliably match existing objects; previous model retained. Use targeted refinement for supported changes.",
+                                attempts=[{"candidate":path,"accepted":False,"findings":failures}])
+                            return
+                        self._update(identity,phase="checking_revision",message="Checking replacement against original source and previous geometry before publication.")
+                        review=ReconstructionReview.model_validate(provider.review_reconstruction(candidate,candidate.description,candidate.scene,
+                            previous_description=current.description,previous_scene=current.scene))
+                        self._check(identity,deadline)
+                        if not review.candidate_supported:
+                            path=self.store.save_candidate(candidate,review,"Replacement not supported against original source.",config)
+                            self._update(identity,status="needs_attention",phase="complete",message="Replacement was not supported by source review; previous usable model retained.",
+                                attempts=[{"candidate":path,"accepted":False}],candidate_issues=[i.model_dump()for i in review.issues])
+                            return
+                    current=self._publish(identity,candidate,current.revision_id,status="preview_reviewing",config=config)
+                    self._update(identity,phase="reviewing",message="Preview · review in progress")
             if not current.description:
                 self._update(identity,status="needs_attention",phase="complete",message="This older artifact has original pages but no exact description. Its existing model is retained; an explicit new reconstruction is needed to refine it.")
                 return
@@ -262,10 +406,7 @@ class JobRunner:
         except JobBudget:
             self._update(identity,status="budget_exhausted",phase="complete",message="Configured processing budget exhausted; this is not an evidence-insufficiency judgment.")
         except Exception as error:
-            safe=error.message if isinstance(error,(DocumentError,ProviderError)) else "Source processing failed operationally. Previous usable revision retained; no evidence-quality conclusion was made."
-            exhausted=monotonic()>=self.deadlines.get(identity,float("inf"))
-            self._update(identity,status="budget_exhausted" if exhausted else "failed",phase="complete" if exhausted else "failed",
-                         message="Configured processing budget exhausted; usable revision retained." if exhausted else safe)
+            self._failure(identity,error,provider)
         finally:
             if provider:
                 self._update(identity,usage=provider.usage.model_dump() if hasattr(provider,"usage") else {})
@@ -289,8 +430,15 @@ class JobRunner:
                 answer.highlight_ids=validated_highlights(answer,displayed)
                 if previous!=answer.highlight_ids:
                     answer.review_note += " Model updated while answering; unavailable object highlights were omitted. Original source citations remain available."
-            self._update(identity,status="complete",phase="complete",message="Answer checked against supplied evidence.",answer=answer.model_dump(),
-                         revision_id=displayed.revision_id,revision_number=displayed.revision_number)
+            from .conversation import assistant_message
+            with self.lock:
+                with self.store.lock:
+                    self._check(identity,float("inf"))
+                    message=assistant_message(snapshot,answer,identity,self.jobs[identity].get("user_message_id"))
+                    self.store.append_conversation(snapshot.id,message)
+                    self._update(identity,status="complete",phase="complete",message="Clarification requested." if answer.status=="clarification" else "Answer checked against supplied evidence.",
+                        answer=answer.model_dump(),assistant_message_id=message["id"],conversation_id=snapshot.id,
+                        revision_id=displayed.revision_id,revision_number=displayed.revision_number)
         except JobStopped:
             self._update(identity,status="stopped",phase="stopped",message="Question stopped; unpublished draft discarded.")
         except Exception as error:
@@ -298,3 +446,76 @@ class JobRunner:
             self._update(identity,status="failed",phase="failed",message=safe)
         finally:
             if provider:provider.close()
+
+
+    def _failure(self,identity,error,provider=None):
+        from .reconstruction_errors import reconstruction_error
+        phase=getattr(error,"error_stage",self.jobs[identity].get("phase","processing"))
+        mapped={"provider_setup":"provider","extraction_provider":"provider","geometry_enrichment":"provider","interpretation_validation":"description","ifc_generation":"generation","generating":"generation","ifc_reopening":"artifact"}.get(phase,"provider" if "review" in phase else "description")
+        safe=reconstruction_error(error,mapped)
+        diagnostic_id=getattr(safe,"diagnostic_id",None) or uuid.uuid4().hex
+        output=getattr(provider,"last_structured_output",None) if provider else None
+        if output is not None:
+            folder=self.store.directory(self.jobs[identity]["building_id"])/"diagnostics";folder.mkdir(exist_ok=True)
+            try:(folder/(diagnostic_id+".json")).write_text(json.dumps({"stage":phase,"structured_output":output},ensure_ascii=False,allow_nan=False))
+            except (OSError,TypeError,ValueError):pass
+        current=self.store.get(self.jobs[identity]["building_id"])
+        usable=bool(current.scene and any(element.geometry for element in current.scene.elements))
+        retained="Previous usable model retained." if usable else "Original sources are saved; no usable model has been generated."
+        if current.description is not None:retained+=" Saved interpretation retained."
+        exhausted=monotonic()>=self.deadlines.get(identity,float("inf"))
+        self._update(identity,status="budget_exhausted" if exhausted else "failed",phase="failed",error_stage=phase,
+            error_category=getattr(safe,"category","application_rejection" if isinstance(error,DocumentError) else "operational_failure"),
+            diagnostic_id=diagnostic_id,message=f"{phase.replace('_',' ').capitalize()} failed operationally. {retained} No evidence-quality conclusion was made. [{mapped}/{getattr(safe,'category','application_rejection' if isinstance(error,DocumentError) else 'operational_failure')}; reference {diagnostic_id}]",
+            diagnostic_message=safe.message,has_previous_model=usable)
+
+    def _refine_inputs(self,identity,current,candidate,submitted,needs_model,conflicts,changes):
+        provider=None;review=None
+        try:
+            config=pipeline_config();deadline=monotonic()+config["job_seconds"];self.deadlines[identity]=deadline
+            self._check(identity,deadline)
+            candidate=self.store.prepare(candidate)
+            if conflicts:
+                path=self.store.save_candidate(candidate,None,conflicts,config)
+                self._update(identity,status="needs_attention",phase="complete",message="Supplied inputs were saved but conflict with observed source values. Prior usable revision retained.",attempts=[{"candidate":path,"accepted":False}],conflicts=conflicts);return
+            if needs_model:
+                provider=self.provider_factory();provider.request_deadline=deadline
+                self._update(identity,status="running",phase="user_input_review",message="Reviewing supplied correction against original evidence.")
+                # Enrichment is a typed data patch; supplied statements remain attributed inputs.
+                hook=getattr(provider,"refine_user_inputs",None)
+                if not callable(hook):raise ProviderError("The selected provider cannot review interpretation corrections.",503)
+                candidate.revision_id=current.revision_id
+                patch=hook(candidate,submitted)
+                candidate,patch_changes=apply_enrichment(candidate,patch)
+                changes={"changed_ids":list(set(changes.get("changed_ids",[])+patch_changes["changed_ids"])),
+                    "transform_updates":changes.get("transform_updates",[])+patch_changes["transform_updates"]}
+                candidate=self.store.prepare(candidate)
+            self._check(identity,deadline)
+            if current.scene:
+                self._update(identity,status="running",phase="ifc_generation",message="Applying supplied values to deterministic geometry.")
+                self._geometry(candidate)
+                failures=regression_findings(current,candidate,changes)
+                if failures:
+                    path=self.store.save_candidate(candidate,None,failures,config)
+                    self._update(identity,status="needs_attention",phase="complete",message="Refined candidate lost usable geometry; submitted inputs and previous revision retained.",attempts=[{"candidate":path,"accepted":False,"findings":failures}]);return
+                if current.pages:
+                    if provider is None:
+                        provider=self.provider_factory();provider.request_deadline=deadline
+                    self._update(identity,phase="checking_revision",message="Checking supplied changes against original sources and regenerated geometry.")
+                    review=ReconstructionReview.model_validate(provider.review_reconstruction(candidate,candidate.description,candidate.scene,previous_description=current.description,previous_scene=current.scene))
+                    self._update(identity,issues=[issue.model_dump() for issue in review.issues])
+                    if not review.candidate_supported:
+                        path=self.store.save_candidate(candidate,review,"Source review did not support supplied correction.",config)
+                        self._update(identity,status="needs_attention",phase="complete",message="Correction remains unresolved; submitted values and previous model retained.",attempts=[{"candidate":path,"accepted":False}]);return
+            else:
+                candidate.reasoning=build_reasoning(candidate)
+            self._check(identity,deadline)
+            saved=self._publish(identity,candidate,current.revision_id,status="user_refined",review=review,config=config)
+            self._update(identity,status="complete",phase="complete",message="Supplied information saved with user provenance; accepted update published.",revision_id=saved.revision_id)
+        except JobStopped:self._update(identity,status="stopped",phase="stopped",message="Refinement stopped; submitted inputs and previous revision retained.")
+        except JobBudget:self._update(identity,status="budget_exhausted",phase="complete",message="Refinement budget reached; submitted inputs and previous revision retained.")
+        except Exception as error:self._failure(identity,error,provider)
+        finally:
+            if provider:
+                self._update(identity,usage=provider.usage.model_dump() if hasattr(provider,"usage") else {})
+                provider.close()

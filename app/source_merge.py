@@ -1,6 +1,7 @@
 """Map independent source interpretations into revision-pinned building coordinates."""
 from copy import deepcopy
 import json
+import re
 import uuid
 import ifcopenshell.guid
 from .building import BuildingDescription, UnmodeledView, SourceObservation
@@ -36,13 +37,17 @@ def merge_source_interpretation(document, source_id, description):
         record.persistent_id=identity
         registry.setdefault('objects',{})[identity]={'collection':collection,'floor_id':parent}
     def label_key(label):
-        return ' '.join(label.casefold().split())
-    prior_labels={label_key(f.label)for f in current.floors}
+        return ' '.join(re.findall(r'\w+',label.casefold()))
+    def possible_same_level(floor, prior):
+        left,right=label_key(floor.label),label_key(prior.label)
+        overlapping=bool(left and right and (' '+left+' ' in ' '+right+' ' or ' '+right+' ' in ' '+left+' '))
+        supported_order=(floor.order is not None and floor.order==prior.order and bool(floor.order_basis.strip()) and bool(prior.order_basis.strip()))
+        return overlapping or supported_order
     accepted=[]
     for floor in incoming.floors:
-        if label_key(floor.label) in prior_labels:
+        if any(possible_same_level(floor,prior)for prior in current.floors):
             incoming.unresolved_views.append(UnmodeledView(label=floor.label,view_type='unknown',source=floor.source,
-                reason='Possible alternate view of an already depicted floor. Its relationship is unresolved; no extra storey is generated. Original source interpretation is retained.'))
+                reason='Possible alternate view of an already depicted floor based on overlapping labels or a shared supported level. Its relationship is unresolved; no extra storey is generated. Original source interpretation is retained.'))
             incoming.observations.append(SourceObservation(label=floor.label,category='possible_alternate_floor_view',
                 source=floor.source,note='Retained source diagram; repeated floor label does not establish another storey.'))
             for collection in COLLECTIONS:

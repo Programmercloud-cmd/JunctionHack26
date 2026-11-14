@@ -32,8 +32,8 @@ def normalize_views(description):
 
 
 def _evidence(document,region):
-    if region.page not in {p.number for p in document.pages}:
-        raise DocumentError("Correction cites an unavailable original page.",422)
+    from .documents import resolve_reference
+    resolve_reference(document,region.page,getattr(region,"source_id",None),getattr(region,"source_page",None))
 
 
 def _overlap(a,b):
@@ -41,7 +41,7 @@ def _overlap(a,b):
 
 
 def _record_region(record,floor=None):
-    if hasattr(record,"source"):return record.source
+    if getattr(record,"source",None) is not None:return record.source
     if getattr(record,"polygon",None):
         from .building import PageRegion
         xs=[p[0]for p in record.polygon];ys=[p[1]for p in record.polygon]
@@ -50,25 +50,27 @@ def _record_region(record,floor=None):
     return None
 
 
-def apply_patch(document,patch,review):
+def apply_patch(document,patch,review=None,*,enrichment=False):
     patch=DescriptionPatch.model_validate(patch)
     if patch.base_revision_id!=document.revision_id:
         raise DocumentError("Stale description patch; current revision was retained.",409)
-    if not document.description or not document.scene or not document.scene.derived:
-        raise DocumentError("Only a drawing-derived description can receive reconstruction patches.",422)
+    if not document.description or document.kind=="ifc" or (document.scene and not document.scene.derived):
+        raise DocumentError("Only a drawing interpretation can receive reconstruction patches.",422)
+    if not enrichment and (not document.scene or review is None):
+        raise DocumentError("Reviewed corrections require a generated scene and source review.",422)
     candidate=document.snapshot()
     description=candidate.description
     registry=candidate.identity_registry
-    issues={issue.id:issue for issue in review.issues}
+    issues={issue.id:issue for issue in review.issues} if review else {}
     changed=set();removed=set();added=set()
     for operation in patch.operations:
         _evidence(document,operation.evidence)
         supported=[issues[i]for i in operation.issue_ids if i in issues and issues[i].actionable
                    and issues[i].category=="extraction"]
-        if not supported or not operation.reason.strip():
+        if (not supported and not enrichment) or not operation.reason.strip():
             raise DocumentError("A description correction needs an actionable extraction finding and original-source evidence.",422)
         supported=[issue for issue in supported if _overlap(issue.source,operation.evidence)]
-        if not supported:
+        if not supported and not enrichment:
             raise DocumentError("Correction evidence does not overlap the reviewed original source region.",422)
         floors={f.persistent_id:f for f in description.floors}
         floor=floors.get(operation.floor_id)
@@ -81,16 +83,21 @@ def apply_patch(document,patch,review):
         old=next((r for r in target_list if r.persistent_id==operation.target_id),None)
         if operation.action!="add" and old is None:
             raise DocumentError("Correction references a missing or deleted object identity.",409)
-        if operation.action!="add" and not any(not issue.object_ids or old.persistent_id in issue.object_ids for issue in supported):
+        if not enrichment and operation.action!="add" and not any(not issue.object_ids or old.persistent_id in issue.object_ids for issue in supported):
             raise DocumentError("Correction targets an object not identified by the reviewed issue.",422)
         if old:
-            target_source=next((e.source for e in document.scene.elements if e.id==old.persistent_id),None) or _record_region(old,floor)
-            if not any(old.persistent_id in issue.object_ids or (not issue.object_ids and target_source
+            target_source=next((e.source for e in document.scene.elements if e.id==old.persistent_id),None) if document.scene else None
+            target_source=target_source or _record_region(old,floor)
+            if enrichment and target_source and not _regions_touch(target_source,operation.evidence):
+                raise DocumentError("Geometry enrichment cannot change an unrelated source region.",422)
+            if not enrichment and not any(old.persistent_id in issue.object_ids or (not issue.object_ids and target_source
                        and _overlap(target_source,issue.source) and _overlap(target_source,operation.evidence))for issue in supported):
                 raise DocumentError("A source-region finding cannot change an unrelated object.",422)
         if old and old.persistent_id in changed:
             raise DocumentError("Conflicting repeated operations on the same object are not applied.",422)
         if operation.action=="remove":
+            if enrichment:
+                raise DocumentError("Geometry enrichment cannot discard existing interpretation records.",422)
             if operation.record is not None:
                 raise DocumentError("Removal must not supply replacement geometry.",422)
             target_list.remove(old)
@@ -116,11 +123,11 @@ def apply_patch(document,patch,review):
                 raise DocumentError("A floor metadata patch cannot rewrite unrelated nested objects.",422)
             if not old and not any(getattr(record,name)for name in COLLECTIONS):
                 raise DocumentError("An empty proposed floor provides no supported reconstruction; retain it as unresolved source evidence.",422)
-        if hasattr(record,"source") and record.source.page!=operation.evidence.page:
+        if getattr(record,"source",None) is not None and record.source.page!=operation.evidence.page:
             raise DocumentError("Correction record and evidence reference different source pages.",422)
         if not old:
             proposed_source=_record_region(record,floor)
-            if not proposed_source or not _overlap(proposed_source,operation.evidence) or not any(_overlap(proposed_source,i.source)for i in supported):
+            if not proposed_source or not _regions_touch(proposed_source,operation.evidence) or (not enrichment and not any(_overlap(proposed_source,i.source)for i in supported)):
                 raise DocumentError("An inserted object must be associated with its reviewed source region.",422)
         if old:
             if record.persistent_id not in (None,old.persistent_id):
@@ -156,8 +163,11 @@ def apply_patch(document,patch,review):
             if update.evidence.page!=floor.source.page:
                 raise DocumentError("Transform evidence references another page.",422)
             candidate.frame_registry.pop(floor.persistent_id,None)
+    if _provided_fields(description.model_dump(mode="json")) != _provided_fields(document.description.model_dump(mode="json")):
+        raise DocumentError("Model patches cannot invent, remove or alter user-provided provenance. Apply supplied values through the explicit input workflow.",422)
     validate_identities(description,registry)
-    if description_hash(description)==description_hash(document.description):
+    _validate_all_sources(document,description.model_dump(mode="json"))
+    if not enrichment and description_hash(description)==description_hash(document.description):
         raise DocumentError("The proposed correction makes no material description change.",422)
     return candidate,{"changed_ids":sorted(changed),"added_ids":sorted(added),"removed_ids":sorted(removed),
                       "transform_updates":[u.model_dump()for u in patch.transform_updates]}
@@ -170,7 +180,7 @@ def regression_findings(before,after,changes):
         return ["Candidate has no reopened geometry scene."]
     if not any(e.geometry for e in after.scene.elements):
         findings.append("Candidate lost all usable geometry.")
-    old={e.id:e for e in before.scene.elements};new={e.id:e for e in after.scene.elements}
+    old={e.id:e for e in before.scene.elements} if before.scene else {};new={e.id:e for e in after.scene.elements}
     removed=set(changes.get("removed_ids",[]))
     for identity,element in old.items():
         if identity in removed:continue
@@ -178,9 +188,54 @@ def regression_findings(before,after,changes):
             findings.append(f"Unrequested object disappeared: {identity}")
         elif element.geometry and not new[identity].geometry:
             findings.append(f"Previously renderable object became unresolved/unrenderable: {identity}")
-    before_floors={f.id:f for f in before.scene.floors}
+    before_floors={f.id:f for f in before.scene.floors} if before.scene else {}
     explicit={u["floor_id"]for u in changes.get("transform_updates",[])}
     for floor in after.scene.floors:
         if floor.id in before_floors and floor.id not in explicit and floor.transform!=before_floors[floor.id].transform:
             findings.append(f"An unchanged source/display frame moved: {floor.id}")
     return findings
+
+
+def _regions_touch(a,b):
+    """A line-shaped opening citation may intersect a positive-area inspection region."""
+    return a.page==b.page and min(a.bbox[2],b.bbox[2])>=max(a.bbox[0],b.bbox[0]) and min(a.bbox[3],b.bbox[3])>=max(a.bbox[1],b.bbox[1])
+
+
+def _validate_all_sources(document,value):
+    if isinstance(value,dict):
+        if "page" in value and "bbox" in value:
+            from .documents import resolve_reference
+            resolve_reference(document,value["page"],value.get("source_id"),value.get("source_page"))
+        for child in value.values():_validate_all_sources(document,child)
+    elif isinstance(value,list):
+        for child in value:_validate_all_sources(document,child)
+
+
+def apply_enrichment(document,patch):
+    """Source-validated additions to saved interpretation, without pretending prior review."""
+    return apply_patch(document,patch,enrichment=True)
+
+
+def needs_geometry(description):
+    if description is None:return True
+    for floor in description.floors:
+        if not floor.boundaries and floor.rooms:return True
+        if len(description.floors)>1 and not floor.registration and not floor.alignment:return True
+        if len(description.floors)>1 and any(f.kind=="stairs" and not f.connection for f in floor.features):return True
+        if any(not item.polygon for item in floor.rooms):return True
+        if any(not item.segment and not getattr(item,"footprint",[]) for item in floor.boundaries):return True
+        if any(not item.segment for item in floor.openings):return True
+        if any(not item.polygon for item in floor.features):return True
+        if not any(getattr(floor,name) for name in COLLECTIONS):return True
+    return False
+
+
+def _provided_fields(value,path=()):
+    result={}
+    if isinstance(value,dict):
+        if value.get("persistent_id"):path=(value["persistent_id"],)
+        if value.get("provenance")=="user_provided":result[path]=json.dumps(value,sort_keys=True)
+        for key,child in value.items():result.update(_provided_fields(child,path+(key,)))
+    elif isinstance(value,list):
+        for index,child in enumerate(value):result.update(_provided_fields(child,path+(index,)))
+    return result

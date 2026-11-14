@@ -43,6 +43,10 @@ class FakeProvider:
             raise self.error
         return self.output if self.output is not None else description()
 
+    def review_reconstruction(self,*args,**kwargs):
+        from app.review_schema import ReconstructionReview
+        return ReconstructionReview(candidate_supported=True,summary="Deterministic diagnostic fixture review")
+
     def close(self):
         pass
 
@@ -50,7 +54,9 @@ class FakeProvider:
 def run_http_failure(tmp_path, provider, caplog):
     app = create_app(provider_factory=lambda:provider, storage_root=tmp_path)
     with TestClient(app) as client:
-        upload = client.post("/api/documents", files={"file":(CANARY+".png",png())}).json()
+        # This fixture isolates one explicit generation job. Upload now starts an
+        # independent extraction job, covered by test_sourcefirst_jobs instead.
+        upload = app.state.documents.add(png(),CANARY+".png").public()
         path = f"/api/documents/{upload['document_id']}/scene"
         response = client.post(path,json={})
         assert response.status_code == 502
@@ -104,10 +110,10 @@ def test_unexpected_post_provider_failure_is_categorized_and_keeps_cache_atomic(
     def fail(*args,**kwargs):
         raise RuntimeError(CANARY)
     if phase == "generation":
-        monkeypatch.setattr("app.ifc_generate.generate_ifc",fail)
+        monkeypatch.setattr("app.jobs.generate_ifc",fail)
     else:
-        monkeypatch.setattr("app.ifc_generate.generate_ifc",lambda *args:b"synthetic artifact")
-        monkeypatch.setattr("app.ifc_artifact.load_artifact",fail)
+        monkeypatch.setattr("app.jobs.generate_ifc",lambda *args:b"synthetic artifact")
+        monkeypatch.setattr("app.jobs.load_artifact",fail)
     event=run_http_failure(tmp_path,FakeProvider(),caplog)
     assert event["phase"] == phase and event["category"] == {"generation":"generation_failure","artifact":"artifact_failure"}[phase]
 
@@ -172,7 +178,7 @@ def test_success_and_cached_model_remain_unchanged_without_failure_events(tmp_pa
     provider=FakeProvider()
     app=create_app(provider_factory=lambda:provider,storage_root=tmp_path)
     with TestClient(app) as client:
-        upload=client.post("/api/documents",files={"file":("fixture.png",png())}).json()
+        upload=app.state.documents.add(png(),"fixture.png").public()
         path=f"/api/documents/{upload['document_id']}/scene"
         first=client.post(path,json={})
         assert first.status_code==200

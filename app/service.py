@@ -5,16 +5,45 @@ from copy import deepcopy
 from time import monotonic
 
 from .provider import ProviderError, configured_number
-from .schemas import Answer, DraftAnswer, Usage, AnswerClaim, NativeCalculation
+from .schemas import Answer, DraftAnswer, Usage, AnswerClaim, NativeCalculation, QuestionIntent
 from .highlights import validated_highlights, whole_model_count_kind
-from .reasoning import ensure_reasoning, retrieve_context, execute_native_calculation
+from .reasoning import ensure_reasoning, retrieve_context, execute_native_calculation, source_only_question
 from .review_schema import AnswerReview
 
 
+def _validate_source_reference(document, evidence):
+    from . import documents
+    resolver=getattr(documents,"resolve_reference",None)
+    if resolver:
+        try:resolver(document,evidence.page,evidence.source_id,evidence.source_page)
+        except documents.DocumentError:
+            raise ProviderError("The model returned a conflicting or unavailable source reference.") from None
+    else:
+        page=next((p for p in document.pages if p.number==evidence.page),None)
+        if page is None or (evidence.source_id is not None and evidence.source_id!=getattr(page,"source_id",None)) or (evidence.source_page is not None and evidence.source_page!=getattr(page,"source_page",None)):
+            raise ProviderError("The model returned a conflicting or unavailable source reference.")
+    page=next(p for p in document.pages if p.number==evidence.page)
+    evidence.source_id=getattr(page,"source_id",None)
+    evidence.source_page=getattr(page,"source_page",None)
+
+
+def _user_value_attributions(draft,document):
+    available={value["id"]:value for value in (document.question_context or {}).get("user_values",[]) if value.get("id")}
+    if any(identity not in available for identity in draft.user_value_evidence):
+        raise ProviderError("The answer used a user-provided value outside the permitted question scope.")
+    return [{"id":identity,"property":available[identity].get("property"),"value":available[identity].get("value"),
+             "unit":available[identity].get("unit"),"scope":available[identity].get("scope"),"provenance":"user_provided",
+             "label":"Provided by user; not observed in the original drawing."} for identity in dict.fromkeys(draft.user_value_evidence)]
+
+
 def validate_draft(draft: DraftAnswer, document, gate, *, server_catalog_count=False):
+    calculation_result=None
     allowed_pages = {p.number for p in document.pages}
     if any(item.page not in allowed_pages for item in draft.evidence):
         raise ProviderError("The model returned a reference to an uninspected page. Please try a more specific question.")
+    for item in draft.evidence:
+        _validate_source_reference(document,item)
+    _user_value_attributions(draft,document)
     if draft.model_evidence:
         if document.kind != "ifc" or not document.scene or document.scene.derived:
             raise ProviderError("The model cited IFC evidence for a drawing. Please retry.")
@@ -26,13 +55,15 @@ def validate_draft(draft: DraftAnswer, document, gate, *, server_catalog_count=F
                     raise ProviderError("Catalog-only evidence is reserved for a server-computed zero count.")
             elif ref.element_id not in native_records:
                 raise ProviderError("The model cited an unknown IFC element.")
+            elif ref.source_id is not None and ref.source_id != native_records[ref.element_id].get("source",{}).get("source_id",native_records[ref.element_id].get("source_id")):
+                raise ProviderError("The model cited an IFC record from a different source.")
             elif ref.property_name and ref.property_name not in native_records[ref.element_id].get("values",{}):
                 raise ProviderError("The model cited an unavailable IFC property.")
             elif ref.property_name and ref.property_name not in inspected.get(ref.element_id,{}).get("values",{}):
                 raise ProviderError("The model cited an IFC property outside the inspected context.")
     if gate.decision != "sufficient" and draft.status != gate.decision:
         raise ProviderError("The model returned an answer inconsistent with the evidence assessment. Please retry or clarify the question.")
-    if draft.status == "answered" and not (draft.evidence or draft.model_evidence):
+    if draft.status == "answered" and not (draft.evidence or draft.model_evidence or draft.user_value_evidence):
         raise ProviderError("The model did not provide supporting source regions. Please try a more specific question.")
     if draft.proposal and draft.proposal.basis != "explicit_assumption":
         raise ProviderError("The model proposed an unverified reference building. Please retry without a comparison request.")
@@ -65,9 +96,14 @@ def validate_draft(draft: DraftAnswer, document, gate, *, server_catalog_count=F
         if not math.isfinite(result):
             raise ProviderError("The model returned an invalid numerical calculation. Please retry.")
         draft.answer = draft.answer.replace("{result}", f"{result:.6g}")
+        calculation_result={"status":"complete","value":result,"unit":calculation.unit,
+            "operation":calculation.operation,"method":f"Server {calculation.operation} of cited drawing inputs.",
+            "operands":[{"value":operand.value,"unit":operand.unit,"evidence_index":operand.evidence_index,
+                "source":draft.evidence[operand.evidence_index].model_dump(mode="json")} for operand in calculation.operands]}
     elif "{result}" in draft.answer:
         raise ProviderError("The model omitted the calculation inputs. Please retry.")
     draft.highlight_ids = validated_highlights(draft, document)
+    return calculation_result
 
 
 def ifc_count(document, kind):
@@ -89,8 +125,8 @@ def _assign_claims(draft):
 
 
 def _citation_identity(draft):
-    return ({(e.page,tuple(e.bbox))for e in draft.evidence},
-            {(e.element_id,e.property_name)for e in draft.model_evidence})
+    return ({(e.source_id,e.page,e.source_page,tuple(e.bbox))for e in draft.evidence},
+            {(e.source_id,e.element_id,e.property_name)for e in draft.model_evidence})
 
 
 def _meaningful_repair(old,new,*,new_evidence,old_validation,new_validation):
@@ -155,7 +191,8 @@ def _validate_internal(draft,document,question,gate):
         if any(r["status"]!="complete"for r in findings["calculations"]):
             raise ProviderError("Incomplete native calculation: "+" ".join(m for r in findings["calculations"]for m in r["missing_inputs"]))
         count=bool(draft.native_calculation and draft.native_calculation.operation=="count")
-        validate_draft(draft,document,gate,server_catalog_count=count)
+        drawing_calculation=validate_draft(draft,document,gate,server_catalog_count=count)
+        if drawing_calculation:findings["calculations"].append(drawing_calculation)
     except ProviderError as error:findings["errors"].append(error.message)
     return findings
 
@@ -164,7 +201,11 @@ def ask(document, question, provider, progress=None):
     start = monotonic()
     crop = None
     passes = 1
+    conversation=deepcopy(getattr(document,"conversation_context",None))
+    user_values=deepcopy(getattr(document,"user_values",[]))
     document=document.snapshot()
+    document.conversation_context=conversation
+    document.user_values=user_values
     legacy_fixture=bool(getattr(provider,"legacy_fixture_without_review",False))
     deadline=start+configured_number("QA_TOTAL_SECONDS",180)
     provider.request_deadline=deadline
@@ -177,6 +218,24 @@ def ask(document, question, provider, progress=None):
             raise ProviderError("Original drawing pages are required to answer questions about this derived IFC. No generated dimensions were used as evidence.")
         native_ifc = document.kind == "ifc" and not derived
         document.question_context=retrieve_context(document,question)
+        original_question=question
+        resolve_intent=getattr(provider,"resolve_intent",None)
+        if callable(resolve_intent):
+            stage("Understanding question")
+            intent=QuestionIntent.model_validate(resolve_intent(document,question))
+            if intent.action=="clarify":
+                usage=provider.usage.model_copy();usage.latency_ms=round((monotonic()-start)*1000)
+                return Answer(status="clarification",answer=intent.clarification.message,
+                    clarification=intent.clarification,evidence=[],missing_information=[],next_action="",proposal=None,
+                    inspected_pages=[],gate=None,inspection_passes=0,usage=usage,
+                    building_id=document.building_id or document.id,answered_revision_id=document.revision_id,
+                    display_revision_id=document.revision_id,review_note="Clarification of user intent; no evidence-sufficiency judgment was made.")
+            question=intent.resolved_question.strip() or question
+            conversational=deepcopy(getattr(document,"conversation_context",None) or {})
+            conversational["evidence_scope"]="sources_only" if source_only_question(original_question) else intent.evidence_scope
+            conversational["original_question"]=original_question
+            document.conversation_context=conversational
+            document.question_context=retrieve_context(document,question)
         stage("Inspecting source")
         gate = provider.gate(document, question)
         if gate.decision == "unclear" and not native_ifc:
@@ -251,10 +310,17 @@ def ask(document, question, provider, progress=None):
                         missing_information=["Source support resolving the draft review and validation findings."],next_action="Inspect the cited material or provide the missing source detail.")
                     # Retain only individually valid original citations; never carry rejected highlights.
                     for evidence in old.evidence:
-                        if evidence.page in {p.number for p in document.pages}:draft.evidence.append(evidence)
+                        try:_validate_source_reference(document,evidence)
+                        except ProviderError:continue
+                        draft.evidence.append(evidence)
                     if native_ifc:
                         available={r["id"]for r in document.reasoning["objects"]}
                         draft.model_evidence=[e for e in old.model_evidence if e.element_id in available and not e.property_name]
+        attributions=_user_value_attributions(draft,document)
+        if attributions:
+            # The server attaches explicit provenance even if prose omitted it.
+            attribution_text="Provided by user: "+"; ".join(f"{value['property']} = {value['value']} {value['unit'] or ''}".strip() for value in attributions)+". These values are not established by the original drawing."
+            draft.answer += "\n\n"+attribution_text
         usage = provider.usage.model_copy()
         usage.latency_ms = round((monotonic() - start) * 1000)
         payload = draft.model_dump(exclude={"calculation","native_calculation","claims","retained_claim_ids"})
@@ -264,7 +330,8 @@ def ask(document, question, provider, progress=None):
                       answered_revision_id=document.revision_id,display_revision_id=document.revision_id,
                       review_decision=review.decision if review else None,review_passes=review_passes,
                       review_note="Legacy fixture: answer review intentionally disabled."if legacy_fixture else("Original-evidence review is corroboration, not proof of correctness."if review.decision=="supported"and not findings["errors"]else"Draft remained unresolved; no rejected factual answer was published."),
-                      calculation_results=findings["calculations"])
+                      calculation_results=findings["calculations"],resolved_question=question,
+                      user_value_attributions=attributions)
     except ProviderError:
         raise
     except Exception:

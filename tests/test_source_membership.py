@@ -127,3 +127,14 @@ def test_legacy_page_membership_survives_append_restart_and_export(tmp_path):
     scene,pages,manifest=load_artifact(generate_ifc(doc.description,doc),'legacy-appended')
     assert len(pages)==2 and manifest.pages[0].source_id is None
     assert manifest.pages[1].source_id==doc.sources[0]['source_id']
+
+
+def test_floor_view_prefix_does_not_add_storey_from_matching_plan(tmp_path):
+    store=BuildingStore(tmp_path);doc=store.add_many([(pixels('white'),'first.png'),(pixels('gray'),'second.png')])
+    # Actual input pixels remain image data; filenames do not determine equivalence.
+    first=description();first.floors[0].label='Erdgeschoss'
+    second=description();second.floors[0].label='Grundriss: Erdgeschoss'
+    for source,interpretation in zip(doc.sources,[first,second]):
+        doc=store.merge_interpretation(doc.id,source['source_id'],interpretation)
+    assert len(doc.description.floors)==1
+    assert doc.description.unresolved_views[0].label=='Grundriss: Erdgeschoss'

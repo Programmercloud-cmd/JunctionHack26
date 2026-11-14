@@ -114,7 +114,9 @@ def test_api_repeat_upload_and_restart_reopen_without_inference(tmp_path):
         saved=client.get("/api/buildings").json()["buildings"]
         assert len(saved)==1 and saved[0]["revision_id"]==first["revision_id"]
         opened=client.get("/api/buildings/"+first["building_id"]).json()
-        assert opened["jobs"]==[] and opened["pages"]
+        assert opened["pages"]
+        # New upload starts source extraction once; reopen and reupload never retry it.
+        assert len(opened["jobs"])==1 and opened["jobs"][0]["kind"]=="extraction"
 
 
 def test_deadline_crossed_during_bundle_write_does_not_publish(tmp_path,monkeypatch):
@@ -131,7 +133,9 @@ def test_deadline_crossed_during_bundle_write_does_not_publish(tmp_path,monkeypa
     try:
         job=runner.reconstruct(doc.id);runner.futures[job["id"]].result(10)
         assert runner.get(job["id"])["status"]=="budget_exhausted"
-        assert store.get(doc.id).revision_id==doc.revision_id
+        saved=store.get(doc.id)
+        assert saved.revision_id!=doc.revision_id and saved.description is not None
+        assert saved.scene is None and saved.reasoning["interpretation"] is not None
     finally:runner.close();store.close()
 
 
