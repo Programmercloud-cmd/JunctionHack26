@@ -1,0 +1,65 @@
+[130] tool exec call: text(await tools.apply_patch("*** Begin Patch\n*** Update File: /home/jcb/dev/github/JunctionHack26/app/static/viewer.js\n@@\n-    const distance = extent / Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));\n+    const direction = new THREE.Vector3(.9,-1.2,.9).normalize();\n+    const viewRotation = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(direction, new THREE.Vector3(), this.camera.up)).invert();\n+    const tanVertical = Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));\n+    const tanHorizontal = tanVertical * this.camera.aspect;\n+    let distance = extent * .1;\n+    // Fit every bounds corner in camera space, including the narrower screen\n+    // dimension. Source geometry is untouched; only the viewpoint changes.\n+    for (const x of [this.bounds.min.x,this.bounds.max.x]) {\n+      for (const y of [this.bounds.min.y,this.bounds.max.y]) {\n+        for (const z of [this.bounds.min.z,this.bounds.max.z]) {\n+          const corner = new THREE.Vector3(x,y,z).sub(center).applyQuaternion(viewRotation);\n+          distance = Math.max(distance, corner.z + Math.abs(corner.x)/tanHorizontal, corner.z + Math.abs(corner.y)/tanVertical);\n+        }\n+      }\n+    }\n+    distance *= 1.12;\n@@\n-    this.camera.position.copy(center).add(new THREE.Vector3(.9,-1.2,.9).normalize().multiplyScalar(distance));\n+    this.camera.position.copy(center).add(direction.multiplyScalar(distance));\n*** End Patch"));
+text(await tools.exec_command({cmd:"cat >> app/static/styles.css <<'EOF'\n#model-evidence-list{max-height:360px;overflow:auto;padding-right:4px;overscroll-behavior:contain}\nEOF\nRUN_BROWSER_TESTS=1 PLAYWRIGHT_BROWSERS_PATH=/tmp/junction-playwright .venv/bin/python -m pytest tests/test_browser_3d.py -q","sandbox_permissions":"require_escalated","justification":"May I rerun both 3D browser acceptance tests after improving camera fit and evidence-list usability?","yield_time_ms":1000,"max_output_tokens":2500}));
+
+[131] tool exec result: Script completed
+Wall time 11.6 seconds
+Output:
+
+{}
+{"chunk_id":"015aef","wall_time_seconds":1.000801583,"session_id":37441,"original_token_count":0,"output":""}
+
+[132] tool exec call: text(await tools.apply_patch("*** Begin Patch\n*** Update File: /home/jcb/dev/github/JunctionHack26/tests/test_browser_3d.py\n@@\n     assert scene_requests == [\"POST\"]\n     assert SceneFixtureProvider.reconstruction_calls == 1\n+    page.set_viewport_size({\"width\":390,\"height\":844})\n+    page.locator(\"#model-canvas-container canvas\").scroll_into_view_if_needed()\n+    page.locator(\"#fit-model\").click()\n+    assert page.evaluate(\"document.documentElement.scrollWidth <= window.innerWidth\")\n+    assert page.evaluate(\"\"\"() => {\n+      const v=window.blueprintViewer;\n+      for (const x of [v.bounds.min.x,v.bounds.max.x])\n+        for (const y of [v.bounds.min.y,v.bounds.max.y])\n+          for (const z of [v.bounds.min.z,v.bounds.max.z]) {\n+            const point=v.camera.position.clone().set(x,y,z).project(v.camera);\n+            if (Math.abs(point.x)>1 || Math.abs(point.y)>1) return false;\n+          }\n+      return true;\n+    }\"\"\")\n+    page.screenshot(path=\"/tmp/junction-image-acceptance.png\", full_page=True)\n*** End Patch"));
+text(await tools.write_stdin({session_id:37441,chars:"","yield_time_ms":1000,"max_output_tokens":2500}));
+
+[133] tool exec result: Script completed
+Wall time 8.1 seconds
+Output:
+
+{}
+{"chunk_id":"32d788","wall_time_seconds":5.001539748,"session_id":37441,"original_token_count":0,"output":""}
+
+[134] tool exec call: text(await tools.write_stdin({session_id:37441,chars:"","yield_time_ms":1000,"max_output_tokens":3000}));
+
+[135] tool exec result: Script completed
+Wall time 5.0 seconds
+Output:
+
+{"chunk_id":"fd78f3","wall_time_seconds":5.001044946,"session_id":37441,"original_token_count":0,"output":""}
+
+[136] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[137] tool exec call: text(await tools.write_stdin({session_id:37441,chars:"","yield_time_ms":1000,"max_output_tokens":3500}));
+
+[138] tool exec result: Script completed
+Wall time 2.3 seconds
+Output:
+
+{"chunk_id":"e82b06","wall_time_seconds":2.261875232,"exit_code":0,"original_token_count":25,"output":"..                                                                       [100%]\n2 passed in 36.99s\n"}
+
+[139] tool exec call: text(await tools.exec_command({cmd:"RUN_BROWSER_TESTS=1 PLAYWRIGHT_BROWSERS_PATH=/tmp/junction-playwright .venv/bin/python -m pytest tests/test_browser_3d.py -q -k image_model","sandbox_permissions":"require_escalated","justification":"May I run the newly added mobile camera-fit assertion and capture the image-model screenshot?","yield_time_ms":1000,"max_output_tokens":1500}));
+image((await tools.view_image({path:"/tmp/junction-ifc-acceptance.png"})).image_url);
+
+[140] tool exec result: Script completed
+Wall time 4.2 seconds
+Output:
+
+{"chunk_id":"cb3b05","wall_time_seconds":1.001468612,"session_id":31776,"original_token_count":0,"output":""}
+
+[141] tool exec call: text(await tools.write_stdin({session_id:31776,chars:"","yield_time_ms":1000,"max_output_tokens":2500}));
+
+[142] tool exec result: Script completed
+Wall time 0.0 seconds
+Output:
+
+{"chunk_id":"b4993a","wall_time_seconds":0.000022291,"exit_code":0,"original_token_count":28,"output":".                                                                        [100%]\n1 passed, 1 deselected in 6.34s\n"}
+
+[143] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[144] assistant: Completed `tests/test_browser_3d.py` with two passing acceptance tests:
+
+- Real duplex IFC: orbit, 24 window highlights, 0.1 fading, actual mesh clicking, source IDs, 21 room highlights, scene reuse.
+- Image reconstruction: assumptions, unscaled badge, source mapping, height refusal, unmapped evidence, caching, mobile camera fit.
+
+Improved camera framing and capped the IFC evidence list.
+
+Screenshots: `/tmp/junction-ifc-acceptance.png`, `/tmp/junction-image-acceptance.png`.
