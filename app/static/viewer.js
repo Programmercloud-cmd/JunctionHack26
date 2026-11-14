@@ -13,10 +13,12 @@ export class BlueprintViewer {
     this.mode = 'inspection'; this.modeStates = {}; this.cutaway = false; this.cutawayPercent = 100;
     this.conceptBuildCount = 0; this.needsRender = true; this.renderCount = 0;
     this.annotations = [];
+    this.assumptionAnnotations = [];
     this.elements = new Map();
     this.meshes = new Map();
     this.highlightIds = new Set();
     this.highlightsEnabled = true;
+    this.selectionHighlightEnabled = true;
     this.showAssumptions = false;
     this.theme = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
     this.selectedId = null;
@@ -39,7 +41,7 @@ export class BlueprintViewer {
     container.append(this.renderer.domElement);
     this.annotationLayer = document.createElement('div');
     this.annotationLayer.className = 'model-annotations';
-    this.annotationLayer.setAttribute('aria-label', 'Unresolved source annotations, not model geometry');
+    this.annotationLayer.setAttribute('aria-label', 'Source and display-assumption annotations, not model geometry');
     container.append(this.annotationLayer);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -145,7 +147,7 @@ export class BlueprintViewer {
     if(this.selectedProposalId&&!this.concept?.records.has(this.selectedProposalId))this.selectedProposalId=null;
     this.highlightIds=new Set(previousHighlights.filter(id=>this.elements.has(id)&&this.elements.get(id).representation!=='unresolved'&&this.meshes.has(id)));
     this.revisionChanges={removed_selection:previousSelected&&!this.selectedId?previousSelected:null,unresolved_selection:this.selectedId&&!this.meshes.has(this.selectedId)?this.selectedId:null,removed_highlights:previousHighlights.filter(id=>!this.highlightIds.has(id))};
-    this.annotations=[];this.annotationLayer.replaceChildren();this.createAnnotations();
+    this.annotations=[];this.assumptionAnnotations=[];this.annotationLayer.replaceChildren();this.createAnnotations();
     this.syncMode();this.syncOffsets();this.applyAppearance();this.updateBounds();
     if(initial)this.fit();
     this.renderer.domElement.dataset.ready='true';this.renderer.domElement.dataset.documentId=this.data.document_id;this.renderer.domElement.dataset.meshCount=String(this.meshes.size);
@@ -229,6 +231,7 @@ export class BlueprintViewer {
   }
 
   setShowAssumptions(enabled) { this.showAssumptions = enabled; this.applyAppearance(); }
+  setSelectionHighlightEnabled(enabled) { this.selectionHighlightEnabled = Boolean(enabled); this.applyAppearance(); }
 
   setFloorFilter(id) {
     this.floorFilter = this.floorIndices.has(id) ? id : '';
@@ -292,14 +295,31 @@ export class BlueprintViewer {
       } else append(floor,[element],box,false);
     }
     for (const [floorId,elements] of coarse) { const floor=floors.get(floorId); append(floor,elements,floor.source.bbox,true); }
+    // Assumption markers describe properties, never a new source association.
+    // Limit visibility to the current selection/highlights, without capping it;
+    // the existing amber appearance identifies other assumed geometry.
+    for (const [id,mesh] of this.meshes) {
+      const element=this.elements.get(id);
+      if (!element.assumptions?.length) continue;
+      const button=document.createElement('button');button.type='button';button.className='assumption-annotation';button.textContent='A';
+      button.dataset.annotationKind='assumption';button.dataset.elementId=id;
+      button.setAttribute('aria-label',`${element.name}: inspect assumed properties`);
+      button.title=`Display assumptions: ${element.assumptions.map(a=>a.property).join(', ')}. Select to inspect their provenance.`;
+      button.addEventListener('click',()=>this.select(id));this.annotationLayer.append(button);
+      this.assumptionAnnotations.push({button,floorId:element.storey_id,elementIds:[id],assumption:true,mesh});
+    }
   }
 
   positionAnnotations() {
     const width=this.container.clientWidth, height=this.container.clientHeight;
     const occupied=[];
-    for (const item of this.annotations) {
-      const anchor=item.anchor.clone();
-      if (this.exploded) anchor.z+=(this.floorIndices.get(item.floorId) || 0)*this.floorSeparation;
+    for (const item of [...this.annotations,...this.assumptionAnnotations]) {
+      let anchor;
+      if(item.assumption){
+        item.button.hidden=!this.showAssumptions||!((this.selectionHighlightEnabled&&this.selectedId===item.elementIds[0])||(this.highlightsEnabled&&this.highlightIds.has(item.elementIds[0])))||!item.mesh.visible;
+        if(item.button.hidden)continue;
+        const bounds=new THREE.Box3().setFromObject(item.mesh);anchor=bounds.getCenter(new THREE.Vector3());anchor.z=bounds.max.z;
+      }else{anchor=item.anchor.clone();if (this.exploded) anchor.z+=(this.floorIndices.get(item.floorId) || 0)*this.floorSeparation;}
       anchor.project(this.camera);
       item.button.hidden=Boolean((this.floorFilter && this.floorFilter!==item.floorId) || anchor.z < -1 || anchor.z > 1 || Math.abs(anchor.x)>1 || Math.abs(anchor.y)>1);
       if (item.button.hidden) continue;
@@ -325,14 +345,18 @@ export class BlueprintViewer {
     this.onSelect(this.elements.get(id));
   }
 
+  clearSelection() {
+    this.selectedId=null;this.selectedProposalId=null;this.applyAppearance();
+  }
+
   applyAppearance() {
     this.concept?.syncVisibility(this.floorFilter,this.exploded,this.floorSeparation,this.floorIndices);
-    this.concept?.applyAppearance(this.highlightIds,this.highlightsEnabled,this.selectedProposalId||this.selectedId,this.showAssumptions);
+    this.concept?.applyAppearance(this.highlightIds,this.highlightsEnabled,this.selectionHighlightEnabled?(this.selectedProposalId||this.selectedId):null,this.showAssumptions);
     const active = this.highlightsEnabled && this.highlightIds.size > 0;
     for (const [id, mesh] of this.meshes) {
       const element = this.elements.get(id);
       const highlight = active && this.highlightIds.has(id);
-      const selected = id === this.selectedId;
+      const selected = this.selectionHighlightEnabled && id === this.selectedId;
       // Native IFC spaces are often enclosed volumes; keep them out of the way
       // until requested. Inferred room floors remain visible as footprints.
       mesh.visible = (!this.floorFilter || element.storey_id === this.floorFilter) && (this.data.derived || element.kind !== 'room' || element.geometry.type === 'floor' || highlight || selected);
@@ -498,6 +522,7 @@ export class BlueprintViewer {
     this.meshes.clear();
     this.group.clear();
     this.annotations=[];
+    this.assumptionAnnotations=[];
     this.annotationLayer.replaceChildren();
   }
   dispose() { this.renderer.setAnimationLoop(null); this.resizeObserver.disconnect(); this.controls.dispose(); this.clearGeometry(); this.renderer.dispose(); this.renderer.domElement.remove(); this.annotationLayer.remove(); }
