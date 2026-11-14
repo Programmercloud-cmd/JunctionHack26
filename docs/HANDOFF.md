@@ -1,3 +1,21 @@
+# Agent handoff — 2026-11-14, source-first iteration
+
+Read [SOURCE_FIRST_SPEC.md](SOURCE_FIRST_SPEC.md), [SOURCE_FIRST_PLAN.md](SOURCE_FIRST_PLAN.md), [SOURCE_FIRST_CONTRACT.md](SOURCE_FIRST_CONTRACT.md) and [SOURCE_FIRST_VERIFICATION.md](SOURCE_FIRST_VERIFICATION.md) first. They supersede historical automatic-3D, single-source and new-format exclusions below. All twelve attached requirements were implemented through reviewed bounded work; source-fidelity limitations remain explicit.
+
+Uploads automatically save original sources and source interpretation; QA works before/without 3D. Explicit Generate 3D enriches missing geometry and runs deterministic IFC plus existing bounded review. Cached extraction is reusable across append/restart/reupload. Source-linked conversations, typed clarification, grouped attributed inputs and native per-storey percentage cutaway are integrated. Generated V5 IFC retains available original files/pages, assumptions, user values, stable IDs and transforms; it remains derived visualization after reopening. Legacy 11397/1794 inputs carry normalized source pages without recoverable original file bytes; v5 preserves those pages without fabricating files or source IDs. SVG/DXF use normalized previews with original vector metadata; DWG is unavailable.
+
+Current consolidated local demo: `.runtime/sourcefirst-final-verification`, served on `http://127.0.0.1:8769` by the verification process. Stop that process before using the same root with `BLUEPRINT_STORAGE_ROOT=.runtime/sourcefirst-final-verification PORT=8000 bash scripts/dev.sh`. Other user servers were untouched. Gemini remains selected and `gemini-3.1-pro-preview` remains configurable reconstruction default; no fallback or Hydrogen adoption. Source-only no-render flow skips geometry/review calls. Explicit geometry/refinement can still be slow and token-expensive; job phases and sanitized reasons remain visible.
+
+11397 accepted revision `b7e743c4a62d449a809ac4116059b9d4` now has registered floors, actual relative elevations and a continuous schematic stair connection, independently checked in the browser and reopened IFC overlays. Later invalid opening correction was rejected; final job is failed with this accepted model retained. Do not call its geometry complete. 1794 accepted revision `bd98f00829914c72b49c82028a62b96e` preserves a test user-provided3m height, unchanged XY scale and original-height refusal. The user value is not source-observed.
+
+Live held-out religious SVG preserves major straight structure but misses columns/curved features; DXF source extraction/QA work but optional geometry reached the output-token limit; café elevation sheet remains zero floors/eight unsupported views. Institute SVG/PDF/section combine as one floor plus possible alternate and section evidence. Genuine IFC stays standalone; mixed native/drawing grouping is explicitly rejected before mutation. No manual source cropping/rotation/geometry repair or evaluation answers were used to claim live success.
+
+Final checks:496 backend tests passed,25 optional skipped;24 opt-in Chromium tests passed; doctor passed. Independent reviewers directly orbited, selected floors/objects, compared original overlays and inspected source links. Portable11397 reimport/restart/reupload preserved IDs/source/assumptions with zero provider calls. See the verification report for live timings/tokens, failed probes, exact revisions and remaining fidelity gaps.
+
+Focused feature/fix commits:179cd3b,1c78d4e,8280278,894e2e9,9026633,79e8f4a,0580c6c. Documentation completion follows; no push. Keep `.env.local`, `.runtime`, private provider responses and dataset content out of commits. Future changes should address observed source-fidelity errors, retain previous usable revisions and run fresh held-out checks; no arbitrary caps, residential assumptions, model-generated code or generated-IFC factual shortcuts.
+
+## Historical handoffs (superseded where conflicting)
+
 # Agent handoff — 2026-11-14, progressive product
 
 ## Current implementation
