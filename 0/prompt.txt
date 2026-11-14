@@ -1,0 +1,13 @@
+[229] assistant: Agent message from /root/voice_backend:
+Message Type: FINAL_ANSWER
+Task name: /root
+Sender: /root/voice_backend
+Payload:
+Migrated ElevenLabs speech generation to `AsyncElevenLabs` while preserving the existing interface.
+
+- Exact answer text and configured voice/model retained.
+- SDK retries disabled.
+- Audio content validation and cancellation cleanup preserved.
+- **39 backend/provider tests passed.**
+
+Only `app/voice_providers.py` and `tests/test_voice_providers.py` changed. Independent review and root’s live verification are pending.
