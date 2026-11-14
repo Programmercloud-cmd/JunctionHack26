@@ -5,8 +5,8 @@ import os
 from pathlib import Path
 
 from ._single_pass import count_objects
-from VQA.models.gemini import _RESPONSE_SCHEMA
-from VQA._recount import independent_recount as recount
+from ..models.gemini import _RESPONSE_SCHEMA
+from .._recount import independent_recount as recount
 
 
 MODEL = "gemini-4-hydrogen"
@@ -32,7 +32,7 @@ def load_key():
 
     key = os.environ.get("GEMINI_API_KEY")
     if not key:
-        key = dotenv_values(Path(__file__).resolve().parents[2] / ".env").get("GEMINI_API_KEY")
+        key = dotenv_values(Path(__file__).resolve().parents[3] / ".env").get("GEMINI_API_KEY")
     if not key:
         raise ValueError("Set GEMINI_API_KEY.")
     return key

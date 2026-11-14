@@ -9,7 +9,7 @@ from statistics import median, quantiles
 from time import perf_counter
 
 from .benchmark_cases import load_cases
-from .counting_harnesses import HARNESSES, MODEL, extract, load_key
+from VQA.couting_tasks.legacy.counting_harnesses import HARNESSES, MODEL, extract, load_key
 from .benchmark_report import write_report
 
 
@@ -173,7 +173,12 @@ def main(argv=None):
     manifest = output / "manifest.json"
     previous_settings = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else None
     if args.split == "held-out":
-        source_files = ("evaluation/counting_harnesses.py", "_recount.py", "evaluation/_single_pass.py", "models/gemini.py")
+        source_files = (
+            "couting_tasks/legacy/counting_harnesses.py",
+            "couting_tasks/_recount.py",
+            "couting_tasks/legacy/_single_pass.py",
+            "couting_tasks/models/gemini.py",
+        )
         settings["candidate_versions"] = {
             name: hashlib.sha256((package / name).read_bytes()).hexdigest() for name in source_files
         }

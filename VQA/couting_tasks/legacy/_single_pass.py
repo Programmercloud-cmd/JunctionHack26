@@ -3,10 +3,10 @@
 import json
 from pathlib import Path
 
-from VQA.models import gemini, kimi, qwen
+from ..models import gemini
 
 
-_PROVIDERS = {"gemini": gemini, "kimi": kimi, "qwen": qwen}
+_PROVIDERS = {"gemini": gemini}
 _PROMPT = """Inspect the entire construction blueprint and locate every distinct object
 that matches the counting question. Return one tight bounding box per object.
 For windows, check every exterior wall and distinguish window symbols from
@@ -26,23 +26,22 @@ def count_objects(
     """Return (count, boxes) for a PNG or JPEG blueprint.
 
     Each box is [xmin, ymin, xmax, ymax] in normalized 0–1000 coordinates.
-    The count is the number of boxes. The provider must be gemini, kimi,
-    or qwen, and the model is a model ID or, for local Qwen, a checkpoint path.
+    The count is the number of boxes. This baseline uses Gemini Hydrogen.
     """
     adapter = _PROVIDERS.get(provider)
     if adapter is None:
         raise ValueError(f"Unknown provider {provider!r}. Choose from {', '.join(_PROVIDERS)}.")
-    if not isinstance(model, str) or not model.strip():
-        raise ValueError(f"Set a non-empty model ID for provider {provider!r}.")
+    if model != "gemini-4-hydrogen":
+        raise ValueError(f"Only gemini-4-hydrogen is supported.")
 
     path = Path(image_path)
     if path.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
         raise ValueError("The blueprint image must be PNG or JPEG.")
 
-    if provider in {"gemini", "kimi"}:
+    if provider == "gemini":
         from dotenv import load_dotenv
 
-        load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+        load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 
     answer = adapter.complete(path, _PROMPT + prompt, model)
     if not answer:

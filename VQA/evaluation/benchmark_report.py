@@ -8,7 +8,7 @@ from itertools import combinations
 
 from PIL import Image
 
-from .counting_harnesses import HARNESSES
+from VQA.couting_tasks.legacy.counting_harnesses import HARNESSES
 
 
 def checked_boxes(boxes):

@@ -5,7 +5,7 @@ evaluate all five harnesses on 25 held-out questions without arguments. Edit
 `evaluate_harnesses.py` to change its settings. The runner writes to
 `VQA/benchmark-runs/held-out-25-current/` and resumes completed cases there.
 
-Run `python -m VQA.evaluation.evaluate_models` to compare providers and models
+Run `python -m VQA.evaluation.evaluate_models` to check Gemini Hydrogen
 using the public counting API. It shows accuracy, per-question timing, and
 median and total latency per model, including failed attempts.
 
@@ -15,7 +15,7 @@ From the directory that contains `VQA`, run:
 python -m VQA.evaluation.benchmark --questions junction-dataset-preview/questions.jsonl --split held-out --harness all --limit 10 --max-calls 0 --output VQA/benchmark-runs/held-out-unfiltered
 ```
 
-The command is headless. It uses the Gemini credential from the environment or the project's existing local `.env`. It sends the selected raster blueprints to Gemini Hydrogen. Direct count is the default. Use `--harness all` to compare all five or select `current`, `direct`, `inventory-then-count`, `independent-recount`, or `json-based`. Use a fresh output directory for a changed sample or dataset. Reuse the same directory, split, seed, limit, and dataset to resume. The call cap is per invocation. Use `--max-calls 0` to rebuild the report from recorded results without inference.
+The command is headless. It uses the Gemini credential from the environment or the project's existing local `.env`. It sends the selected raster blueprints to Gemini Hydrogen. Direct count is the default for this raster benchmark. Use `--harness all` to compare all five or select `current`, `direct`, `inventory-then-count`, `independent-recount`, or `json-based`. Use a fresh output directory for a changed sample or dataset. Reuse the same directory, split, seed, limit, and dataset to resume. The call cap is per invocation. Use `--max-calls 0` to rebuild the report from recorded results without inference.
 
 ## Cases and scoring
 
@@ -29,7 +29,9 @@ Exact integer matches determine the ranking, with failures and missing answers c
 
 ## Files
 
-- `counting_harnesses.py` holds the five strategies.
+Counting strategies for this benchmark are in `VQA/couting_tasks/legacy/`.
+
+- `couting_tasks/legacy/counting_harnesses.py` holds the five strategies.
 - `benchmark_cases.py` loads and splits the dataset.
 - `benchmark.py` runs, persists, and scores the benchmark.
 - `benchmark_report.py` renders the self-contained HTML report.

@@ -1,67 +1,30 @@
-"""Count and locate objects in construction blueprints."""
+"""Public VQA interface."""
 
-import json
-from pathlib import Path
+from pathlib import Path as _Path
 
-from ._recount import independent_recount
-from .models import gemini, kimi, qwen
+from .couting_tasks._dispatch import run_count as _run_count
+from .couting_tasks._ifc import count_ifc_direct as _count_ifc
+from .couting_tasks._image import count_image as _count_image
+from .couting_tasks._pdf import count_native_pdf as _count_pdf
+from .couting_tasks._result import CountResult as _CountResult
+from .couting_tasks.models.gemini import MODEL as _MODEL
 
-
-_PROVIDERS = {"gemini": gemini, "kimi": kimi, "qwen": qwen}
+__all__ = ["count_objects"]
 
 
 def count_objects(
-    image_path: str | Path, prompt: str, provider: str, model: str
-) -> tuple[int, list[list[int]]]:
-    """Return (count, boxes) after two independent counts and optional adjudication.
+    image_path: str | _Path, prompt: str, provider: str = "gemini", model: str = _MODEL,
+) -> _CountResult:
+    """Count objects in PNG, JPEG, PDF, or native IFC using Gemini Hydrogen.
 
-    Accepts PNG or JPEG files. Boxes use normalized [xmin, ymin, xmax, ymax]
-    coordinates on a 0–1000 scale. Some counted objects may lack a box.
+    Results can be unpacked as (count, boxes). Image boxes use normalized
+    [xmin, ymin, xmax, ymax]. PDF and IFC locators live in result.evidence.
+    Unavailable counts use None and include a status and reason.
     """
-    adapter = _PROVIDERS.get(provider)
-    if adapter is None:
-        raise ValueError(f"Unknown provider {provider!r}. Choose from {', '.join(_PROVIDERS)}.")
-    if not isinstance(model, str) or not model.strip():
-        raise ValueError(f"Set a non-empty model ID for provider {provider!r}.")
-
-    path = Path(image_path)
-    if path.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
-        raise ValueError("The blueprint image must be PNG or JPEG.")
-
-    if provider in {"gemini", "kimi"}:
-        from dotenv import load_dotenv
-
-        load_dotenv(Path(__file__).resolve().parents[1] / ".env")
-
-    def call(image, instructions, schema):
-        if provider == "gemini":
-            answer = adapter.complete(image, instructions, model, schema=schema)
-        else:
-            instructions += (
-                '\nReturn only a JSON object like {"count": 1, "boxes": [[10, 20, 30, 40]]}. '
-                'Use a nonnegative integer count and an empty boxes list if nothing can be localized.'
-            )
-            answer = adapter.complete(image, instructions, model)
-
-        if not answer or not answer.strip():
-            raise ValueError(f"{provider}/{model} returned no answer.")
-        answer = answer.strip()
-        first_line, _, remainder = answer.partition("\n")
-        if first_line.lower() in {"```json", "```"} and remainder.endswith("\n```"):
-            answer = remainder[:-4].strip()
-        result = json.loads(answer)
-        if not isinstance(result, dict) or type(result.get("count")) is not int or result["count"] < 0:
-            raise ValueError("Expected a nonnegative integer count.")
-        boxes = result.get("boxes")
-        if not isinstance(boxes, list):
-            raise ValueError("Expected a list of boxes.")
-        for box in boxes:
-            if not (
-                isinstance(box, list) and len(box) == 4 and all(type(n) is int for n in box)
-                and 0 <= box[0] < box[2] <= 1000 and 0 <= box[1] < box[3] <= 1000
-            ):
-                raise ValueError(f"Invalid bounding box {box!r}.")
-        return result
-
-    result = independent_recount(path, prompt, call)
-    return result["count"], result["boxes"]
+    if provider != "gemini" or model != _MODEL:
+        return _CountResult(status="unsupported", detail=f"Use gemini/{_MODEL} for VQA.")
+    task = {
+        ".png": _count_image, ".jpg": _count_image, ".jpeg": _count_image,
+        ".pdf": _count_pdf, ".ifc": _count_ifc,
+    }.get(_Path(image_path).suffix.lower())
+    return _run_count(task, image_path, prompt)

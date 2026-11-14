@@ -16,13 +16,7 @@ from VQA.test import IMAGE_SUFFIXES, QUESTIONS_FILE
 from VQA.visualization import draw_bounding_boxes
 
 
-MODELS = {
-    "gemini-3.5-flash": "gemini",
-    "gemini-4-hydrogen": "gemini",
-    "gemini-4-carbon": "gemini",
-    "kimi-k3-1-pro": "kimi",
-    "unsloth/Qwen3-VL-4B-Instruct-bnb-4bit": "qwen",
-}
+MODELS = {"gemini-4-hydrogen": "gemini"}
 QUESTION_COUNT = 3
 
 
@@ -47,11 +41,11 @@ def main() -> None:
         question = row["question"]
         ground_truth = row["answer"]
         image_path = QUESTIONS_FILE.parent / row["path"]
-        print(f"\n{index}. {question}\nGround truth: {ground_truth}", flush=True)
+        print(f"\n{index}. {question}", flush=True)
 
         with Image.open(image_path) as source:
             original = source.convert("RGB")
-        figure, grid = plt.subplots(2, 3, figsize=(16, 9), layout="constrained")
+        figure, grid = plt.subplots(1, 2, figsize=(14, 8), layout="constrained")
         axes = grid.flat
         figure.suptitle(fill(question, width=100))
         axes[0].imshow(original)
@@ -63,7 +57,10 @@ def main() -> None:
             label = model.rsplit("/", 1)[-1]
             started = perf_counter()
             try:
-                answer, boxes = count_objects(image_path, question, provider, model)
+                result = count_objects(image_path, question)
+                if result.status != "ok":
+                    raise ValueError(result.detail or result.status)
+                answer, boxes = result
             except Exception as error:
                 elapsed = perf_counter() - started
                 timings[model].append(elapsed)

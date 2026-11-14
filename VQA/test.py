@@ -1,7 +1,6 @@
 """Run a random image-based counting question."""
 
 import json
-import random
 import sys
 from pathlib import Path
 from textwrap import fill
@@ -11,14 +10,10 @@ if not __package__:
 
 from VQA.api import count_objects
 
-#VLM = ["kimi", "kimi-k3-1-pro"]
-#VLM = ["qwen", "unsloth/Qwen3-VL-4B-Instruct-bnb-4bit"]
-VLM = ["gemini", "gemini-4-carbon"]
 
 ID = 200
 
 QUESTIONS_FILE = Path(__file__).resolve().parents[1] / "junction-dataset" / "questions.jsonl"
-[PROVIDER, MODEL] = VLM
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
 
 
@@ -44,8 +39,10 @@ def main() -> None:
     question = selected["question"]
     ground_truth = selected["answer"]
     print(f"Question: {question}", flush=True)
-    print(f"Ground truth: {ground_truth}", flush=True)
-    count, boxes = count_objects(image_path, question, PROVIDER, MODEL)
+    result = count_objects(image_path, question)
+    if result.status != "ok":
+        raise SystemExit(f"{result.status}: {result.detail}")
+    count, boxes = result
     print(f"Model answer: {count}", flush=True)
 
     with Image.open(image_path) as source:
