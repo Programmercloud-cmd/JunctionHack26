@@ -1,0 +1,32 @@
+[130] tool exec call: text(await tools.write_stdin({session_id:87314,chars:"","yield_time_ms":1000,"max_output_tokens":2000}));
+text(await tools.exec_command({cmd:"cat >> tests/test_voice_providers.py <<'PY'\n\n\n@pytest.mark.asyncio\n@pytest.mark.parametrize(\"status\", [429, 500])\nasync def test_elevenlabs_sdk_never_retries_generation(monkeypatch, status):\n    monkeypatch.setenv(\"ELEVENLABS_API_KEY\", \"fake-secret\")\n    monkeypatch.setenv(\"ELEVENLABS_VOICE_ID\", \"configured-voice\")\n    calls = []\n\n    def handler(request):\n        calls.append(request)\n        return httpx.Response(status, json={\"detail\": \"PRIVATE_UPSTREAM_ERROR\"})\n\n    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))\n    provider = ElevenLabsSpeechProvider(client=client)\n    try:\n        with pytest.raises(VoiceError) as error:\n            await provider.synthesize(\"Answer\")\n        assert len(calls) == 1\n        assert \"PRIVATE_UPSTREAM_ERROR\" not in error.value.message\n    finally:\n        await provider.aclose()\n\n\n@pytest.mark.asyncio\nasync def test_elevenlabs_sdk_stream_cancellation_closes_response(monkeypatch):\n    monkeypatch.setenv(\"ELEVENLABS_API_KEY\", \"fake-secret\")\n    monkeypatch.setenv(\"ELEVENLABS_VOICE_ID\", \"configured-voice\")\n    entered = asyncio.Event()\n\n    class BlockingAudio(httpx.AsyncByteStream):\n        closed = False\n\n        async def __aiter__(self):\n            yield b\"ID3\" + b\"x\" * 1021\n            entered.set()\n            await asyncio.Future()\n\n        async def aclose(self):\n            self.closed = True\n\n    stream = BlockingAudio()\n    client = httpx.AsyncClient(transport=httpx.MockTransport(\n        lambda _: httpx.Response(200, headers={\"content-type\": \"audio/mpeg\"}, stream=stream)))\n    provider = ElevenLabsSpeechProvider(client=client)\n    task = asyncio.create_task(provider.synthesize(\"Answer\"))\n    try:\n        await asyncio.wait_for(entered.wait(), 1)\n        task.cancel()\n        with pytest.raises(asyncio.CancelledError):\n            await task\n        assert stream.closed\n    finally:\n        await provider.aclose()\n    assert client.is_closed\n\n\n@pytest.mark.asyncio\nasync def test_elevenlabs_sdk_transport_timeout_is_safe_and_single_attempt(monkeypatch):\n    monkeypatch.setenv(\"ELEVENLABS_API_KEY\", \"fake-secret\")\n    monkeypatch.setenv(\"ELEVENLABS_VOICE_ID\", \"configured-voice\")\n    calls = []\n\n    def handler(request):\n        calls.append(request)\n        raise httpx.ReadTimeout(\"PRIVATE_REQUEST_DETAILS\", request=request)\n\n    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))\n    provider = ElevenLabsSpeechProvider(client=client)\n    try:\n        with pytest.raises(VoiceError) as error:\n            await provider.synthesize(\"Answer\")\n        assert len(calls) == 1\n        assert \"PRIVATE_REQUEST_DETAILS\" not in error.value.message\n    finally:\n        await provider.aclose()\nPY\n.venv/bin/python -m pytest -q tests/test_voice.py tests/test_voice_providers.py","workdir":"/home/jcb/dev/github/JunctionHack26-voice","max_output_tokens":1500,"yield_time_ms":1000,"sandbox_permissions":"require_escalated","justification":"May I verify the official SDK makes only one generation attempt and closes its streaming response on cancellation or timeout?"}));
+
+[131] tool exec result: Script completed
+Wall time 6.5 seconds
+Output:
+
+{"chunk_id":"81c2ad","wall_time_seconds":0.000015792,"exit_code":0,"original_token_count":25,"output":"...................................                                      [100%]\n35 passed in 2.72s\n"}
+{"chunk_id":"7fe76e","wall_time_seconds":1.00153301,"session_id":9330,"original_token_count":0,"output":""}
+
+[132] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[133] tool send_message call: {"target":"/root/voice_reviewer","message":"REDACTED"}
+
+[134] tool exec call: text(await tools.write_stdin({session_id:9330,chars:"","yield_time_ms":1000,"max_output_tokens":1500}));
+
+[135] tool exec result: Script completed
+Wall time 0.0 seconds
+Output:
+
+{"chunk_id":"680b15","wall_time_seconds":0.000015721,"exit_code":0,"original_token_count":25,"output":".......................................                                  [100%]\n39 passed in 2.76s\n"}
+
+[136] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[137] assistant: Migrated ElevenLabs speech generation to `AsyncElevenLabs` while preserving the existing interface.
+
+- Exact answer text and configured voice/model retained.
+- SDK retries disabled.
+- Audio content validation and cancellation cleanup preserved.
+- **39 backend/provider tests passed.**
+
+Only `app/voice_providers.py` and `tests/test_voice_providers.py` changed. Independent review and root’s live verification are pending.
