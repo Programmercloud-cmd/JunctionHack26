@@ -3,6 +3,8 @@ from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 import tempfile
+import hashlib
+import base64
 import threading
 import uuid
 import warnings
@@ -33,6 +35,9 @@ class Page:
     width: int
     height: int
     path: Path
+    source_id: str | None = None
+    source_page: int | None = None
+    source_filename: str | None = None
 
     def image(self):
         with Image.open(self.path) as image:
@@ -60,6 +65,14 @@ class Document:
     frame_registry: dict = field(default_factory=dict)
     question_context: dict | None = None
     review_status: str = "source_available"
+    sources: list[dict] = field(default_factory=list)
+    source_files: dict[str, bytes] = field(default_factory=dict)
+    source_interpretations: dict = field(default_factory=dict)
+    interpretation_status: str = "pending"
+    geometry_status: str = "not_requested"
+    geometry_revision_id: str | None = None
+    user_values: list[dict] = field(default_factory=list)
+    conversation_context: dict | None = None
 
     def snapshot(self):
         """Pin a request to immutable source bytes and a private revision interpretation."""
@@ -67,7 +80,10 @@ class Document:
                        scene=self.scene.model_copy(deep=True) if self.scene else None,
                        description=self.description.model_copy(deep=True) if self.description else None,
                        reasoning=deepcopy(self.reasoning), identity_registry=deepcopy(self.identity_registry),
-                       frame_registry=deepcopy(self.frame_registry), question_context=deepcopy(self.question_context))
+                       frame_registry=deepcopy(self.frame_registry), question_context=deepcopy(self.question_context),
+                       sources=deepcopy(self.sources), source_files=dict(self.source_files),
+                       source_interpretations=deepcopy(self.source_interpretations),
+                       user_values=deepcopy(self.user_values), conversation_context=deepcopy(self.conversation_context))
 
     def public(self):
         return {
@@ -77,13 +93,17 @@ class Document:
             "scene_url": f"/api/documents/{self.id}/scene" if self.scene else None,
             "ifc_url": f"/api/documents/{self.id}/model.ifc" if self.ifc_bytes else None,
             "pages": [{"page": p.number, "width": p.width, "height": p.height,
-                       "image_url": f"/api/documents/{self.id}/pages/{p.number}"} for p in self.pages],
+                       "image_url": f"/api/buildings/{self.id}/revisions/{self.revision_id}/pages/{p.number}" if self.revision_id else f"/api/documents/{self.id}/pages/{p.number}",
+                       "source_id": p.source_id, "source_page": p.source_page, "source_filename": p.source_filename} for p in self.pages],
             "warnings": self.warnings,
             "building_id": self.building_id or self.id,
             "revision_id": self.revision_id,
             "revision_number": self.revision_number,
             "review_status": self.review_status,
             "has_scene": self.scene is not None,
+            "sources": self.sources, "interpretation_status": self.interpretation_status,
+            "geometry_status": self.geometry_status, "geometry_revision_id": self.geometry_revision_id,
+            "user_values": self.user_values,
             "unresolved_views": [v.model_dump() for v in self.description.unresolved_views] if self.description else [],
         }
 
@@ -141,13 +161,20 @@ class DocumentStore:
                     for page, png in restored:
                         path = directory / f"{page.number}.png"
                         path.write_bytes(png)
-                        pages.append(Page(page.number, page.width, page.height, path))
+                        pages.append(Page(page.number, page.width, page.height, path, page.source_id, page.source_page, manifest.source_filename))
                     safe_name = Path(filename.replace("\\", "/")).name[:200] or "Derived building.ifc"
                     document = Document(document_id, safe_name, pages, scene.warnings,
                                         kind="drawing", scene=scene, ifc_bytes=data, source_bytes=data,
                                         description=manifest.description,
                                         identity_registry=manifest.identity_registry if manifest.version>=4 else {},
-                                        frame_registry=manifest.frame_registry if manifest.version>=4 else {})
+                                        frame_registry=manifest.frame_registry if manifest.version>=4 else {},
+                                        sources=[x.model_dump(exclude={"original_base64", "sha256"}) for x in manifest.sources],
+                                        source_files={x.source_id:base64.b64decode(x.original_base64) for x in manifest.sources},
+                                        source_interpretations=manifest.source_interpretations,
+                                        user_values=manifest.user_values, interpretation_status="complete",
+                                        geometry_status="available", geometry_revision_id=manifest.geometry_revision_id)
+                    if manifest.description and len(document.sources)==1 and not document.source_interpretations:
+                        document.source_interpretations[document.sources[0]["source_id"]]=manifest.description.model_dump()
                     self.documents[document_id] = document
                     return document
                 scene = import_ifc(data, document_id)
@@ -159,9 +186,16 @@ class DocumentStore:
             return self._add(data, filename)
 
     def _add(self, data: bytes, filename: str) -> Document:
-        images, notes = [], []
+        images, notes, vector_metadata = [], [], None
         try:
-            if data.startswith(b"%PDF-"):
+            if Path(filename).suffix.lower() in {".svg", ".dxf", ".dwg"}:
+                from .source_formats import normalize_vector_source, SourceFormatError
+                try:
+                    result = normalize_vector_source(data, filename, max_edge=MAX_EDGE)
+                except SourceFormatError as error:
+                    raise DocumentError(error.message,error.status) from None
+                images, notes, vector_metadata = result.pages, result.warnings, result.metadata
+            elif data.startswith(b"%PDF-"):
                 with pdfium.PdfDocument(data) as pdf:
                     if not 1 <= len(pdf) <= MAX_PAGES:
                         raise DocumentError("PDF must contain 1–5 pages; larger documents are not silently truncated.", 413)
@@ -211,5 +245,21 @@ class DocumentStore:
                 image.close()
         safe_name = Path(filename.replace("\\", "/")).name[:200] or "Untitled plan"
         document = Document(document_id, safe_name, pages, notes, source_bytes=data)
+        source_id = hashlib.sha256(data).hexdigest()
+        kind = "pdf" if data.startswith(b"%PDF-") else Path(safe_name).suffix.lower().lstrip(".")
+        media = {"pdf":"application/pdf", "svg":"image/svg+xml", "dxf":"image/vnd.dxf", "png":"image/png", "jpg":"image/jpeg", "jpeg":"image/jpeg"}.get(kind,"application/octet-stream")
+        for page in pages:
+            page.source_id, page.source_page, page.source_filename = source_id, page.number, safe_name
+        document.source_files = {source_id:data}
+        document.sources = [{"source_id":source_id,"filename":safe_name,"filenames":[safe_name],
+            "kind":kind,"media_type":media,"pages":[{"page":p.number,"source_page":p.number,"width":p.width,"height":p.height,
+            "sha256":hashlib.sha256(p.path.read_bytes()).hexdigest()} for p in pages],"metadata":vector_metadata or {}}]
         self.documents[document_id] = document
         return document
+
+
+def resolve_reference(document, page, source_id=None, source_page=None):
+    resolved = next((p for p in document.pages if p.number == page), None)
+    if resolved is None or (source_id is not None and resolved.source_id != source_id) or (source_page is not None and resolved.source_page != source_page):
+        raise DocumentError("Source reference does not match the original revision page.", 422)
+    return resolved

@@ -2,14 +2,17 @@
 import base64
 import hashlib
 import json
+import math
 from io import BytesIO
 
 import ifcopenshell
 import ifcopenshell.util.unit
+import ifcopenshell.util.placement
 from PIL import Image
 
 from .artifact_schema import ARTIFACT_MARKER, DISPLAY_UNIT, MANIFEST_PROPERTY, PSET_NAME, ArtifactManifest
 from .documents import DocumentError, MAX_EDGE, MAX_IFC_UPLOAD, MAX_PAGES, MAX_PIXELS
+from .scene import SourceRef, SceneFloor
 
 
 def has_artifact_marker(model):
@@ -77,7 +80,7 @@ def artifact_from_model(model, document_id):
         if (not scene.derived or scene.source_kind != "image" or scene.catalog_complete
                 or not manifest.artifact_id or scene.artifact_id != manifest.artifact_id or not scene.floors):
             raise ValueError("Inconsistent derived classification")
-        if not 1 <= len(manifest.pages) <= MAX_PAGES:
+        if not manifest.pages or (manifest.version < 5 and len(manifest.pages) > MAX_PAGES):
             raise ValueError("Source page coverage unavailable")
         restored = []
         for index, page in enumerate(manifest.pages, start=1):
@@ -94,6 +97,38 @@ def artifact_from_model(model, document_id):
                 image.load()
             restored.append((page, data))
         page_ids = {p.number for p in manifest.pages}
+        if manifest.version >= 5:
+            source_ids = set()
+            mapped_pages = set()
+            for source in manifest.sources:
+                if source.source_id in source_ids:
+                    raise ValueError("Duplicate original source")
+                source_ids.add(source.source_id)
+                original = base64.b64decode(source.original_base64,validate=True)
+                if not original or hashlib.sha256(original).hexdigest() != source.sha256 or source.sha256 != source.source_id:
+                    raise ValueError("Original source hash mismatch")
+                if source.kind == "pdf" and len(source.pages) > MAX_PAGES:
+                    raise ValueError("Original source exceeds per-file page coverage")
+                locals_seen = set()
+                for mapping in source.pages:
+                    number, local = mapping["page"], mapping["source_page"]
+                    if number in mapped_pages or local in locals_seen or not isinstance(local,int) or local < 1:
+                        raise ValueError("Ambiguous original source page mapping")
+                    mapped_pages.add(number);locals_seen.add(local)
+                    page = next((p for p in manifest.pages if p.number == number),None)
+                    if (not page or page.source_id != source.source_id or page.source_page != local
+                            or any(mapping.get(k,getattr(page,k)) != getattr(page,k) for k in ("width","height","sha256"))):
+                        raise ValueError("Original source/page metadata mismatch")
+            if manifest.sources and mapped_pages != {p.number for p in manifest.pages if p.source_id is not None}:
+                raise ValueError("Original source coverage incomplete")
+            if not manifest.sources and any(p.source_id or p.source_page for p in manifest.pages):
+                raise ValueError("Original source bytes missing")
+        by_page = {p.number:p for p in manifest.pages}
+        for ref in [f.source for f in scene.floors]+[e.source for e in scene.elements]:
+            page=by_page.get(ref.page)
+            if page and ((ref.source_id is not None and ref.source_id!=page.source_id)
+                         or (ref.source_page is not None and ref.source_page!=page.source_page)):
+                raise ValueError("Source reference conflicts with immutable page mapping")
         floor_ids = {f.id for f in scene.floors}
         if len(floor_ids) != len(scene.floors):
             raise ValueError("Duplicate floor identity")
@@ -126,9 +161,17 @@ def artifact_from_model(model, document_id):
             if not entity or not entity.is_a("IfcBuildingStorey"):
                 raise ValueError("Missing storey identity")
             metadata = _provenance(entity, manifest.version)
-            if (json.loads(metadata["Source"]) != floor.source.model_dump()
-                    or json.loads(metadata["Floor"]) != floor.model_dump()):
+            if (SourceRef.model_validate_json(metadata["Source"]) != floor.source
+                    or SceneFloor.model_validate_json(metadata["Floor"]) != floor):
                 raise ValueError("Storey metadata disagrees with manifest")
+            if manifest.version >= 5:
+                actual = ifcopenshell.util.placement.get_local_placement(entity.ObjectPlacement)
+                expected = floor.building_transform
+                if (not math.isclose(actual[2,3],floor.base_elevation,abs_tol=1e-9)
+                        or any(not math.isclose(actual[i,j],expected[i][j],abs_tol=1e-9) for i in (0,1) for j in (0,1))
+                        or any(not math.isclose(actual[i,3],expected[i][2],abs_tol=1e-9) for i in (0,1))
+                        or entity.Elevation != floor.base_elevation):
+                    raise ValueError("Actual storey placement disagrees with recorded building placement")
             if floor.calibration and floor.calibration.source.page != floor.source.page:
                 raise ValueError("Wrong calibration page")
             if any(m.source and m.source.page not in page_ids for m in floor.measurements):
@@ -165,7 +208,7 @@ def artifact_from_model(model, document_id):
             if memberships != [element.storey_id]:
                 raise ValueError("Element storey disagrees with IFC containment")
             metadata = _provenance(entity, manifest.version)
-            if (json.loads(metadata["Source"]) != element.source.model_dump()
+            if (SourceRef.model_validate_json(metadata["Source"]) != element.source
                     or json.loads(metadata["Assumptions"]) != [a.model_dump() for a in element.assumptions]
                     or metadata["EvidenceBasis"] != element.evidence_basis or metadata["Note"] != element.note):
                 raise ValueError("Element metadata disagrees with manifest")

@@ -78,11 +78,11 @@ def document(tmp_path):
     finally:store.close()
 
 
-def test_v4_exact_description_pixels_stable_ids_and_unscaled_semantics(document):
+def test_v5_exact_description_pixels_stable_ids_and_unscaled_semantics(document):
     d=description()
     model=ifcopenshell.file.from_string(generate_ifc(d,document).decode())
     artifact=manifest(model)
-    assert artifact.version==4 and artifact.description==d
+    assert artifact.version==5 and artifact.description==d
     assert model.by_type("IfcProject")[0].Description==ARTIFACT_MARKER
     assert model.by_type("IfcContextDependentUnit")[0].Name==DISPLAY_UNIT and not model.by_type("IfcSIUnit")
     assert artifact.scene.derived and artifact.scene.source_kind=="image" and not artifact.scene.catalog_complete
@@ -92,7 +92,7 @@ def test_v4_exact_description_pixels_stable_ids_and_unscaled_semantics(document)
     assert artifact.pages[0].sha256==hashlib.sha256(original).hexdigest()
     assert all(e.geometry is None and e.geometry_origin=="inferred" and e.source.kind=="image" for e in artifact.scene.elements)
     assert len(model.by_type("IfcSpace"))==1 and len(model.by_type("IfcWall"))==4
-    assert all(s.Elevation is None for s in model.by_type("IfcBuildingStorey"))
+    assert all(s.Elevation == 0 for s in model.by_type("IfcBuildingStorey"))
     for element in artifact.scene.elements:
         props=ifcopenshell.util.element.get_psets(model.by_guid(element.id))[PSET_NAME]
         assert props["Representation"]==element.representation
@@ -397,7 +397,8 @@ def test_supported_registration_multipage_and_reopen_preserve_original_coordinat
         scene,pages,artifact=load_artifact(data,"new-id")
         assert scene.layout=="aligned" and [f.source.page for f in scene.floors]==[1,2]
         for f in scene.floors:
-            assert [r[0]*.1+r[1]*.2+r[2]for r in f.transform[:2]]==pytest.approx([0,0])
+            from app.ifc_generate import _transform
+            assert _transform(f.building_transform,_transform(f.transform,[.1,.2]))==pytest.approx([0,0])
         assert [raw for _,raw in pages]==[p.path.read_bytes()for p in document.pages]
         assert [e.id for e in scene.elements]==[e.id for e in artifact.scene.elements]
     finally:store.close()

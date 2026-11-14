@@ -36,6 +36,8 @@ class BuildingStore:
     def __init__(self, root: Path):
         self.root = Path(root) / "buildings"
         self.root.mkdir(parents=True,exist_ok=True)
+        self.resources = self.root.parent / "resources"
+        self.resources.mkdir(exist_ok=True)
         self.documents = {}
         self.lock = threading.RLock()
         # A restarted process cannot prove an old provider call is still running.
@@ -73,7 +75,9 @@ class BuildingStore:
         with self.lock:
             directory=self.directory(building_id)
             if (directory/"CURRENT.json").exists():
-                return self.get(building_id)
+                document=self.get(building_id)
+                self._alias(document,data,filename)
+                return document
             # Reuse the existing upload normalization/importer; do not create a parallel parser.
             with tempfile.TemporaryDirectory(prefix="normalize-",dir=self.root.parent) as tmp:
                 normalizer=DocumentStore(Path(tmp))
@@ -86,7 +90,7 @@ class BuildingStore:
                     for page in document.pages:
                         name=f"{page.number}.png"
                         shutil.copyfile(page.path,staged/"pages"/name)
-                        pages.append(Page(page.number,page.width,page.height,directory/"pages"/name))
+                        pages.append(replace(page,path=directory/"pages"/name))
                     now=time.time()
                     _json(staged/"building.json",{"schema_version":1,"building_id":building_id,
                         "document_id":building_id,"filename":document.filename,"kind":document.kind,
@@ -94,6 +98,18 @@ class BuildingStore:
                         "pages":[{"number":p.number,"width":p.width,"height":p.height,
                                   "sha256":hashlib.sha256((staged/"pages"/f"{p.number}.png").read_bytes()).hexdigest()}for p in pages]})
                     document=replace(document,id=building_id,building_id=building_id,pages=pages,source_bytes=data)
+                    if not document.sources and not (document.scene and document.scene.derived):
+                        document.sources=[{"source_id":building_id,"filename":document.filename,"filenames":[document.filename],
+                            "kind":document.kind,"media_type":"application/x-step" if document.kind=="ifc" else "application/octet-stream",
+                            "pages":[],"metadata":{}}]
+                        document.source_files={building_id:data}
+                    for source in document.sources:
+                        sid=source["source_id"]
+                        source_pages=[replace(p,path=staged/"pages"/f"{p.number}.png") for p in pages if p.source_id==sid]
+                        self._save_resource(source,document.source_files[sid],source_pages)
+                    if document.scene:
+                        document.geometry_status="available"
+                    if document.description or document.kind=="ifc":document.interpretation_status="complete"
                     if document.scene:
                         document.scene.document_id=building_id
                         document.scene.building_id=building_id
@@ -156,6 +172,42 @@ class BuildingStore:
         def read(name):
             return json.loads((folder/name).read_text()) if (folder/name).exists() else None
         scene_data=read("scene.json");description=read("description.json")
+        source_interpretations=read("source_interpretations.json") or {}
+        sources=read("sources.json")
+        legacy_pages=read("legacy_pages.json")
+        source_files={}
+        if sources is not None:
+            pages=[]
+            for entry in sources:
+                sid=entry["source_id"]
+                resource=self._resource_path(sid)
+                original=(resource/"source.original").read_bytes()
+                if hashlib.sha256(original).hexdigest()!=sid:raise ValueError("Original resource changed")
+                source_files[sid]=original
+                for item in entry.get("pages",[]):
+                    path=resource/"pages"/f'{item["source_page"]}.png'
+                    if hashlib.sha256(path.read_bytes()).hexdigest()!=item["sha256"]:raise ValueError("Source page changed")
+                    pages.append(Page(item["page"],item["width"],item["height"],path,sid,item["source_page"],entry["filename"]))
+            for item in legacy_pages or []:
+                path=folder/f'legacy-page-{item["number"]}.png'
+                if hashlib.sha256(path.read_bytes()).hexdigest()!=item["sha256"]:raise ValueError("Legacy original page changed")
+                pages.append(Page(item["number"],item["width"],item["height"],path))
+            pages.sort(key=lambda p:p.number)
+        else:
+            # Old derived artifacts contain normalized pages, not recoverable original files.
+            derived=scene_data and scene_data.get("derived")
+            sources=[] if derived else [{"source_id":metadata["content_sha256"],"filename":metadata["filename"],
+                "filenames":[metadata["filename"]],"kind":metadata["kind"],"media_type":"application/octet-stream",
+                "pages":[{"page":p.number,"source_page":p.number,"width":p.width,"height":p.height,
+                    "sha256":hashlib.sha256(p.path.read_bytes()).hexdigest()}for p in pages],"metadata":{}}]
+            if not derived:
+                sid=metadata["content_sha256"];source_files={sid:source}
+                pages=[replace(p,source_id=sid,source_page=p.number,source_filename=metadata["filename"])for p in pages]
+                self._save_resource(sources[0],source,pages)
+        if description and len(sources)==1 and not source_interpretations:
+            # Reuse the exact saved single-source interpretation; this is not a new extraction
+            # and is not promoted into the independent global resource cache.
+            source_interpretations={sources[0]["source_id"]:deepcopy(description)}
         return Document(id=metadata["building_id"],filename=metadata["filename"],pages=pages,
             warnings=info.get("warnings",[]),kind=metadata["kind"],
             scene=Scene.model_validate(scene_data) if scene_data else None,
@@ -164,7 +216,11 @@ class BuildingStore:
             reasoning=read("reasoning.json"),building_id=metadata["building_id"],revision_id=revision_id,
             parent_revision_id=info.get("parent_revision_id"),revision_number=info["revision_number"],
             identity_registry=read("identities.json") or {},frame_registry=read("frames.json") or {},
-            review_status=info["status"])
+            review_status=info["status"],sources=sources,source_files=source_files,
+            source_interpretations=source_interpretations,user_values=read("user_values.json") or [],
+            interpretation_status=info.get("interpretation_status","complete" if description else "pending"),
+            geometry_status=info.get("geometry_status","available" if scene_data else "not_requested"),
+            geometry_revision_id=info.get("geometry_revision_id",revision_id if scene_data else None))
 
     def prepare(self,document):
         candidate=document.snapshot()
@@ -189,9 +245,11 @@ class BuildingStore:
             if candidate.scene:
                 candidate.scene.building_id=candidate.id
                 candidate.scene.document_id=candidate.id
-                candidate.scene.revision_id=candidate.revision_id
+                if candidate.geometry_status != "stale":
+                    candidate.geometry_revision_id=candidate.revision_id
+                    candidate.scene.revision_id=candidate.revision_id
                 candidate.scene.parent_revision_id=expected_revision_id
-                candidate.scene.revision_number=candidate.revision_number
+                if candidate.geometry_status != "stale":candidate.scene.revision_number=candidate.revision_number
                 candidate.scene.review_status=status
                 candidate.scene.ifc_url=f"/api/documents/{candidate.id}/model.ifc"
             folder=directory/"revisions"/candidate.revision_id
@@ -203,15 +261,28 @@ class BuildingStore:
                 for name,value in (("scene.json",candidate.scene.model_dump() if candidate.scene else None),
                     ("description.json",candidate.description.model_dump() if candidate.description else None),
                     ("reasoning.json",candidate.reasoning),("identities.json",candidate.identity_registry),
-                    ("frames.json",candidate.frame_registry),("review.json",review),("pipeline.json",config or {})):
+                    ("frames.json",candidate.frame_registry),
+                    ("sources.json",candidate.sources if candidate.sources else None),
+                    ("source_interpretations.json",candidate.source_interpretations),("user_values.json",candidate.user_values),
+                    ("review.json",review),("pipeline.json",config or {})):
                     if value is not None:
                         _json(temporary/name,value.model_dump() if hasattr(value,"model_dump") else value)
+                legacy=[]
+                for page in candidate.pages:
+                    if page.source_id is None:
+                        target=temporary/f"legacy-page-{page.number}.png"
+                        shutil.copyfile(page.path,target)
+                        legacy.append({"number":page.number,"width":page.width,"height":page.height,
+                            "sha256":hashlib.sha256(target.read_bytes()).hexdigest()})
+                if legacy:_json(temporary/"legacy_pages.json",legacy)
                 if candidate.ifc_bytes:
                     (temporary/"model.ifc").write_bytes(candidate.ifc_bytes)
                 hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest()for p in temporary.iterdir()if p.is_file()}
                 info={"schema_version":1,"building_id":candidate.id,"revision_id":candidate.revision_id,
                     "parent_revision_id":expected_revision_id,"revision_number":candidate.revision_number,
-                    "status":status,"updated_at":time.time(),"warnings":candidate.warnings,"hashes":hashes}
+                    "status":status,"updated_at":time.time(),"warnings":candidate.warnings,"hashes":hashes,
+                    "interpretation_status":candidate.interpretation_status,"geometry_status":candidate.geometry_status,
+                    "geometry_revision_id":candidate.geometry_revision_id}
                 _json(temporary/"revision.json",info)
                 os.replace(temporary,folder)
                 # Publish only after every artifact exists. Older revision directories are never changed.
@@ -257,3 +328,142 @@ class BuildingStore:
                 if value is not None:_json(folder/name,value)
             if candidate.ifc_bytes:(folder/"model.ifc").write_bytes(candidate.ifc_bytes)
             return str(folder.relative_to(self.directory(candidate.id)))
+
+    def _resource_path(self, source_id):
+        if not isinstance(source_id,str) or len(source_id)!=64 or any(c not in "0123456789abcdef"for c in source_id):
+            raise DocumentError("Source not found.",404)
+        return self.resources/source_id
+
+    def _save_resource(self, metadata, data, pages):
+        sid=metadata["source_id"]
+        if hashlib.sha256(data).hexdigest()!=sid:raise DocumentError("Original source hash mismatch.",422)
+        directory=self._resource_path(sid)
+        if (directory/"source.json").exists():return
+        directory.mkdir(exist_ok=True);(directory/"pages").mkdir(exist_ok=True)
+        (directory/"source.original").write_bytes(data)
+        local=deepcopy(metadata)
+        local["pages"]=[]
+        for page in pages:
+            number=page.source_page or page.number
+            destination=directory/"pages"/f"{number}.png"
+            shutil.copyfile(page.path,destination)
+            local["pages"].append({"page":number,"source_page":number,"width":page.width,"height":page.height,
+                "sha256":hashlib.sha256(destination.read_bytes()).hexdigest()})
+        _atomic_json(directory/"source.json",local)
+
+    def _alias(self, document, data, filename):
+        sid=hashlib.sha256(data).hexdigest()
+        safe=Path(filename.replace("\\","/")).name[:200]
+        directory=self._resource_path(sid)
+        if (directory/"source.json").exists():
+            metadata=json.loads((directory/"source.json").read_text())
+            if safe not in metadata.setdefault("filenames",[]):
+                metadata["filenames"].append(safe);_atomic_json(directory/"source.json",metadata)
+
+    def _resource(self,data,filename):
+        sid=hashlib.sha256(data).hexdigest();directory=self._resource_path(sid)
+        if not (directory/"source.json").exists():
+            with tempfile.TemporaryDirectory(prefix="source-",dir=self.root.parent)as tmp:
+                parser=DocumentStore(Path(tmp))
+                try:
+                    doc=parser.add(data,filename)
+                    if doc.scene and doc.scene.derived:
+                        for source in doc.sources:self._save_resource(source,doc.source_files[source["source_id"]],
+                            [p for p in doc.pages if p.source_id==source["source_id"]])
+                        return doc
+                    metadata=doc.sources[0] if doc.sources else {"source_id":sid,"filename":doc.filename,
+                        "filenames":[doc.filename],"kind":doc.kind,"media_type":"application/x-step","pages":[],"metadata":{}}
+                    self._save_resource(metadata,data,doc.pages)
+                finally:parser.close()
+        metadata=json.loads((directory/"source.json").read_text())
+        pages=[Page(p["page"],p["width"],p["height"],directory/"pages"/f'{p["source_page"]}.png',sid,p["source_page"],metadata["filename"])for p in metadata["pages"]]
+        return Document(sid,metadata["filename"],pages,source_bytes=data,sources=[metadata],source_files={sid:data},kind="ifc" if metadata["kind"]=="ifc"else"drawing")
+
+    def add_many(self, files, building_id=None):
+        if not files:raise DocumentError("Choose at least one source file.")
+        with self.lock:
+            # Preflight before publishing any source membership, including a new batch.
+            resources=[self._resource(data,name)for data,name in files]
+            existing=self.get(building_id)if building_id else None
+            identities={s['source_id']for r in resources for s in r.sources}
+            if existing:identities.update(s['source_id']for s in existing.sources)
+            native_incoming=any(r.kind=='ifc'for r in resources)
+            legacy_drawings=bool(existing and existing.kind=='drawing' and existing.pages)
+            if (native_incoming and legacy_drawings) or (len(identities)>1 and (native_incoming or existing and existing.kind=='ifc')):
+                raise DocumentError('Native IFC must be opened as a separate building. Grouped drawing sources are supported; mixed native IFC evidence is not yet supported.',422)
+            for r in resources:
+                if r.scene and r.scene.derived and not r.sources and (existing or len(files)>1):
+                    raise DocumentError('This older derived IFC contains normalized pages but lacks original-file membership. Open it separately; its pages remain available for QA and additional drawing sources.',422)
+            current=existing if existing else self.add(*files[0])
+            additions=files if building_id else files[1:]
+            for data,filename in additions:
+                sid=hashlib.sha256(data).hexdigest()
+                if any(s["source_id"]==sid for s in current.sources):
+                    self._alias(current,data,filename);continue
+                resource=self._resource(data,filename)
+                candidate=self.prepare(current)
+                number=max((p.number for p in candidate.pages),default=0)
+                for source in resource.sources:
+                    if any(s["source_id"]==source["source_id"]for s in candidate.sources):continue
+                    entry=deepcopy(source);entry["pages"]=[]
+                    for page in resource.pages:
+                        if page.source_id!=source["source_id"]:continue
+                        number+=1
+                        local=page.source_page or page.number
+                        path=self._resource_path(source["source_id"])/"pages"/f"{local}.png"
+                        candidate.pages.append(replace(page,number=number,path=path))
+                        entry["pages"].append({"page":number,"source_page":local,"width":page.width,"height":page.height,
+                            "sha256":hashlib.sha256(path.read_bytes()).hexdigest()})
+                    candidate.sources.append(entry)
+                    candidate.source_files[source["source_id"]]=resource.source_files[source["source_id"]]
+                candidate.interpretation_status="pending"
+                if candidate.scene:candidate.geometry_status="stale"
+                candidate.reasoning=None
+                from .reasoning import build_reasoning
+                candidate.reasoning=build_reasoning(candidate)
+                current=self.commit(candidate,current.revision_id,status="source_added")
+            return current
+
+    def source_document(self, document, source_id):
+        source=next((s for s in document.sources if s["source_id"]==source_id),None)
+        if source is None:raise DocumentError("Source is not part of this revision.",404)
+        pages=[replace(p,number=p.source_page or p.number)for p in document.pages if p.source_id==source_id]
+        metadata=deepcopy(source)
+        for page in metadata["pages"]:page["page"]=page["source_page"]
+        return Document(source_id,source["filename"],pages,source_bytes=document.source_files.get(source_id),
+            sources=[metadata],source_files={source_id:document.source_files[source_id]},
+            kind="ifc" if source["kind"]=="ifc"else"drawing")
+
+    def cached_interpretation(self, source_id):
+        path=self._resource_path(source_id)/"interpretation.json"
+        if not path.exists():return None
+        return BuildingDescription.model_validate(json.loads(path.read_text()))
+
+    def save_interpretation(self,source_id,description):
+        with self.lock:
+            _atomic_json(self._resource_path(source_id)/"interpretation.json",description.model_dump()if hasattr(description,"model_dump")else description)
+
+    def merge_interpretation(self,building_id,source_id,description,job_guard=None):
+        from .source_merge import merge_source_interpretation
+        from .reasoning import build_reasoning
+        with self.lock:
+            current=self.get(building_id)
+            candidate=self.prepare(current)
+            merge_source_interpretation(candidate,source_id,description)
+            candidate.interpretation_status="complete"if all(s["source_id"]in candidate.source_interpretations or s["kind"]=="ifc"for s in candidate.sources)else"partial"
+            if candidate.scene:candidate.geometry_status="stale"
+            candidate.reasoning=build_reasoning(candidate)
+            return self.commit(candidate,current.revision_id,status="interpretation_available",job_guard=job_guard)
+
+    def conversation(self,building_id):
+        with self.lock:
+            self.get(building_id)
+            path=self.directory(building_id)/"conversation.json"
+            return json.loads(path.read_text())if path.exists()else[]
+
+    def append_conversation(self,building_id,message):
+        with self.lock:
+            messages=self.conversation(building_id)
+            messages.append(deepcopy(message))
+            _atomic_json(self.directory(building_id)/"conversation.json",messages)
+            return messages

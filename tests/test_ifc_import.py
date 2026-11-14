@@ -157,3 +157,33 @@ def test_actual_duplex():
     assert scene.catalog_complete
     assert len({e.id for e in scene.elements}) == len(scene.elements)
     assert sum(e.geometry is not None for e in scene.elements) > 200
+
+
+def test_native_floor_controls_include_geometryless_storeys_and_uncontained_reference():
+    model, wall, window, space = fixture_model()
+    upper = model.create_entity('IfcBuildingStorey',GlobalId=ifcopenshell.guid.new(),Name='Upper',Elevation=6000.)
+    empty = model.create_entity('IfcBuildingStorey',GlobalId=ifcopenshell.guid.new(),Name='Unspecified')
+    scene = import_ifc(encode(model),'native-floors')
+    assert {f.label for f in scene.floors} == {'Ground floor','Upper','Unspecified'}
+    ground = next(f for f in scene.floors if f.label=='Ground floor')
+    assert ground.source.kind == 'ifc' and ground.source.page is None
+    assert ground.base_elevation == 2 and ground.reference_height == 4
+    assert 'supplied' in ground.reference_height_basis
+    assert next(f for f in scene.floors if f.id==upper.GlobalId).reference_height is None
+    assert next(f for f in scene.floors if f.id==empty.GlobalId).reference_height is None
+    relation = wall.ContainedInStructure[0]
+    relation.RelatedElements = [window]
+    scene = import_ifc(encode(model),'uncontained')
+    assert next(e for e in scene.elements if e.id==wall.GlobalId).storey_id is None
+    assert scene.uncontained_reference['base_elevation'] == 2
+    assert scene.uncontained_reference['reference_height'] == 3
+
+
+def test_ambiguous_containment_never_selects_first_storey():
+    model,wall,_,space=fixture_model()
+    other=model.create_entity('IfcBuildingStorey',GlobalId=ifcopenshell.guid.new(),Name='Other',Elevation=6000.)
+    model.create_entity('IfcRelContainedInSpatialStructure',GlobalId=ifcopenshell.guid.new(),RelatedElements=[wall],RelatingStructure=other)
+    scene=import_ifc(encode(model),'ambiguous')
+    assert next(e for e in scene.elements if e.id==wall.GlobalId).storey_id is None
+    assert next(e for e in scene.elements if e.id==space.GlobalId).storey_id is not None
+    assert scene.uncontained_reference is not None

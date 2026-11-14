@@ -60,7 +60,11 @@ def build_comparison(scene):
     if not scene.derived:
         return []
     floors={f.id:f for f in scene.floors}
-    inverses={f.id:inverse_transform(f.transform) for f in scene.floors}
+    inverses={}
+    for floor in scene.floors:
+        source_inverse = inverse_transform(floor.transform)
+        placement_inverse = inverse_transform(floor.building_transform)
+        inverses[floor.id] = lambda p,s=source_inverse,b=placement_inverse:s(b(p))
     result=[]
     for element in scene.elements:
         floor=floors[element.storey_id]

@@ -142,4 +142,9 @@ def frame_signature(floor):
               "orientation_basis":floor.orientation_basis,
               "calibration":floor.calibration.model_dump() if floor.calibration else None,
               "alignment":floor.alignment.model_dump() if floor.alignment else None}
-    return hashlib.sha256(json.dumps(values,sort_keys=True).encode()).hexdigest()
+    def legacy_fields(value):
+        if isinstance(value, dict):
+            return {k:legacy_fields(v) for k,v in value.items() if not ((k in {"source_id","source_page"} and v is None) or (k == "provenance" and v == "observed"))}
+        if isinstance(value,list):return [legacy_fields(v) for v in value]
+        return value
+    return hashlib.sha256(json.dumps(legacy_fields(values),sort_keys=True).encode()).hexdigest()

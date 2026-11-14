@@ -11,7 +11,7 @@ import ifcopenshell.guid
 from collections import Counter
 from shapely.geometry import Polygon, LineString, box
 
-from .artifact_schema import ARTIFACT_MARKER, DISPLAY_UNIT, MANIFEST_PROPERTY, PSET_NAME, ArtifactManifest, EmbeddedPage
+from .artifact_schema import ARTIFACT_MARKER, DISPLAY_UNIT, MANIFEST_PROPERTY, PSET_NAME, ArtifactManifest, EmbeddedPage, EmbeddedSource
 from .building import BoundaryRegion, BuildingDescription
 from .documents import Document, DocumentError
 from .ifc_import import MAX_ELEMENTS, MAX_IFC_BYTES, MAX_TRIANGLES, GLOBAL_ID
@@ -179,11 +179,31 @@ class _Builder:
         if kind=="stairs":
             self.stair_symbol(entity,points,z+height*.9,height*.1)
 
+    def connected_stair(self, entity, points, z, rise, thickness):
+        """Continuous schematic flight within the supplied footprint, no tread facts."""
+        outline=Polygon(points)
+        rectangle=list(outline.minimum_rotated_rectangle.exterior.coords)[:4]
+        a,b=max(zip(rectangle,rectangle[1:]+rectangle[:1]),key=lambda pair:math.dist(*pair))
+        length=math.dist(a,b);axis=[(b[k]-a[k])/length for k in (0,1)]
+        distances=[sum(p[k]*axis[k] for k in (0,1)) for p in points]
+        low,high=min(distances),max(distances)
+        lower=[[p[0],p[1],z+rise*(distance-low)/(high-low)-thickness] for p,distance in zip(points,distances)]
+        upper=[[p[0],p[1],p[2]+thickness] for p in lower]
+        faces=[]
+        for vertices in [list(reversed(lower)),upper]+[[lower[i],lower[(i+1)%len(points)],upper[(i+1)%len(points)],upper[i]] for i in range(len(points))]:
+            loop=self.model.create_entity('IfcPolyLoop',Polygon=[self.point(p) for p in vertices])
+            bound=self.model.create_entity('IfcFaceOuterBound',Bound=loop,Orientation=True)
+            faces.append(self.model.create_entity('IfcFace',Bounds=[bound]))
+        shell=self.model.create_entity('IfcClosedShell',CfsFaces=faces)
+        solid=self.model.create_entity('IfcFacetedBrep',Outer=shell)
+        shape=self.model.create_entity('IfcShapeRepresentation',ContextOfItems=self.context,RepresentationIdentifier='Body',RepresentationType='Brep',Items=[solid])
+        entity.Representation=self.model.create_entity('IfcProductDefinitionShape',Representations=[shape])
+
     def product(self, ifc_type, key, name, polygon, z, height, storey, source, assumptions, basis="observed", note="", kind=None,
                 representation="reconstructed", semantic_type="", environment="unknown"):
         if len(self.elements) >= MAX_ELEMENTS:
             raise DocumentError(f"Generated IFC exceeds the {MAX_ELEMENTS:,}-element limit; no inventory was truncated.",413)
-        entity = self.model.create_entity(ifc_type,GlobalId=self.guid(key),Name=name,ObjectPlacement=self.placement,
+        entity = self.model.create_entity(ifc_type,GlobalId=self.guid(key),Name=name,ObjectPlacement=storey.ObjectPlacement,
                                           Representation=self.solid(polygon,z,height) if polygon else None)
         self.products.append(entity)
         scene = SceneElement(id=entity.GlobalId,kind=kind or {"IfcSpace":"room","IfcWall":"wall","IfcDoor":"door","IfcWindow":"window"}[ifc_type],
@@ -277,9 +297,10 @@ def _feature_type(kind):
     return "IfcBuildingElementProxy","other"
 
 
-def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
+def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings,wall_height=None,connections=None):
     unit="m" if known else "relative"
-    wall_height,default_width,plate=(2.6,.12,.04) if known else (1.2,.08,.02)
+    default_height,default_width,plate=(2.6,.12,.04) if known else (1.2,.08,.02)
+    wall_height=wall_height or default_height
     spaces,physical=[],[]
 
     def add(ifc_type,key,label,kind,semantic,source,polygon=None,z=0,height=0,assumptions=None,basis="observed",note="",reason="",environment="unknown",schematic=False):
@@ -297,7 +318,7 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
             if i<j and a is not None and b is not None and a.intersection(b).area>1e-12:
                 conflicts.update((i,j))
     for i,room in enumerate(floor.rooms,start=1):
-        source,localized=_item_source(None,room.polygon,floor,page)
+        source,localized=_item_source(room.source,room.polygon,floor,page)
         shape=room_polygons[i]
         reason="Invalid room footprint." if shape is None else "Conflicting room interiors overlap." if i in conflicts else ""
         if not localized:
@@ -320,6 +341,9 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
         reason="" if valid else "Invalid boundary geometry or source association."
         if not localized:
             reason+=" Unlocalized: coarse floor source region only."
+        footprint = _valid_polygon(boundary.footprint,source.bbox) if boundary.footprint else None
+        if boundary.footprint and (boundary.kind!='wall' or footprint is None or not all(_inside(p,floor.source.bbox) for p in boundary.footprint)):
+            reason="Invalid supplied wall footprint; source retained without replacement geometry."
         if not boundary.key.strip() or key_counts[boundary.key]>1:
             reason="Duplicate or missing boundary key; host identity is ambiguous. "+reason
         padding_note=("Source selection region padded by one original-page pixel on each available side of its zero-width/height axis; not measured boundary thickness."
@@ -337,7 +361,7 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
             if LineString(boundary.segment).intersection(LineString(target.segment)).length<=0:
                 continue
             equivalent=(boundary.kind==target.kind and (boundary.segment==target.segment or boundary.segment==list(reversed(target.segment)))
-                        and boundary.thickness_segment==target.thickness_segment)
+                        and boundary.thickness_segment==target.thickness_segment and boundary.footprint==target.footprint)
             if equivalent:
                 # Exact duplicates have identical physical geometry; smallest key is stable.
                 primary,alias=(i,j) if boundary.key<target.key else (j,i)
@@ -384,6 +408,13 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
                 assumptions=[_assumption("marker_width",width,unit,"Flat display marker for an open edge; not a physical wall.")]
             assumptions.append(_assumption("height",height,unit,"Display extrusion only; no source height established."))
             world=_band(a,b,low,high)
+            if boundary.footprint:
+                world=[_transform(matrix,p) for p in boundary.footprint]
+                length=math.dist(a,b);normal=[-(b[1]-a[1])/length,(b[0]-a[0])/length]
+                offsets=[sum((p[k]-a[k])*normal[k] for k in (0,1)) for p in world]
+                low,high=min(offsets),max(offsets)
+                assumptions=[item for item in assumptions if item.property not in {'thickness','normal_offsets'}]
+                assumptions.append(_assumption('footprint','Explicit source polygon',None,'Tapered/angled physical wall footprint extruded exactly as supplied; vertical height remains separately attributed.'))
         else:
             height=0
         ifc_type={"wall":"IfcWall","railing":"IfcRailing","open_edge":"IfcBuildingElementProxy"}[boundary.kind]
@@ -395,7 +426,7 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
                 for a,b in zip(segment_points[1:],segment_points[2:])]
         generated[i]=(entity,low,high)
         if boundary.kind=="wall" and not reason:
-            hosts[boundary.key]=(entity,boundary.segment,low,high)
+            hosts[boundary.key]=(entity,boundary.segment,low,high,boundary.footprint)
     for i,record in boundary_records.items():
         if record["alias"] and not record["reason"]:
             primary=record["alias"]
@@ -405,7 +436,7 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
             target=boundary_records[primary]
             if not target["reason"] and target["description"].kind=="wall":
                 entity,low,high=generated[primary]
-                hosts[record["description"].key]=(entity,target["description"].segment,low,high)
+                hosts[record["description"].key]=(entity,target["description"].segment,low,high,target["description"].footprint)
 
     # Check all opening intervals before cutting any wall; conflicts have no arbitrary winner.
     opening_records={}
@@ -419,7 +450,7 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
             reason="Opening segment is outside its original source region or invalid."
         projected=[];interval=[]
         if not reason:
-            wall,segment,low,high=host
+            wall,segment,low,high,footprint=host
             aspect=page.width/page.height
             plane=lambda p:[aspect*p[0],-p[1]]
             a,b=[plane(p) for p in segment]
@@ -439,6 +470,8 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
                     or not (source.bbox[0]-1e-9<=original[0]<=source.bbox[2]+1e-9 and source.bbox[1]-1e-9<=original[1]<=source.bbox[3]+1e-9)
                     or not _inside(original,floor.source.bbox)):
                     break
+                if footprint and (not Polygon(footprint).buffer(1e-12).covers(LineString([point,original]))):
+                    break
                 projected.append(nearest);interval.append(t)
             if len(projected)!=2 or math.dist(*projected)==0:
                 reason="Opening cannot be projected within its explicit host band and original source region."
@@ -455,7 +488,7 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
         key=opening.persistent_id or f"{prefix}:opening:{i}"
         assumptions=[];world=None;sill=height=0
         if not reason:
-            wall,_,low,high=record["host"]
+            wall,_,low,high,_=record["host"]
             width=high-low
             a,b=record["points"]
             length=math.dist(a,b)
@@ -468,8 +501,9 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
             center=(low+high)/2
             a,b=[[point[i]+normal[i]*center for i in (0,1)] for point in (a,b)]
             sill,height=((0,2.1) if opening.kind=="door" else (1,1.2)) if known else ((0,.8) if opening.kind=="door" else (.4,.45))
+            sill*=wall_height/default_height; height*=wall_height/default_height
             void=builder.model.create_entity("IfcOpeningElement",GlobalId=builder.guid(key+":void"),Name="Display opening",
-                ObjectPlacement=builder.placement,Representation=builder.solid(_rectangle(a,b,width*1.4),sill,height),PredefinedType="OPENING")
+                ObjectPlacement=storey.ObjectPlacement,Representation=builder.solid(_rectangle(a,b,width*1.4),sill,height),PredefinedType="OPENING")
             builder.model.create_entity("IfcRelVoidsElement",GlobalId=builder.guid(key+":void-relation"),RelatingBuildingElement=wall,RelatedOpeningElement=void)
             world=_rectangle(a,b,min(.03,width/2))
             assumptions=[_assumption("height",height,unit,"Display opening height, not a measured source value."),
@@ -477,8 +511,10 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
                 _assumption("thickness",min(.03,width/2),unit,"Display fill thickness."),
                 _assumption("cross_wall_center",center,unit,"Void and fill are centered between the host's supplied face positions or explicitly assumed display faces; longitudinal source-gap endpoints are unchanged."),
                 _assumption("host_projection","Within rendered host wall band",None,"Source segment projected only onto its explicitly named wall; original source region unchanged.")]
+        padding_note=(" Original line citation preserved; selection region padded by one source pixel, not measured opening width."
+                      if record["source"].bbox!=opening.source.bbox and (opening.source.bbox[0]==opening.source.bbox[2] or opening.source.bbox[1]==opening.source.bbox[3]) else "")
         entity=add("IfcDoor" if opening.kind=="door" else "IfcWindow",key,opening.label,opening.kind,opening.kind,record["source"],world,sill,height,
-                   assumptions,opening.basis,opening.note,reason)
+                   assumptions,opening.basis,opening.note+padding_note,reason)
         if not reason:
             builder.model.create_entity("IfcRelFillsElement",GlobalId=builder.guid(key+":fill-relation"),RelatingOpeningElement=void,RelatedBuildingElement=entity)
 
@@ -509,10 +545,17 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
         if feature.kind=="stairs" and world:
             assumptions.append(_assumption("stair_symbol","Level parallel marks",None,"Symbol marks, not a source step count or rise. No stair travel direction is inferred; mark orientation follows the display footprint only."))
             assumptions.append(_assumption("symbol_mark_thickness",height*.1,unit,"Display relief for level schematic marks; not a riser dimension."))
+        connection=(connections or {}).get(i)
+        if connection:
+            assumptions.append(_assumption('connectivity',connection['target'],None,'Source-supported floor relationship. Continuous schematic flight uses attributed display rise; its slope direction is a display convention, not a source travel direction.'))
+            assumptions.append(_assumption('display_rise',connection['rise'],unit,'Difference between attributed building display levels; no measured risers or stair construction details.'))
         entity=add(ifc_type,feature.persistent_id or f"{prefix}:feature:{i}",feature.label,kind,feature.kind,source,world,plate,height,assumptions,
             feature.basis,feature.note,reason,schematic=True)
         if world:
-            builder.feature_symbol(entity,world,feature.kind,plate,height)
+            if connection and connection['rise']>0:
+                builder.connected_stair(entity,world,plate,connection['rise'],plate)
+            else:
+                builder.feature_symbol(entity,world,feature.kind,plate,height)
     for i,item in enumerate(floor.unresolved,start=1):
         source,localized=_item_source(item.source,[],floor,page)
         reason=item.reason or "Source feature unresolved."
@@ -523,6 +566,115 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
         builder.model.create_entity("IfcRelContainedInSpatialStructure",GlobalId=builder.guid(prefix+":containment"),RelatedElements=physical,RelatingStructure=storey)
     unresolved=sum(e.representation=="unresolved" for e in builder.elements if e.storey_id==storey.GlobalId)
     if unresolved:warnings.append(f"{floor.label}: {unresolved} source items remain individually inspectable as unresolved; no geometry was invented for them.")
+
+
+def _identity_matrix():
+    return [[1.,0.,0.],[0.,1.,0.],[0.,0.,1.]]
+
+
+def _floor_target(reference, floors):
+    matches = [i for i,f in enumerate(floors) if reference in {f.persistent_id,f.label}]
+    return matches[0] if len(matches)==1 else None
+
+
+def _building_placements(description, frames, pages, warnings):
+    floors=description.floors
+    placements=[_identity_matrix() for _ in floors]
+    supported=[False for _ in floors]
+    # Same-page unscaled diagrams already share one scale. Registration adds only
+    # rigid placement, never a separate scale or a modification of frozen frames.
+    compatible=lambda i,j: (frames[i][1] and frames[j][1]) or (not frames[i][1] and not frames[j][1] and floors[i].source.page==floors[j].source.page and math.isclose(math.hypot(frames[i][0][0][1],frames[i][0][1][1]),math.hypot(frames[j][0][0][1],frames[j][0][1][1]),rel_tol=1e-9))
+    aligned_indices=[i for i,f in enumerate(floors) if f.alignment and f.alignment.group.strip() and f.alignment.basis.strip()
+        and _region(f.alignment.source,pages,f.source.page) and _point(f.alignment.anchor) and _inside(f.alignment.anchor,f.source.bbox)
+        and f.rotation_degrees is not None and f.orientation_basis.strip()]
+    for i in aligned_indices:
+        peers=[j for j in aligned_indices if floors[j].alignment.group==floors[i].alignment.group and compatible(i,j)]
+        if len(peers)>1:
+            anchor=_transform(frames[i][0],floors[i].alignment.anchor)
+            placements[i][0][2],placements[i][1][2]=-anchor[0],-anchor[1]
+            supported[i]=True
+    active=set();done=set()
+    def resolve(i):
+        if i in done:return True
+        if i in active:return False
+        reg=floors[i].registration
+        if reg is None:done.add(i);return True
+        active.add(i)
+        j=_floor_target(reg.reference_floor_id,floors)
+        valid=(reg.status=='supported' and reg.basis.strip() and j is not None and j!=i and compatible(i,j)
+            and math.isfinite(reg.rotation_degrees) and _region(reg.source,pages,floors[i].source.page)
+            and _region(reg.reference_source,pages,floors[j].source.page)
+            and _point(reg.anchor) and _inside(reg.anchor,reg.source.bbox) and _inside(reg.anchor,floors[i].source.bbox)
+            and _point(reg.reference_anchor) and _inside(reg.reference_anchor,reg.reference_source.bbox) and _inside(reg.reference_anchor,floors[j].source.bbox))
+        if valid and resolve(j):
+            angle=math.radians(reg.rotation_degrees)
+            c,s=math.cos(angle),math.sin(angle)
+            parent=placements[j]
+            transform=[[parent[0][0]*c+parent[0][1]*s,-parent[0][0]*s+parent[0][1]*c,0],
+                       [parent[1][0]*c+parent[1][1]*s,-parent[1][0]*s+parent[1][1]*c,0],[0,0,1]]
+            anchor=_transform(transform,_transform(frames[i][0],reg.anchor))
+            target=_transform(parent,_transform(frames[j][0],reg.reference_anchor))
+            transform[0][2],transform[1][2]=target[0]-anchor[0],target[1]-anchor[1]
+            placements[i]=transform;supported[i]=supported[j]=True
+        else:
+            warnings.append(f'{floors[i].label}: registration remains schematic; unsupported, conflicting, cyclic or incompatible source anchors.')
+        active.remove(i);done.add(i)
+        return bool(valid and supported[i])
+    for i in range(len(floors)):resolve(i)
+    return placements,supported
+
+
+def _floor_height(floor,known,document):
+    default=2.6 if known else 1.2
+    value=unit=None;basis='Display assumption; source storey height unknown'
+    if floor.height and floor.height.status=='observed':
+        value,unit,basis=floor.height.value,floor.height.unit,'Source-referenced floor height'
+    for edit in getattr(document,'user_values',[]):
+        scope=edit.get('scope',{})
+        if (scope.get('floor_id',edit.get('floor_id'))==floor.persistent_id
+                and edit.get('property') in {'height','storey_height','display_height','floor_height'}):
+            value,unit,basis=edit.get('value'),edit.get('unit'),'Provided by user; not a source-observed height'
+    factors={'m':1.,'cm':.01,'mm':.001,'ft':.3048,'in':.0254}
+    if isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value) and value>0:
+        if unit=='relative' and not known:return float(value),basis+'; relative display units',[]
+        if unit in factors:
+            metres=value*factors[unit]
+            if known:return metres,basis,[]
+            ratio=1.2/2.6
+            return metres*ratio,basis+'; converted only for unscaled vertical display',[
+                _assumption('vertical_display_conversion',ratio,'relative/m','Explicit display convention only. Original height and unit are preserved; horizontal plan scale remains unknown.')]
+    return default,basis if value is None else 'Display assumption; supplied height unusable',[]
+
+
+def _storey_placement(builder, matrix, elevation):
+    axis=builder.model.create_entity('IfcAxis2Placement3D',Location=builder.point([matrix[0][2],matrix[1][2],elevation]),
+        RefDirection=builder.model.create_entity('IfcDirection',DirectionRatios=[float(matrix[0][0]),float(matrix[1][0]),0.]))
+    return builder.model.create_entity('IfcLocalPlacement',RelativePlacement=axis)
+
+
+def _embedded_sources(document, embedded):
+    sources=getattr(document,'sources',[]) or []
+    source_files=getattr(document,'source_files',{}) or {}
+    if not sources and document.source_bytes and document.kind=='drawing' and not document.source_bytes.lstrip().startswith(b'ISO-10303-21;'):
+        identity=hashlib.sha256(document.source_bytes).hexdigest()
+        sources=[{'source_id':identity,'filename':document.filename,'kind':'drawing','media_type':'application/octet-stream',
+                  'pages':[{'page':p.number,'source_page':p.number} for p in embedded]}]
+        source_files={identity:document.source_bytes}
+    result=[]
+    for source in sources:
+        identity=source['source_id'];original=source_files.get(identity)
+        if not original or hashlib.sha256(original).hexdigest()!=identity:
+            raise DocumentError('Portable IFC is unavailable because exact original source bytes are missing; the saved local sources and interpretation remain available.',422)
+        mappings=[]
+        for mapping in source.get('pages',[]):
+            page=next((p for p in embedded if p.number==mapping['page']),None)
+            if page is None:raise DocumentError('Portable IFC source page mapping is incomplete.',422)
+            page.source_id=identity;page.source_page=mapping['source_page']
+            mappings.append({'page':page.number,'source_page':page.source_page,'width':page.width,'height':page.height,'sha256':page.sha256})
+        result.append(EmbeddedSource(source_id=identity,filename=source['filename'],filenames=source.get('filenames',[]),
+            kind=source.get('kind','drawing'),media_type=source.get('media_type','application/octet-stream'),sha256=identity,
+            original_base64=base64.b64encode(original).decode('ascii'),pages=mappings,metadata=source.get('metadata',{})))
+    return result
 
 
 def generate_ifc(description: BuildingDescription, document: Document) -> bytes:
@@ -544,12 +696,13 @@ def generate_ifc(description: BuildingDescription, document: Document) -> bytes:
         else:
             frames.append(_floor_frame(floor,pages[floor.source.page],warnings))
     metric = all(known for _,known,_ in frames)
-    # Registration requires a common evidenced anchor AND compatible supported scales.
-    aligned = metric and all(f.alignment and f.alignment.group.strip() and f.alignment.basis.strip()
-        and _region(f.alignment.source,pages,f.source.page) and _point(f.alignment.anchor)
-        and _inside(f.alignment.anchor,f.source.bbox) and f.rotation_degrees is not None
-        and f.orientation_basis.strip() for f in description.floors)
-    aligned = bool(aligned and len({f.alignment.group for f in description.floors}) == 1)
+    placements,supported = _building_placements(description,frames,pages,warnings)
+    aligned=all(supported)
+    heights=[_floor_height(floor,known,document) for floor,(_,known,_) in zip(description.floors,frames)]
+    order=sorted(range(len(description.floors)),key=lambda i:(description.floors[i].order if description.floors[i].order is not None and description.floors[i].order_basis.strip() else i))
+    elevations={};elevation=0.
+    for i in order:
+        elevations[i]=elevation;elevation+=heights[i][0]
     from .identities import artifact_namespace
     artifact_id = artifact_namespace(document)
     builder = _Builder(artifact_id,metric)
@@ -559,17 +712,16 @@ def generate_ifc(description: BuildingDescription, document: Document) -> bytes:
         page = pages[floor.source.page]
         unit = "m" if known else "relative"
         wall_height, wall_thickness, plate_thickness = (2.6,.12,.04) if known else (1.2,.08,.02)
-        if aligned and prefix not in document.frame_registry:
-            anchor = _transform(matrix,floor.alignment.anchor)
-            matrix[0][2] -= anchor[0]
-            matrix[1][2] -= anchor[1]
         document.frame_registry[builder.guid(prefix)] = {"transform":[list(row) for row in matrix],
-            "signature":frame_signature(floor),"known":known,"rotation":rotation,"aligned":aligned}
+            "signature":frame_signature(floor),"known":known,"rotation":rotation,"aligned":supported[floor_index-1]}
         storey = builder.model.create_entity("IfcBuildingStorey",GlobalId=builder.guid(prefix),Name=floor.label,
-            ObjectPlacement=builder.placement,CompositionType="ELEMENT",Elevation=None)
+            ObjectPlacement=_storey_placement(builder,placements[floor_index-1],elevations[floor_index-1]),CompositionType="ELEMENT",Elevation=elevations[floor_index-1])
         builder.aggregate(builder.building,[storey],prefix)
-        floor_source = SourceRef(kind="image",page=page.number,bbox=floor.source.bbox)
-        floor_assumptions = [_assumption("elevation",0,unit,"Common display plane only; source storey elevation is unknown."),
+        floor_source = SourceRef(kind="image",page=page.number,bbox=floor.source.bbox,
+            source_id=getattr(page,"source_id",None),source_page=getattr(page,"source_page",None))
+        wall_height,height_basis,height_assumptions=heights[floor_index-1]
+        floor_assumptions = height_assumptions+[_assumption("elevation",elevations[floor_index-1],unit,"Display stacking relative to the lowest depicted floor; absolute source elevation is unknown."),
+            _assumption("reference_height",wall_height,unit,height_basis),
             _assumption("layout","aligned" if aligned else "schematic",None,"Supported common anchors" if aligned else "Floor registration is unknown; separate diagrams are not a measured aligned building.")]
         if not known:
             floor_assumptions.append(_assumption("page_extent",10,"relative","The full source page's longest extent is 10 display units, preserving drawn proportions across its floor diagrams. This does not prove equal physical scale; differently scaled diagrams or separate pages remain schematic, not metric comparisons."))
@@ -583,20 +735,43 @@ def generate_ifc(description: BuildingDescription, document: Document) -> bytes:
             warnings.append(f"{floor.label}: measurements referencing unavailable/different source pages were omitted.")
         floors.append(SceneFloor(id=storey.GlobalId,label=floor.label,source=floor_source,
             order=floor.order if floor.order_basis.strip() else None,scale_status="known" if known else "unknown",
-            rotation_degrees=rotation,alignment_status="supported" if aligned else "schematic",observations=observations,
+            rotation_degrees=rotation,alignment_status="supported" if supported[floor_index-1] else "schematic",observations=observations,
             assumptions=floor_assumptions,calibration=floor.calibration if known else None,
-            alignment=floor.alignment if aligned else None,measurements=measurements,transform=matrix))
+            alignment=floor.alignment if supported[floor_index-1] else None,measurements=measurements,transform=matrix,
+            building_transform=placements[floor_index-1],base_elevation=elevations[floor_index-1],
+            elevation_basis="Stacked display levels; absolute source elevation unknown",reference_height=wall_height,
+            reference_height_basis=height_basis,registration=floor.registration.model_dump() if floor.registration else None))
         builder.pset(storey,PSET_NAME,{"Source":floor_source.model_dump_json(),"Floor":floors[-1].model_dump_json(),"ArtifactMarker":ARTIFACT_MARKER},prefix)
-        _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings)
+        connections={}
+        for feature_index,feature in enumerate(floor.features,1):
+            relation=feature.connection
+            if feature.kind!='stairs' or relation is None:continue
+            target=_floor_target(relation.target_floor_id,description.floors)
+            valid=(relation.status=='supported' and relation.basis.strip() and target is not None and target!=floor_index-1
+                and _region(relation.source,pages,page.number) and supported[target] and supported[floor_index-1])
+            if valid and relation.target_feature_id:
+                matches=[f for f in description.floors[target].features if relation.target_feature_id in {f.persistent_id,f.label} and f.kind=='stairs']
+                valid=len(matches)==1
+            if valid:
+                connections[feature_index]={'target':description.floors[target].persistent_id or description.floors[target].label,
+                    'rise':elevations[target]-elevations[floor_index-1]}
+            else:
+                warnings.append(f'{floor.label}: stair connection remains unresolved; unique supported target and compatible registration are required.')
+        _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings,wall_height,connections)
     if not builder.elements:
         raise DocumentError("No depicted feature entries were supplied; no model or inventory was saved.",422)
     if not any(e.Representation for e in builder.products):
         warnings.append("No 3D geometry is available: this artifact preserves only unresolved source inventory.")
     warnings.extend(["Drawing-derived visualization: generated geometry and inventory are not factual building evidence.",
-        "Wall heights, thicknesses, floor plates and opening vertical dimensions are display assumptions; storey elevations are unknown."])
+        "Wall heights, thicknesses, floor plates and opening vertical dimensions are display assumptions; absolute storey elevations are unknown; stacked elevations are attributed display placement."])
     if not metric:
         warnings.append("UNSCALED: at least one floor lacks calibration. Project units are relative; mixed-floor distances are not physical measurements.")
     scene = Scene(document_id=document.id,source_kind="image",units="m" if metric else "relative",elements=builder.elements,
+        consistency_findings=[{'code':'unresolved_geometry','element_id':e.id,'floor_id':e.storey_id,'source':e.source.model_dump(),'message':e.note}
+            for e in builder.elements if e.representation=='unresolved']+[
+                {'code':'floor_relationship','source':description.floors[i].source.model_dump(),'message':warning}
+                for i,f in enumerate(description.floors) for warning in warnings
+                if warning.startswith(f.label+':') and ('registration remains' in warning or 'stair connection remains' in warning)],
         warnings=warnings,catalog_complete=False,derived=True,artifact_id=artifact_id,floors=floors,layout="aligned" if aligned else "schematic",
         building_id=document.building_id, revision_id=document.revision_id, parent_revision_id=document.parent_revision_id,
         revision_number=document.revision_number,review_status=document.review_status)
@@ -607,12 +782,15 @@ def generate_ifc(description: BuildingDescription, document: Document) -> bytes:
         data = page.path.read_bytes()
         embedded.append(EmbeddedPage(number=page.number,width=page.width,height=page.height,sha256=hashlib.sha256(data).hexdigest(),
                                      png_base64=base64.b64encode(data).decode("ascii")))
+    original_sources=_embedded_sources(document,embedded)
     from .identities import expected_registry
     document.identity_registry={"version":1,"objects":expected_registry(description,artifact_id),
                                 "tombstones":document.identity_registry.get("tombstones",[])}
     document.frame_registry={f.id:document.frame_registry[f.id]for f in floors}
     manifest = ArtifactManifest(artifact_id=artifact_id,source_filename=document.filename,pages=embedded,scene=scene,description=description,
-        identity_registry=document.identity_registry,frame_registry=document.frame_registry)
+        identity_registry=document.identity_registry,frame_registry=document.frame_registry,sources=original_sources,
+        user_values=getattr(document,'user_values',[]),source_interpretations=getattr(document,'source_interpretations',{}),
+        geometry_revision_id=getattr(document,'geometry_revision_id',None))
     builder.pset(builder.project,PSET_NAME,{MANIFEST_PROPERTY:manifest.model_dump_json()},"manifest")
     data = builder.model.to_string().encode("utf-8")
     if len(data)>MAX_IFC_BYTES:

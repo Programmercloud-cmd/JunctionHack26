@@ -11,6 +11,8 @@ class SourceRef(StrictModel):
     kind: Literal["ifc", "image"]
     global_id: str | None = None
     step_id: int | None = None
+    source_id: str | None = None
+    source_page: int | None = None
     page: int | None = None
     bbox: list[float] | None = None
 
@@ -106,6 +108,13 @@ class SceneFloor(StrictModel):
     alignment: Alignment | None = None
     measurements: list[Measurement] = Field(default_factory=list)
     transform: list[list[float]] = Field(default_factory=list)
+    # Source plane, building placement and viewer explosion are independent.
+    building_transform: list[list[float]] = Field(default_factory=lambda: [[1,0,0],[0,1,0],[0,0,1]])
+    base_elevation: float = 0
+    elevation_basis: str = "Legacy display plane; source elevation unknown"
+    reference_height: float | None = None
+    reference_height_basis: str = "Unavailable"
+    registration: dict | None = None
 
 
 class PlanComparison(StrictModel):
@@ -135,6 +144,8 @@ class Scene(StrictModel):
     ifc_url: str | None = None
     layout: Literal["native", "schematic", "aligned"] = "native"
     comparison: list[PlanComparison] = Field(default_factory=list)
+    uncontained_reference: dict | None = None
+    consistency_findings: list[dict] = Field(default_factory=list)
     building_id: str | None = None
     revision_id: str | None = None
     parent_revision_id: str | None = None

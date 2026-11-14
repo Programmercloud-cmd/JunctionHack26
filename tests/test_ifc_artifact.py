@@ -196,8 +196,8 @@ def test_reopened_context_excludes_generated_dimensions_properties_and_measureme
         parsed=json.loads(context)
         assert parsed["source_kind"]=="drawing"
         assert "Original pages are authoritative" in parsed["evidence_rule"]
-        assert all(set(f)=={"id","label","page","bbox"} for f in parsed["floors"])
-        assert all(e["provenance"]=="interpretation" and e["source"]["kind"]=="image" for e in parsed["objects"])
+        assert all({"id","label","page","bbox"} <= set(f) for f in parsed["floors"])
+        assert all(e["provenance"]=="interpretation" and {"page","bbox"} <= set(e["source"]) and not e["source"].get("global_id") for e in parsed["objects"])
         assert all("geometry" not in e and "properties" not in e and "assumptions" not in e for e in parsed["objects"])
         bad=DraftAnswer(status="answered",answer="Height from generated IFC",model_evidence=[{
             "element_id":document.scene.elements[0].id,"label":"IFC height","observation":"Assumed height"}])

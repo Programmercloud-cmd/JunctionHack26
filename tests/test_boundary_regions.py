@@ -7,7 +7,7 @@ from app.ifc_artifact import load_artifact
 from app.ifc_generate import generate_ifc
 from app.scene import SourceRef
 from app.schemas import Evidence
-from test_ifc_generate import boundary, description, document, floor, region
+from test_ifc_generate import boundary, description, document, floor, region, opening
 
 
 @pytest.mark.parametrize("box,segment,padded", [
@@ -71,3 +71,18 @@ def test_selection_padding_never_establishes_measured_wall_thickness(document):
     element=scene.elements[0]
     assert element.geometry and "selection region padded" in element.note
     assert any(a.property=="thickness" and a.value==.08 for a in element.assumptions)
+
+
+def test_opening_line_citation_preserves_source_and_true_hosted_gap(document):
+    line=region(bbox=[.2,.2,.3,.2])
+    original=description(floor(boundaries=[boundary()],openings=[opening(source=line)]))
+    scene,_,manifest=load_artifact(generate_ifc(original,document),"reopened")
+    door=next(e for e in scene.elements if e.kind=="door")
+    assert door.geometry and door.representation=="reconstructed"
+    assert door.source.bbox==pytest.approx([.2,.19,.3,.21])
+    assert "selection region padded"in door.note
+    assert manifest.description.floors[0].openings[0].source.bbox==line["bbox"]
+    assert manifest.description.floors[0].openings[0].segment==[[.2,.2],[.3,.2]]
+    area=description(floor(boundaries=[boundary()],openings=[opening(source=region(bbox=[.2,.19,.3,.21]))]))
+    other=next(e for e in load_artifact(generate_ifc(area,document),"other")[0].elements if e.kind=="door")
+    assert other.id==door.id and other.geometry==door.geometry

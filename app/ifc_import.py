@@ -6,9 +6,10 @@ import ifcopenshell
 import ifcopenshell.geom
 import ifcopenshell.util.element
 import ifcopenshell.util.unit
+import ifcopenshell.util.placement
 
 from .documents import DocumentError
-from .scene import Geometry, Property, Scene, SceneElement, SourceRef
+from .scene import Assumption, Geometry, Property, Scene, SceneElement, SceneFloor, SourceRef
 
 MAX_IFC_BYTES = 25 * 1024 * 1024
 MAX_ELEMENTS = 4000
@@ -156,6 +157,57 @@ def _mesh_elements(model, products, elements):
         pass
 
 
+def _supplied_storey(element):
+    """Containment may be indirect through spaces or aggregation; ambiguity is visible."""
+    found={};visited=set();pending=[element]
+    while pending:
+        current=pending.pop()
+        if current.id() in visited:continue
+        visited.add(current.id())
+        if current.is_a('IfcBuildingStorey'):
+            found[current.id()]=current
+            continue
+        pending.extend(r.RelatingStructure for r in getattr(current,'ContainedInStructure',()))
+        pending.extend(r.RelatingObject for r in getattr(current,'Decomposes',()) if r.is_a('IfcRelAggregates') or r.is_a('IfcRelNests'))
+    return next(iter(found.values())) if len(found)==1 else None
+
+
+def _native_floors(model, elements, scale):
+    """Expose supplied storeys even when their own representation is absent."""
+    floors = []
+    for storey in model.by_type("IfcBuildingStorey"):
+        if not GLOBAL_ID.fullmatch(storey.GlobalId or "") or any(f.id == storey.GlobalId for f in floors):
+            raise DocumentError("IFC storeys need unique usable GlobalIds for floor selection.")
+        elevation = None
+        if storey.ObjectPlacement:
+            try:
+                elevation = float(ifcopenshell.util.placement.get_local_placement(storey.ObjectPlacement)[2,3]) * scale
+            except Exception:
+                pass
+        if elevation is None and storey.Elevation is not None:
+            elevation = float(storey.Elevation) * scale
+        members = [e for e in elements.values() if e.storey_id == storey.GlobalId and e.geometry]
+        zs = [z for e in members for z in e.geometry.positions[2::3]]
+        supported = elevation is not None and math.isfinite(elevation)
+        base = elevation if supported else min(zs) if zs else 0
+        floors.append(SceneFloor(id=storey.GlobalId, label=str(storey.Name or "Unnamed storey"),
+            source=SourceRef(kind="ifc",global_id=storey.GlobalId,step_id=storey.id()),
+            scale_status="known",base_elevation=base,
+            elevation_basis="Supplied IFC storey placement/elevation" if supported else "Contained geometry display reference" if zs else "Unavailable; no supplied elevation or geometry",
+            reference_height=max(zs)-base if zs and max(zs)>base else None,
+            reference_height_basis="Contained geometry extent for clipping; not a measured storey height" if zs and max(zs)>base else "Unavailable"))
+    supported = sorted([f for f in floors if f.elevation_basis.startswith("Supplied")], key=lambda f:f.base_elevation)
+    for floor in supported:
+        higher = next((other for other in supported if other.base_elevation > floor.base_elevation), None)
+        if higher:
+            floor.reference_height = higher.base_elevation-floor.base_elevation
+            floor.reference_height_basis = "Difference between supplied IFC storey elevations; clipping reference"
+    uncontained = [z for e in elements.values() if not e.storey_id and e.geometry for z in e.geometry.positions[2::3]]
+    reference = ({"base_elevation":min(uncontained),"reference_height":max(uncontained)-min(uncontained),
+                  "basis":"Uncontained geometry extent; scene-wide display clipping reference"} if uncontained else None)
+    return floors, reference
+
+
 def import_ifc(data: bytes, document_id: str) -> Scene:
     if not data or len(data) > MAX_IFC_BYTES:
         raise DocumentError("IFC must be non-empty and at most 25 MiB.", 413 if data else 400)
@@ -182,7 +234,7 @@ def import_ifc(data: bytes, document_id: str) -> Scene:
         metadata_warnings = 0
         for element in products:
             try:
-                storey = ifcopenshell.util.element.get_container(element, ifc_class="IfcBuildingStorey")
+                storey = _supplied_storey(element)
             except Exception:
                 storey = None
                 metadata_warnings += 1
@@ -207,8 +259,11 @@ def import_ifc(data: bytes, document_id: str) -> Scene:
             warnings.append(f"Property view is bounded to {MAX_PROPERTIES} primitive values per element; complex, excess or long values were omitted/truncated for {omitted_count} elements.")
         if metadata_warnings:
             warnings.append(f"Some optional property or storey metadata could not be read ({metadata_warnings} occurrences); object identity and types were retained.")
+        floors, reference = _native_floors(model, elements, scale)
+        if any(e.storey_id is None for e in elements.values()):
+            warnings.append("Some source objects have no unique supplied storey containment; floor assignment was not invented.")
         return Scene(document_id=document_id, source_kind="ifc", units="m", elements=list(elements.values()),
-                     warnings=warnings, catalog_complete=True)
+                     warnings=warnings, catalog_complete=True, floors=floors, uncontained_reference=reference)
     except DocumentError:
         raise
     except Exception:

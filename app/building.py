@@ -1,6 +1,6 @@
 """Model descriptions of original drawings, never executable code or IFC text."""
 from typing import Annotated, Literal
-from pydantic import BeforeValidator, WithJsonSchema, model_validator
+from pydantic import BeforeValidator, WithJsonSchema, model_validator, Field
 from .schemas import StrictModel
 
 
@@ -31,6 +31,8 @@ Box = Annotated[list[float], BeforeValidator(lambda v: _named_coordinates(v, ("l
 class PageRegion(StrictModel):
     page: int
     bbox: Box
+    source_id: str | None = None
+    source_page: int | None = None
 
     @model_validator(mode="after")
     def valid_region(self):
@@ -74,6 +76,7 @@ class Measurement(StrictModel):
 
 
 class Calibration(StrictModel):
+    provenance: Literal["observed", "user_provided"] = "observed"
     length_m: float
     segment: list[Point]
     source: PageRegion
@@ -87,6 +90,27 @@ class Alignment(StrictModel):
     basis: str
 
 
+class Registration(StrictModel):
+    reference_floor_id: str
+    anchor: Point
+    reference_anchor: Point
+    source: PageRegion
+    reference_source: PageRegion
+    rotation_degrees: float = 0
+    basis: str
+    status: Literal["supported", "unclear"]
+    provenance: Literal["observed", "user_provided"] = "observed"
+
+
+class StairConnection(StrictModel):
+    target_floor_id: str
+    target_feature_id: str | None = None
+    source: PageRegion
+    basis: str
+    status: Literal["supported", "unclear"]
+    provenance: Literal["observed", "user_provided"] = "observed"
+
+
 class IdentifiedDescription(StrictModel):
     # Assigned by the application once, never inferred from changing list positions.
     persistent_id: str | None = None
@@ -94,7 +118,8 @@ class IdentifiedDescription(StrictModel):
 
 class RoomDescription(IdentifiedDescription):
     label: str
-    polygon: list[Point]
+    polygon: list[Point] = Field(default_factory=list)
+    source: PageRegion | None = None
     environment: Literal["indoor", "outdoor", "unknown"]
     basis: Literal["observed", "inferred"]
     note: str
@@ -104,9 +129,10 @@ class BoundaryDescription(IdentifiedDescription):
     key: str
     kind: Literal["wall", "railing", "open_edge"]
     label: str
-    segment: list[Point]
+    segment: list[Point] = Field(default_factory=list)
+    footprint: list[Point] = Field(default_factory=list)
     source: BoundaryRegion
-    thickness_segment: list[Point]
+    thickness_segment: list[Point] = Field(default_factory=list)
     basis: Literal["observed", "inferred"]
     note: str
 
@@ -114,9 +140,9 @@ class BoundaryDescription(IdentifiedDescription):
 class OpeningDescription(IdentifiedDescription):
     kind: Literal["door", "window"]
     label: str
-    segment: list[Point]
-    source: PageRegion
-    host_wall: str | None
+    segment: list[Point] = Field(default_factory=list)
+    source: BoundaryRegion
+    host_wall: str | None = None
     basis: Literal["observed", "inferred"]
     note: str
 
@@ -124,7 +150,8 @@ class OpeningDescription(IdentifiedDescription):
 class FeatureDescription(IdentifiedDescription):
     kind: Literal["stairs", "table", "chair", "cabinet", "bed", "sofa", "sink", "toilet", "shower", "bath", "appliance", "other"]
     label: str
-    polygon: list[Point]
+    polygon: list[Point] = Field(default_factory=list)
+    connection: StairConnection | None = None
     source: PageRegion
     basis: Literal["observed", "inferred"]
     note: str
@@ -141,18 +168,20 @@ class FloorDescription(IdentifiedDescription):
     view_type: Literal["floor_plan", "section", "elevation", "site_plan", "unknown"] = "floor_plan"
     label: str
     source: PageRegion
-    order: int | None
-    order_basis: str
-    rotation_degrees: float | None
-    orientation_basis: str
-    calibration: Calibration | None
-    alignment: Alignment | None
-    measurements: list[Measurement]
-    boundaries: list[BoundaryDescription]
-    openings: list[OpeningDescription]
-    rooms: list[RoomDescription]
-    features: list[FeatureDescription]
-    unresolved: list[UnresolvedDescription]
+    order: int | None = None
+    order_basis: str = ""
+    rotation_degrees: float | None = None
+    orientation_basis: str = ""
+    calibration: Calibration | None = None
+    alignment: Alignment | None = None
+    registration: Registration | None = None
+    height: Measurement | None = None
+    measurements: list[Measurement] = Field(default_factory=list)
+    boundaries: list[BoundaryDescription] = Field(default_factory=list)
+    openings: list[OpeningDescription] = Field(default_factory=list)
+    rooms: list[RoomDescription] = Field(default_factory=list)
+    features: list[FeatureDescription] = Field(default_factory=list)
+    unresolved: list[UnresolvedDescription] = Field(default_factory=list)
 
 
 class UnmodeledView(StrictModel):
@@ -162,10 +191,21 @@ class UnmodeledView(StrictModel):
     reason: str
 
 
+class SourceObservation(IdentifiedDescription):
+    label: str
+    category: str
+    value: str | float | None = None
+    unit: str | None = None
+    source: PageRegion
+    basis: Literal["observed", "inferred", "unknown"] = "observed"
+    note: str = ""
+
+
 class BuildingDescription(StrictModel):
     floors: list[FloorDescription]
     limitations: list[str]
-    unresolved_views: list[UnmodeledView] = []
+    unresolved_views: list[UnmodeledView] = Field(default_factory=list)
+    observations: list[SourceObservation] = Field(default_factory=list)
 
 
 BUILDING_PROMPT = """Reconstruct the meaningful physical features of ALL original drawing pages as the JSON schema.
@@ -244,6 +284,13 @@ and stated physical length support a uniform scale; never calibrate from typical
 not-to-scale drawing. Rotation_degrees normalizes visible orientation counterclockwise in world XY after
 y-flip (180 for inverted text); unknown=null. It is not compass direction. Alignment=null unless explicit
 source grid/anchors establish it; matching outline resemblance is insufficient. Unknown layout is schematic.
+Registration is separate from this physical calibration: matching depicted stairs and exterior junctions can
+support rigid floor placement, especially equal-size diagrams on one original page. Record both source
+anchors, cited relationship, reference floor persistent ID (or its unique exact label), and supported/unclear.
+Never rescale footprints to force alignment or infer equal drawing scales across pages. Where stair labels
+and matching endpoints establish inter-floor travel, record connection with target floor and feature IDs
+(or unique exact labels); unknown rise stays an explicit display assumption. Actual height observations
+need source dimensions. User-provided provenance is assigned by our application only, never by extraction.
 
 Before returning, compare your inventory against each original floor from perimeter inward: every wall
 run and bend, every doorway/glazing gap, outdoor edge, stair surround and recognizable furnishing symbol.
