@@ -1,0 +1,10 @@
+[73] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[74] assistant: Approved, provided:
+
+- Overlap detection marks both rooms in every conflicting pair before filtering.
+- Retained rooms keep their original IDs.
+- Partial scenes visibly report omissions; generated room counts remain nonfactual.
+- No valid rooms still produces 422; response bounds remain strict.
+
+Tests should cover mixed validity, contained rooms, overlapping chains, omitted highlights and zero survivors.
