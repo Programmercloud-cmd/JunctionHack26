@@ -1,0 +1,17 @@
+[12] assistant: Agent message from /root/backend:
+Message Type: FINAL_ANSWER
+Task name: /root
+Sender: /root/backend
+Payload:
+Implemented `app/ifc_import.py` and `tests/test_ifc_import.py`.
+
+Actual duplex validation:
+- 21 rooms, 57 walls, 14 doors, 24 windows.
+- 239 catalog elements; 236 rendered meshes.
+- 26,916 triangles; approximately 2.24 MB scene JSON.
+- Import takes approximately 6.9 seconds.
+- Three geometry failures retain their source metadata and count membership.
+
+All 11 tests passed with the real sample enabled. Synthetic tests verify units, placements, stable IDs, bounds, property omissions and geometry-failure preservation.
+
+Limits: 25 MiB, 4,000 elements, one million triangles. No silent catalog truncation.
