@@ -1,0 +1,16 @@
+[319] assistant: Agent message from /root/frontend:
+Message Type: FINAL_ANSWER
+Task name: /root
+Sender: /root/frontend
+Payload:
+Planning proposal sent; no files changed.
+
+Minimal UI additions:
+
+- Floor selector and independent exploded-view toggle.
+- Source-linked floor/object inspection using original page coordinates.
+- Server-provided derived IFC download.
+- Persistent unknown-scale/provenance badge after reimport.
+- Existing answer highlighting and assumptions controls retained.
+
+Implementation depends on approved floor metadata, provenance/scale fields, and download endpoint.
