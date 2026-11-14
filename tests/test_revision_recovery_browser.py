@@ -18,11 +18,9 @@ def open_fixture_job(page, static_server, document, job):
     page.locator("#file-input").set_input_files(
         {"name": "plan.png", "mimeType": "image/png", "buffer": source_bytes()}
     )
-    row = page.locator(f'.job-row[data-job-id="{job["id"]}"]')
+    row = page.locator(f'[data-entry="job:{job["id"]}"]')
     row.wait_for(state="attached")
-    if page.locator("#past-jobs").count():
-        page.locator("#past-jobs > summary").click()
-    row.locator("summary").click()
+    for summary in row.locator("summary").all():summary.click()
     return row
 
 
@@ -59,7 +57,7 @@ def test_recovery_decisions_pin_original_source_and_render_safe_history(static_s
         ],
     }
     row = open_fixture_job(page, static_server, document, job)
-    expect(row.locator(".job-recovery-event")).to_have_count(3)
+    expect(row.locator("details")).to_have_count(3)
     expect(row).to_contain_text("Required correction: Request the exact target")
     expect(row).to_contain_text("target_outside_scope")
     expect(row).to_contain_text("Approved correction target · target wall-0")
@@ -67,14 +65,14 @@ def test_recovery_decisions_pin_original_source_and_render_safe_history(static_s
     expect(row).to_contain_text("Unclear · not authorized · target wall-2")
     expect(row).to_contain_text("wall-pending · no authorization decision recorded")
     expect(row).to_contain_text("does not mean a change was applied or accepted")
-    expect(row).to_contain_text("Recovery stopped")
+    expect(row).to_contain_text("Recovery · stopped")
     expect(row).to_contain_text(unsafe)
     expect(row).not_to_contain_text("DO_NOT_RENDER_INTERNALS")
     assert row.locator("img").count() == 0
     assert not page.evaluate("Boolean(window.recoveryInjected)")
     assert row.get_by_role("button").count() == 3  # source links only; no approval controls
 
-    for source_link in row.locator(".job-target-source").all():
+    for source_link in row.locator(".chat-citation").all():
         source_link.click()
         expect(page.locator("#page-image")).to_have_attribute(
             "src", f'{static_server}/api/buildings/{document["building_id"]}/revisions/{event_revision}/pages/1'
@@ -103,9 +101,9 @@ def test_recovery_legacy_revision_fallback_and_invalid_event_revision(static_ser
            "base_revision_id": base_revision, "status": "needs_attention", "phase": "needs_attention",
            "message": "Previous revision retained.", "issues": [], "recovery_events": [event]}
     row = open_fixture_job(page, static_server, document, job)
-    expect(row.locator(".job-target-source")).to_have_count(int(has_link))
+    expect(row.locator(".chat-citation")).to_have_count(int(has_link))
     if has_link:
-        row.locator(".job-target-source").click()
+        row.locator(".chat-citation").click()
         expect(page.locator("#page-image")).to_have_attribute(
             "src", f'{static_server}/api/buildings/{document["building_id"]}/revisions/{base_revision}/pages/1'
         )
@@ -129,9 +127,10 @@ def test_submitted_inputs_remain_attributed_without_claiming_application(static_
         ],
     }
     row = open_fixture_job(page, static_server, document, job)
-    expect(row.locator(".job-submitted-value")).to_have_count(2)
-    expect(row).to_contain_text("Submitted input (user-provided; see outcome above)")
-    expect(row).to_contain_text("display height · assembly-floor = 1.4 relative")
+    expect(row.locator("details")).to_have_count(1)
+    expect(row).to_contain_text("User-provided values")
+    expect(row).to_contain_text("assembly-floor")
+    expect(row).to_contain_text("1.4 relative")
     expect(row).to_contain_text("not source-observed")
     expect(row).to_contain_text(job["message"])
     assert row.locator("script").count() == 0

@@ -9,7 +9,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from test_browser import FixtureProvider, ask
-from test_browser_3d import scene_page, snapshot, generate_scene
+from test_browser_3d import scene_page, snapshot, generate_scene, control, action, focus_element
 
 pytestmark = pytest.mark.skipif(os.getenv("RUN_BROWSER_TESTS") != "1", reason="opt-in browser checks")
 
@@ -85,7 +85,7 @@ def test_multifloor_original_regions_explosion_and_ifc_roundtrip(building_server
     page=scene_page
     BuildingFixtureProvider.calibrated=calibrated
     page.goto(building_server); upload_building(page)
-    page.locator("#next-page").click()  # generation still includes every page/panel
+    action(page, {"type":"show_source","page":2})  # generation still includes every page/panel
     generate_scene(page)
     page.wait_for_function("window.blueprintViewer?.data.derived === true",timeout=30000)
     expect(page.locator("#scene-error")).to_be_hidden()
@@ -107,44 +107,47 @@ def test_multifloor_original_regions_explosion_and_ifc_roundtrip(building_server
     assert snapshot(page)["exploded"]
     assert any(e["display_offset_z"]>0 for e in snapshot(page)["elements"])
     page.evaluate("window.savedViewer=window.blueprintViewer;window.sourceGeometry=JSON.stringify(window.blueprintViewer.data.elements)")
-    page.locator("#explode-floors").uncheck()
+    empty_highlights=snapshot(page)["highlights_enabled"]
+    action(page,{"type":"set_separation","enabled":False})
     assert all(e["display_offset_z"]==0 for e in snapshot(page)["elements"])
-    assert snapshot(page)["highlights_enabled"]
-    page.locator("#explode-floors").check()
+    assert snapshot(page)["highlights_enabled"]==empty_highlights
+    action(page,{"type":"set_separation","enabled":True})
     assert any(e["display_offset_z"]>0 for e in snapshot(page)["elements"])
     assert page.evaluate("window.sourceGeometry===JSON.stringify(window.blueprintViewer.data.elements)")
     expect(page.locator("#layout-note")).to_contain_text("adds display spacing")
-    page.locator("#floor-select").select_option(floors[0]["id"])
+    action(page,{"type":"set_floor","floor_id":floors[0]["id"]})
     first_ids={e["id"] for e in scene["elements"] if e["storey_id"]==floors[0]["id"]}
     assert all(e["visible"]==(e["id"] in first_ids) for e in snapshot(page)["elements"])
     room3=next(e for e in rooms if e["name"]=="Room 3")
-    page.locator("#element-select").select_option(room3["id"])
+    focus_element(page,room3["id"])
     assert snapshot(page)["floor_filter"]==room3["storey_id"]
     expect(page.locator("#element-origin")).to_contain_text("inferred")
-    page.locator("#element-source").click()
+    page.locator('#chat-log [data-entry="focused-object"]').get_by_role("button",name="Original source",exact=True).click()
     expect(page.locator("#page-label")).to_contain_text("page 2 (2/2)")
     expect(page.locator("#evidence-overlay")).to_be_visible()
     assert page.locator("#evidence-overlay").evaluate("e=>e.style.left")=="10%"
-    page.locator("#show-model").click()
-    page.locator("#floor-select").select_option(floors[0]["id"])
+    control(page,"Show model")
+    action(page,{"type":"set_floor","floor_id":floors[0]["id"]})
     ask(page,"Where is Room 3?")
-    expect(page.locator("#answer-text")).to_have_text("Fixture: Room 3 is shown on page 2.")
+    expect(page.locator("#chat-log .chat-answer").last).to_contain_text("Fixture: Room 3 is shown on page 2.")
     assert snapshot(page)["highlight_ids"]==[room3["id"]]
     assert snapshot(page)["floor_filter"]==floors[0]["id"]
-    expect(page.locator("#highlight-note")).to_contain_text("Your view is preserved")
+    page.locator("#chat-log .chat-answer").last.locator("summary").click()
+    expect(page.locator("#chat-log .chat-answer").last).to_contain_text("Your view is preserved")
     assert all(e["opacity"]==.1 for e in snapshot(page)["elements"] if e["id"]!=room3["id"])
-    page.locator("#show-assumptions").check()
+    control(page,"Show assumptions")
     assert snapshot(page)["highlights_enabled"] and snapshot(page)["exploded"]
-    page.locator("#highlight-answer").uncheck()
+    control(page,"Hide answer highlights")
     assert snapshot(page)["show_assumptions"] and snapshot(page)["exploded"]
-    page.locator(".floor-source-link").filter(has_text="Upper floor").click()
+    control(page,"Inspect assumptions")
+    page.locator("#chat-log .chat-assumption-row").filter(has_text="Upper floor: storey height").first.get_by_role("button",name="Original evidence",exact=True).click()
     expect(page.locator("#page-label")).to_contain_text("page 1 (1/2)")
     expect(page.locator("#evidence-overlay")).to_be_visible()
     assert page.locator("#evidence-overlay").evaluate("e=>e.style.left")=="52%"
-    page.locator("#show-model").click()
+    control(page,"Show model")
     assert page.evaluate("window.savedViewer===window.blueprintViewer")
     with page.expect_download() as download:
-        page.locator("#download-ifc").click()
+        action(page,{"type":"download_ifc"})
     artifact=tmp_path / "derived.ifc"; download.value.save_as(artifact)
     assert artifact.read_bytes().startswith(b"ISO-10303-21")
     page.locator("#file-input").set_input_files(str(artifact))
@@ -156,14 +159,14 @@ def test_multifloor_original_regions_explosion_and_ifc_roundtrip(building_server
     assert page.evaluate("window.blueprintViewer.data.source_kind")=="image"
     assert page.evaluate("window.blueprintViewer.data.elements.map(e=>e.id)")==[e["id"] for e in scene["elements"]]
     assert BuildingFixtureProvider.calls==1
-    page.locator("#element-select").select_option(room3["id"]); page.locator("#element-source").click()
+    focus_element(page,room3["id"]); page.locator('#chat-log [data-entry="focused-object"]').get_by_role("button",name="Original source",exact=True).click()
     expect(page.locator("#page-label")).to_contain_text("page 2 (2/2)")
     expect(page.locator("#evidence-overlay")).to_be_visible()
     ask(page,"What is the ceiling height?")
-    expect(page.locator("#result-status")).to_have_text("Missing information")
+    expect(page.locator("#chat-log .chat-answer").last).to_contain_text("Insufficient source evidence")
     assert snapshot(page)["highlight_ids"]==[]
-    page.locator("#show-model").click(); page.locator("#floor-select").select_option("")
-    page.locator("#explode-floors").check()
+    control(page,"Show model"); action(page,{"type":"set_floor"})
+    action(page,{"type":"set_separation","enabled":True})
     page.screenshot(path=f"/tmp/junction-v2-{'calibrated' if calibrated else 'unscaled'}.png",full_page=True)
     if not calibrated:
         # Exercise provenance-only variants of the actual scene. Geometry remains

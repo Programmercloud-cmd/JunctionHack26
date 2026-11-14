@@ -119,6 +119,11 @@
     if(answer.proposal)detail.append(element("p",`Proposal, not source fact: ${answer.proposal.text}`));
     for(const calc of answer.calculation_results||[])detail.append(element("p",`${calc.label||calc.expression||"Calculation"}: ${calc.result??calc.value??"See source inputs"} ${calc.unit||""}`));
     for(const attribution of answer.user_value_attributions||[])detail.append(element("p",typeof attribution==="string"?attribution:JSON.stringify(attribution)));
+    const mappedIds=answerForDisplayedRevision(answer).highlight_ids||[];
+    if(answer.status==="answered"&&state.scene&&((answer.evidence||[]).length||(answer.model_evidence||[]).length)&&!mappedIds.length)
+      detail.append(element("p","This answer has no reliable 3D mapping. Original source evidence remains available; no object highlight was invented."));
+    if(state.viewer?.floorFilter&&mappedIds.some(id=>state.scene?.elements.some(item=>item.id===id&&item.storey_id!==state.viewer.floorFilter)))
+      detail.append(element("p","Linked objects are on another floor. Your view is preserved; show all floors or inspect the original source evidence to locate them."));
     detail.append(element("p",`Evidence sufficiency: ${answer.gate?.decision||"not assessed for clarification"}. Sufficiency and review do not guarantee answer correctness.`));node.append(detail);return node;
   }
   function mergeConversation(messages){
@@ -149,7 +154,16 @@
       if(!terminalJob(job))node.append(button("Stop this operation",()=>local({type:"stop_job",job_id:job.id})));
       if(terminalJob(job)&&job.kind!=="question")node.append(element("p",job.status==="complete"?"Operation completed; consult the review outcome and remaining issues.":state.scene?"The usable saved model remains available. This outcome is not a source-sufficiency judgment.":"Original sources remain saved. No usable model has been confirmed.","chat-status"));
       if(job.diagnostic_message)node.append(element("p",job.diagnostic_message));
-      if(job.submitted_values?.length){const detail=element("details");detail.append(element("summary","User-provided values · submitted; see outcome"));for(const value of job.submitted_values)detail.append(element("p",`${value.property}: ${typeof value.value==="object"?JSON.stringify(value.value):value.value} ${value.unit||""}`));node.append(detail);}
+      if(job.submitted_values?.length){
+        const detail=element("details");detail.append(element("summary","User-provided values · submitted; see outcome"));
+        for(const value of job.submitted_values){
+          const scope=[value.scope?.floor_id?`floor ${value.scope.floor_id}`:"",value.scope?.object_id?`object ${value.scope.object_id}`:""].filter(Boolean).join(" · ");
+          detail.append(element("p",`${value.property}${scope?` · ${scope}`:""}: ${typeof value.value==="object"?JSON.stringify(value.value):value.value} ${value.unit||""}`));
+          detail.append(element("p","Provided by user, not observed in the original source. Submission does not establish that this value was applied."));
+          if(value.reason)detail.append(element("p",value.reason));
+        }
+        node.append(detail);
+      }
       for(const recovery of job.recovery_events||[]){
         const detail=element("details");detail.append(element("summary",`Recovery · ${recovery.kind||"review"}`));
         if(recovery.message)detail.append(element("p",recovery.message));
@@ -198,7 +212,13 @@
       const current=state.jobs.find(j=>j.id===job.id)||job;
       if(terminalJob(current)){
         if(current.status!=="complete")throw new Error(`${current.message||"Model generation did not complete."} Dependent selection was not applied.`);
-        await refreshBuilding();if(!state.scene)throw new Error("The operation completed without renderable model geometry. Original sources remain available.");
+        await refreshBuilding();
+        if(!alive(context))break;
+        // A status poll may already be fetching the completed job's scene.
+        // refreshBuilding deliberately returns early in that case; wait for
+        // that same poll rather than misreporting an absent model.
+        if(!state.scene&&state.pollingEpoch===state.epoch){await new Promise(resolve=>setTimeout(resolve,250));continue;}
+        if(!state.scene)throw new Error("The operation completed without renderable model geometry. Original sources remain available.");
         removeEntry("pending-model");openWorkspace("model");return;
       }
       await new Promise(resolve=>setTimeout(resolve,250));
@@ -286,7 +306,12 @@
           for(const proposal of proposals){const row=element("div",null,"chat-inventory-row");row.append(element("p",proposal.label),button("Inspect proposal",()=>inspectProposal(proposal)));section.append(row);}node.append(section);}
         return;}
       case "focus_id":openWorkspace("model");ui.updatingSelection=true;try{state.viewer?.focusObject(action.id);}finally{ui.updatingSelection=false;}ui.focused_id=action.id;return;
-      case "set_comparison":$("show-comparison").checked=action.enabled;if(action.opacity!=null)$("comparison-opacity").value=action.opacity;if(action.layer){const input=document.querySelector(`[data-comparison-layer="${action.layer}"]`);if(input)input.checked=action.enabled;}openWorkspace("source");renderComparison();note("Showing actual saved IFC geometry projected onto the original page; this does not establish source accuracy.");return;
+      case "set_comparison":
+        if(!action.layer)$("show-comparison").checked=action.enabled;
+        if(action.opacity!=null)$("comparison-opacity").value=action.opacity;
+        if(action.layer){const input=document.querySelector(`[data-comparison-layer="${action.layer}"]`);if(input)input.checked=action.enabled;}
+        openWorkspace("source");renderComparison();
+        note($("show-comparison").checked?"Showing actual saved IFC geometry projected onto the original page; this does not establish source accuracy.":"Geometry comparison is hidden. The original source remains available.");return;
       case "help":return note("Ask a source question, show the modeled windows, view from above, tour objects, open original evidence, switch theme, inspect assumptions, set a supplied height, choose a floor, adjust cutaway, compare geometry, add sources, export, or stop an active operation.","help",[["Saved buildings",{type:"list_saved"}],["Attach drawings",{type:"new_upload"}],["Light theme",{type:"set_theme",theme:"light"}],["Dark theme",{type:"set_theme",theme:"dark"}]]);
       default:throw new Error("This action is not supported by the workspace.");
     }

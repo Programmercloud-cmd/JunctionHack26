@@ -21,6 +21,24 @@ class FixtureProvider:
         from app.schemas import Usage
         self.usage = Usage()
 
+    def interpret_chat_actions(self, message, catalog):
+        # Intent-only fixture: factual answers still go through the real QA job,
+        # source-sufficiency gate and evidence validation below.
+        if message.startswith("Fixture control: "):
+            import json
+            return {"status": "ready", "actions": json.loads(message.removeprefix("Fixture control: "))}
+        controls = {
+            "Show original page 1": {"type": "show_source", "page": 1},
+            "Show model": {"type": "show_model"},
+            "Reset model view": {"type": "set_camera", "preset": "fit"},
+            "Show assumptions": {"type": "set_visibility", "target": "assumptions", "enabled": True},
+            "Hide answer highlights": {"type": "set_visibility", "target": "answer_highlights", "enabled": False},
+            "Show answer highlights": {"type": "set_visibility", "target": "answer_highlights", "enabled": True},
+            "Inspect model inventory": {"type": "inspect_inventory"},
+            "Inspect assumptions": {"type": "inspect_assumptions"},
+        }
+        return {"status": "ready", "actions": [controls.get(message, {"type": "question", "question": message})]}
+
     def extract_interpretation(self, document, include_geometry=False):
         from app.building import BuildingDescription
         assert include_geometry is False
@@ -117,8 +135,9 @@ def upload(page, pdf=False, name=None):
         "name": name or ("two-pages.pdf" if pdf else "plan.png"),
         "mimeType": "application/pdf" if pdf else "image/png", "buffer": source_bytes(pdf),
     })
-    page.locator("#page-image").wait_for(state="visible")
     page.wait_for_function("!document.getElementById('file-input').disabled")
+    page.locator("#chat-log").get_by_role("button", name="Inspect original", exact=True).click()
+    page.locator("#page-image").wait_for(state="visible")
 
 
 def ask(page, question):
@@ -130,19 +149,21 @@ def test_pdf_evidence_navigation_and_replacement(server, browser_page):
     from playwright.sync_api import expect
     page = browser_page
     page.goto(server)
-    expect(page.locator("#connection-label")).to_have_text("Gemini configured")
+    expect(page.locator("#chat-connection")).to_contain_text("Gemini")
     upload(page, pdf=True)
     ask(page, "Count rooms")
-    expect(page.locator("#answer-text")).to_have_text("Fixture: one labeled room.")
-    page.locator(".evidence-item").click()
+    answer = page.locator("#chat-log .chat-answer").last
+    expect(answer).to_contain_text("Fixture: one labeled room.")
+    answer.get_by_role("button", name="Room A", exact=True).click()
     expect(page.locator("#page-label")).to_contain_text("page 2 (2/2)")
     expect(page.locator("#evidence-overlay")).to_be_visible()
     assert page.locator("#evidence-overlay").evaluate("el => el.style.left") == "10%"
-    page.locator("#previous-page").click()
+    ask(page, "Show original page 1")
+    expect(page.locator("#page-label")).to_contain_text("page 1 (1/2)")
     expect(page.locator("#evidence-overlay")).to_be_hidden()
     upload(page, name="replacement.png")
-    expect(page.locator("#result")).to_be_hidden()
-    expect(page.locator("#filename")).to_have_text("replacement.png")
+    expect(page.locator("#chat-log .chat-answer")).to_have_count(0)
+    expect(page.locator("#attachment-summary")).to_contain_text("replacement.png")
 
 
 def test_limitation_unclear_and_operational_error(server, browser_page):
@@ -151,13 +172,18 @@ def test_limitation_unclear_and_operational_error(server, browser_page):
     page.goto(server)
     upload(page)
     ask(page, "Ceiling height?")
-    expect(page.locator("#result-status")).to_have_text("Missing information")
-    expect(page.locator("#next-text")).to_have_text("Provide a section drawing.")
+    answer = page.locator("#chat-log .chat-answer").last
+    expect(answer).to_contain_text("Insufficient source evidence")
+    answer.locator("summary").click()
+    expect(answer.locator("details")).to_contain_text("Provide a section drawing.")
     ask(page, "ambiguous label?")
-    expect(page.locator("#result-status")).to_have_text("Unable to resolve confidently")
+    expect(page.locator("#chat-log .chat-answer").last).to_contain_text("Source evidence remains unclear")
     ask(page, "failure")
-    expect(page.locator("#ask-error")).to_contain_text("no evidence conclusion")
-    expect(page.locator("#result")).to_be_hidden()
+    expect(page.locator("#chat-log")).to_contain_text("no evidence conclusion")
+    # Historical refusals remain in the conversation; an operational failure
+    # must not append another answer or masquerade as evidence insufficiency.
+    expect(page.locator("#chat-log .chat-answer")).to_have_count(2)
+    expect(page.locator("#page-image")).to_be_visible()
 
 
 def test_background_question_keeps_source_available_and_mobile_layout(server, browser_page):
@@ -167,8 +193,10 @@ def test_background_question_keeps_source_available_and_mobile_layout(server, br
     page.goto(server)
     upload(page)
     ask(page, "slow count")
+    page.wait_for_function("state.jobs.some(j=>j.kind==='question'&&!terminalJob(j))")
     expect(page.locator("#file-input")).to_be_enabled()
-    expect(page.locator("#answer-text")).to_have_text("Fixture: one labeled room.")
+    expect(page.locator("#page-image")).to_be_visible()
+    expect(page.locator("#chat-log .chat-answer").last).to_contain_text("Fixture: one labeled room.")
     expect(page.locator("#file-input")).to_be_enabled()
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
 
@@ -180,7 +208,8 @@ def test_unconfigured_preview_remains_usable(server, browser_page):
     page.route("**/api/health", lambda route: route.fulfill(json={"status": "ok", "provider_ready": False,
         "model": "fixture", "decision_model": "fixture", "limits": {"max_upload_mb": 10, "max_pages": 5}}))
     page.goto(server)
-    expect(page.locator("#provider-banner")).to_be_visible()
+    expect(page.locator("#chat-connection")).to_have_text("Provider unavailable")
+    expect(page.locator("#chat-log")).to_contain_text("To enable answers")
     upload(page)
     page.locator("#question").fill("How many rooms?")
     expect(page.locator("#ask-button")).to_be_disabled()
@@ -195,9 +224,12 @@ def test_openai_pipeline_is_identified(server, browser_page):
         "gate_kind": "structured_classification", "model": "fixture-openai", "decision_model": "fixture-openai",
         "limits": {"max_upload_mb": 10, "max_pages": 5}}))
     page.goto(server)
-    expect(page.locator("#connection-label")).to_have_text("OpenAI configured")
-    expect(page.locator("#provider-mode")).to_contain_text("Final demo uses Gemini")
+    expect(page.locator("#chat-connection")).to_contain_text("OpenAI")
     upload(page)
     ask(page, "Count rooms")
-    expect(page.locator("#answer-text")).to_have_text("Fixture: one labeled room.")
-    expect(page.locator("#run-details-list")).to_contain_text("Structured classification (no confidence score)")
+    answer = page.locator("#chat-log .chat-answer").last
+    expect(answer).to_contain_text("Fixture: one labeled room.")
+    answer.locator("summary").click()
+    expect(answer.locator("details")).to_contain_text("Evidence sufficiency: sufficient")
+    expect(answer.locator("details")).to_contain_text("do not guarantee answer correctness")
+    assert page.evaluate("state.health.gate_kind") == "structured_classification"

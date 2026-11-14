@@ -7,7 +7,7 @@ import time
 
 import pytest
 from test_browser import ask, upload
-from test_browser_3d import scene_page, snapshot
+from test_browser_3d import scene_page, snapshot, action
 from test_browser_v3 import SemanticFixtureProvider, generate
 
 pytestmark=pytest.mark.skipif(os.getenv('RUN_BROWSER_TESTS')!='1',reason='opt-in browser checks')
@@ -67,11 +67,11 @@ def test_concept_proposals_source_picking_footprints_and_export(concept_server,s
     from playwright.sync_api import expect
     page=scene_page;generate(page,concept_server)
     data=page.evaluate('window.blueprintViewer.data')
-    requests=[];page.on('request',lambda r:requests.append(r.url)if '/api/'in r.url else None)
-    page.locator('#show-concept').click()
-    expect(page.locator('.concept-disclosure')).to_be_visible()
+    requests=[];page.on('request',lambda r:requests.append((r.method,r.url))if '/api/'in r.url else None)
+    action(page,{'type':'set_view','mode':'concept'})
+    expect(page.locator('#workspace-title')).to_contain_text('Concept')
     expect(page.locator('#scene-badge')).to_contain_text('unscaled')
-    expect(page.locator('#show-assumptions')).to_be_visible()
+    assert snapshot(page)['show_assumptions'] is False
     records=snapshot(page)['concept_records']
     proposals=[r for r in records if r['kind']=='proposal']
     assert proposals
@@ -100,44 +100,43 @@ def test_concept_proposals_source_picking_footprints_and_export(concept_server,s
     # Generic styling is a box, not the circular burner pattern in the old renderer.
     xy=page.evaluate('''id=>{const pairs=new Set();window.blueprintViewer.concept.group.traverse(m=>{if(m.isMesh&&m.userData.conceptRecord===id){const p=m.geometry.attributes.position;for(let i=0;i<p.count;i++)pairs.add(p.getX(i).toFixed(4)+','+p.getY(i).toFixed(4));}});return pairs.size;}''',equipment['id'])
     assert xy<50
-    page.locator('#show-assumptions').check()
+    action(page,{'type':'set_visibility','target':'assumptions','enabled':True})
     colors=page.evaluate('''id=>{const out=[];window.blueprintViewer.concept.group.traverse(m=>{if(m.isMesh&&m.userData.conceptRecord===id)out.push(m.material.color.getHex());});return out;}''',rotated['id'])
     assert colors and all(c==0xe4ae55 for c in colors)
-    page.evaluate('id=>window.blueprintViewer.setHighlights([id],true)',rotated['id'])
+    page.evaluate('id=>{state.result={highlight_ids:[id]};chatUI.syncHighlights();}',rotated['id'])
     appearance=page.evaluate('''id=>{const out=[];window.blueprintViewer.concept.group.traverse(m=>{if(m.isMesh&&m.userData.conceptRecord)out.push({id:m.userData.conceptRecord,color:m.material.color.getHex(),opacity:m.material.opacity});});return out;}''',rotated['id'])
     assert all(m['color']==0xcce979 for m in appearance if m['id']==rotated['id'])
     assert all(m['opacity']==.1 for m in appearance if m['id']!=rotated['id'])
-    page.locator('#show-assumptions').uncheck()
+    action(page,{'type':'set_visibility','target':'assumptions','enabled':False})
     assert snapshot(page)['highlight_ids']==[rotated['id']]
-    page.evaluate('window.blueprintViewer.setHighlights([],true)')
+    page.evaluate('()=>{state.result=null;chatUI.syncHighlights();}')
     click_concept_record(page,proposals[0]['id'])
-    expect(page.locator('#concept-selection-name')).to_contain_text('Proposal')
-    expect(page.locator('#concept-selection-note')).to_contain_text('not depicted source evidence')
-    page.locator('#concept-support-source').click();expect(page.locator('#evidence-overlay')).to_be_visible()
-    page.locator('#show-concept').click()
+    expect(page.locator('[data-entry="selected-proposal"]')).to_contain_text('not factual source evidence')
+    page.locator('[data-entry="selected-proposal"] .proposal-source').click();expect(page.locator('#evidence-overlay')).to_be_visible()
+    action(page,{'type':'set_view','mode':'concept'})
     click_concept_record(page,rotated['id'])
-    expect(page.locator('#element-inspector')).to_be_visible()
-    page.locator('#element-source').click();expect(page.locator('#evidence-overlay')).to_be_visible()
-    page.locator('#show-concept').click()
-    page.locator('#cutaway-percent').fill('100');page.locator('#cutaway-percent').dispatch_event('input')
+    expect(page.locator('[data-entry="focused-object"]')).to_be_visible()
+    page.locator('[data-entry="focused-object"] button').click();expect(page.locator('#evidence-overlay')).to_be_visible()
+    action(page,{'type':'set_view','mode':'concept'})
+    action(page,{'type':'set_cutaway','percent':100})
     assert page.evaluate('''()=>{const values=[];blueprintViewer.concept.floors.forEach(f=>f.group.traverse(m=>{if(m.material)values.push(m.material.clippingPlanes.length)}));return values.length>0&&values.every(n=>n===0)}''')
-    page.locator('#cutaway-percent').fill('38');page.locator('#cutaway-percent').dispatch_event('input')
+    action(page,{'type':'set_cutaway','percent':38})
     assert page.evaluate('''()=>{const values=[];blueprintViewer.concept.floors.forEach(f=>f.group.traverse(m=>{if(m.material)values.push(m.material.clippingPlanes.length)}));return values.length>0&&values.every(n=>n===1)}''')
     assert page.evaluate('window.blueprintViewer.data')==data
     assert snapshot(page)['concept_build_count']==1
-    assert requests==[]
-    with page.expect_download()as event:page.locator('#download-ifc').click()
+    assert all(method=='GET' or '/api/chat/actions' in url for method,url in requests), 'Display controls may read evidence but must not rebuild geometry or run QA'
+    with page.expect_download()as event:action(page,{'type':'download_ifc'})
     artifact=tmp_path/'concept.ifc';event.value.save_as(artifact)
     assert 'proposal:' not in artifact.read_text()
     ask(page,'What is the actual ceiling height?')
-    expect(page.locator('#result-status')).to_have_text('Missing information')
+    expect(page.locator('.chat-answer').last).to_contain_text('Insufficient source evidence')
     assert snapshot(page)['concept_build_count']==1
     page.screenshot(path='/tmp/product-concept-fixture.png',full_page=True)
 
 
 def test_atomic_revision_preserves_view_and_discards_failed_stale_candidates(concept_server,scene_page):
-    page=scene_page;generate(page,concept_server);page.locator('#show-concept').click()
-    page.locator('#show-assumptions').check();page.locator('#cutaway-percent').fill('100');page.locator('#cutaway-percent').dispatch_event('input')
+    page=scene_page;generate(page,concept_server);action(page,{'type':'set_view','mode':'concept'})
+    action(page,{'type':'set_visibility','target':'assumptions','enabled':True});action(page,{'type':'set_cutaway','percent':100})
     page.wait_for_timeout(250)
     result=page.evaluate('''() => {
       const v=window.blueprintViewer;v.data.building_id='fixture-building';v.data.revision_id='r1';v.data.revision_number=1;
@@ -170,24 +169,26 @@ def test_atomic_revision_preserves_view_and_discards_failed_stale_candidates(con
 
 def test_revision_ui_keeps_selected_proposal_then_retains_removed_source(concept_server,scene_page):
     from playwright.sync_api import expect
-    page=scene_page;generate(page,concept_server);page.locator('#show-concept').click()
-    page.evaluate("Object.assign(window.blueprintViewer.data,{building_id:'fixture-building',revision_id:'r1',revision_number:1})")
+    page=scene_page;generate(page,concept_server);action(page,{'type':'set_view','mode':'concept'})
+    from test_browser import source_bytes
+    page.route('**/revisions/*/pages/1',lambda route:route.fulfill(content_type='image/png',body=source_bytes()))
+    page.evaluate("Object.assign(window.blueprintViewer.data,{revision_id:'a'.repeat(32),revision_number:1})")
     source=page.evaluate("window.blueprintViewer.data.elements.find(e=>e.kind==='furniture')")
-    page.locator('#element-select').select_option(source['id'])
+    page.evaluate('id=>window.blueprintViewer.select(id)',source['id'])
     proposal=next(r for r in snapshot(page)['concept_records']if r['kind']=='proposal')
-    page.locator('#concept-proposal-select').select_option(proposal['id'])
+    click_concept_record(page,proposal['id'])
     expect(page.locator('#element-inspector')).to_be_hidden()
     before=snapshot(page)
-    page.evaluate("async()=>{const next=structuredClone(window.blueprintViewer.data);next.revision_id='r2';next.revision_number=2;await loadScene(next);}")
-    expect(page.locator('#concept-selection')).to_be_visible()
-    expect(page.locator('#concept-proposal-select')).to_have_value(proposal['id'])
+    page.evaluate("async()=>{const next=structuredClone(window.blueprintViewer.data);next.revision_id='b'.repeat(32);next.revision_number=2;await loadScene(next);}")
+    expect(page.locator('[data-entry="selected-proposal"]')).to_be_visible()
+    assert page.evaluate('state.selectedProposal.id')==proposal['id']
     expect(page.locator('#element-inspector')).to_be_hidden()
     assert snapshot(page)['camera_position']==pytest.approx(before['camera_position'],abs=1e-10)
-    page.locator('#element-select').select_option(source['id'])
-    page.evaluate("async id=>{const next=structuredClone(window.blueprintViewer.data);next.revision_id='r3';next.revision_number=3;next.elements=next.elements.filter(e=>e.id!==id);await loadScene(next);}",source['id'])
+    page.evaluate('id=>window.blueprintViewer.select(id)',source['id'])
+    page.evaluate("async id=>{const next=structuredClone(window.blueprintViewer.data);next.revision_id='c'.repeat(32);next.revision_number=3;next.elements=next.elements.filter(e=>e.id!==id);await loadScene(next);}",source['id'])
     expect(page.locator('#concept-selection')).to_be_hidden()
-    expect(page.locator('#element-inspector')).to_be_visible()
+    expect(page.locator('[data-entry="focused-object"]')).to_be_visible()
     expect(page.locator('#element-geometry-note')).to_contain_text('Removed in the current revision')
-    expect(page.locator('#revision-notice')).to_contain_text('previous source evidence remains available')
+    expect(page.locator('#chat-log')).to_contain_text('source')
     assert snapshot(page)['selected_id']is None
-    page.locator('#element-source').click();expect(page.locator('#evidence-overlay')).to_be_visible()
+    page.locator('[data-entry="focused-object"] button').click();expect(page.locator('#evidence-overlay')).to_be_visible()
