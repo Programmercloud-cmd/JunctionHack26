@@ -1,13 +1,17 @@
 import * as THREE from 'three';
 import { OrbitControls } from './vendor/three/OrbitControls.js';
+import { ConceptLayer } from './concept.js';
 
 const COLORS = {wall:0xd2d9ce,room:0x7daa8c,outdoor:0xa5c58e,railing:0x91a6a5,open_edge:0x73a886,door:0xb58b64,window:0x78b4bf,stairs:0xc0a981,furniture:0xc7b6cc,fixture:0x9abac6,other:0xabb5ab};
 
 export class BlueprintViewer {
-  constructor(container, {onSelect = () => {}, onUnresolvedSelect = () => {}} = {}) {
+  constructor(container, {onSelect = () => {}, onUnresolvedSelect = () => {}, onProposalSelect = () => {}} = {}) {
     this.container = container;
     this.onSelect = onSelect;
     this.onUnresolvedSelect = onUnresolvedSelect;
+    this.onProposalSelect = onProposalSelect;
+    this.mode = 'inspection'; this.modeStates = {}; this.cutaway = true;
+    this.conceptBuildCount = 0; this.needsRender = true; this.renderCount = 0;
     this.annotations = [];
     this.elements = new Map();
     this.meshes = new Map();
@@ -25,6 +29,9 @@ export class BlueprintViewer {
     this.renderer = new THREE.WebGLRenderer({antialias:true, alpha:false});
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.localClippingEnabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.autoUpdate = false;
     this.renderer.domElement.setAttribute('aria-label', 'Interactive building model. Drag to orbit, scroll to zoom, right-drag to pan. Select objects using the element list below.');
     this.renderer.domElement.tabIndex = 0;
     this.renderer.domElement.dataset.ready = 'false';
@@ -37,13 +44,14 @@ export class BlueprintViewer {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = .08;
     this.controls.addEventListener('change', () => this.render());
-    this.scene.add(new THREE.AmbientLight(0xffffff, 1.8));
+    this.inspectionLights = new THREE.Group(); this.scene.add(this.inspectionLights);
+    this.inspectionLights.add(new THREE.AmbientLight(0xffffff, 1.8));
     const sunlight = new THREE.DirectionalLight(0xffffff, 3);
     sunlight.position.set(30, -20, 50);
-    this.scene.add(sunlight);
+    this.inspectionLights.add(sunlight);
     const fill = new THREE.DirectionalLight(0xd9e9ff, 1.2);
     fill.position.set(-30, 25, 10);
-    this.scene.add(fill);
+    this.inspectionLights.add(fill);
     this.group = new THREE.Group();
     this.scene.add(this.group);
     this.raycaster = new THREE.Raycaster();
@@ -52,24 +60,29 @@ export class BlueprintViewer {
     this.renderer.domElement.addEventListener('pointerup', (event) => this.pick(event));
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(container);
-    this.renderer.setAnimationLoop(() => { this.controls.update(); this.render(); });
+    this.renderer.setAnimationLoop(() => { this.controls.update(); if (this.needsRender && this.container.clientWidth && this.container.clientHeight) { this.renderer.render(this.scene,this.camera); this.positionAnnotations(); this.needsRender=false; this.renderCount++; } });
     this.resize();
   }
 
   loadScene(data) {
-    this.clearGeometry();
-    this.data = data;
-    this.elements = new Map(data.elements.map((element) => [element.id, element]));
-    this.selectedId = null;
-    this.floorFilter = '';
-    this.exploded = false;
-    this.floorIndices = new Map((data.floors || []).map((floor, index) => [floor.id, index]));
-    this.highlightIds.clear();
+    const candidate=this.prepareRevision(data);
+    return this.commitRevision(candidate);
+  }
+
+  prepareRevision(data) {
+    const building=scene=>scene?.building_id || scene?.document_id;
+    if(this.data && building(data)!==building(this.data))throw new Error('Revision belongs to another building');
+    if(this.data?.revision_id && data.revision_id===this.data.revision_id)return {noop:true,baseData:this.data,data};
+    if(Number.isFinite(this.data?.revision_number)&&Number.isFinite(data.revision_number)&&data.revision_number<=this.data.revision_number)throw new Error('Stale building revision');
+    if(new Set(data.elements.map(e=>e.id)).size!==data.elements.length)throw new Error('Duplicate replacement object IDs');
+    const candidate={baseData:this.data,data,group:new THREE.Group(),meshes:new Map(),elements:new Map(data.elements.map(e=>[e.id,e])),concept:null};
+    try {
     for (const element of data.elements) {
       if (!element.geometry) continue;
       const input = element.geometry;
       let geometry;
       if (input.type === 'mesh') {
+        if (!Array.isArray(input.positions) || input.positions.some(v=>!Number.isFinite(v)) || input.positions.length%3 || !Array.isArray(input.indices) || input.indices.some(i=>!Number.isInteger(i)||i<0||i>=input.positions.length/3)) throw new Error('Invalid replacement mesh');
         geometry = new THREE.BufferGeometry();
         geometry.setAttribute('position', new THREE.Float32BufferAttribute(input.positions, 3));
         geometry.setIndex(input.indices);
@@ -92,18 +105,80 @@ export class BlueprintViewer {
         const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 25), new THREE.LineBasicMaterial({color:0x53685b, transparent:true, opacity:.38}));
         mesh.add(edges);
       }
-      this.meshes.set(element.id, mesh);
-      this.group.add(mesh);
+      candidate.meshes.set(element.id, mesh);
+      candidate.group.add(mesh);
     }
-    this.bounds = new THREE.Box3().setFromObject(this.group);
-    const size = this.bounds.getSize(new THREE.Vector3());
-    this.floorSeparation = Math.max(size.z * 1.2, Math.max(size.x,size.y) * .16, .1);
-    this.createAnnotations();
-    this.applyAppearance();
-    this.fit();
-    this.renderer.domElement.dataset.ready = 'true';
-    this.renderer.domElement.dataset.documentId = data.document_id;
-    this.renderer.domElement.dataset.meshCount = String(this.meshes.size);
+
+      candidate.bounds=new THREE.Box3().setFromObject(candidate.group);
+      const size=candidate.bounds.getSize(new THREE.Vector3());
+      candidate.floorSeparation=this.data?this.floorSeparation:Math.max(size.z*1.2,Math.max(size.x,size.y)*.16,.1);
+      candidate.floorIndices=new Map();
+      for(const floor of data.floors || [])if(this.floorIndices?.has(floor.id))candidate.floorIndices.set(floor.id,this.floorIndices.get(floor.id));
+      let index=Math.max(-1,...candidate.floorIndices.values())+1;
+      for(const floor of data.floors || [])if(!candidate.floorIndices.has(floor.id))candidate.floorIndices.set(floor.id,index++);
+      if(this.concept || this.mode==='concept')candidate.concept=new ConceptLayer(data,candidate.meshes,this.concept?.placements || {});
+      candidate.concept?.setCutaway(this.cutaway);
+      return candidate;
+    } catch(error) {this.disposeRevision(candidate);throw error;}
+  }
+
+  disposeRevision(revision) {
+    revision.concept?.dispose();
+    for(const mesh of revision.meshes?.values() || []){mesh.geometry.dispose();mesh.material.dispose();for(const edge of mesh.children){edge.geometry.dispose();edge.material.dispose();}}
+    revision.group?.clear();revision.disposed=true;
+  }
+
+  commitRevision(candidate) {
+    if(candidate.disposed)throw new Error('Replacement has been disposed');
+    if(candidate.baseData!==this.data){if(!candidate.noop)this.disposeRevision(candidate);throw new Error('Stale prepared revision');}
+    if(candidate.noop)return this.getSnapshot();
+    const initial=!this.data,old={group:this.group,meshes:this.meshes,concept:this.concept};
+    const previousSelected=this.selectedId,previousHighlights=[...this.highlightIds];
+    this.scene.remove(old.group);if(old.concept)this.scene.remove(old.concept.group);
+    this.data=candidate.data;this.group=candidate.group;this.meshes=candidate.meshes;this.elements=candidate.elements;
+    this.concept=candidate.concept;this.bounds=candidate.bounds;this.floorIndices=candidate.floorIndices;this.floorSeparation=candidate.floorSeparation;
+    this.scene.add(this.group);if(this.concept){this.scene.add(this.concept.group);this.conceptBuildCount++;}
+    if(this.floorFilter&&!this.floorIndices.has(this.floorFilter))this.floorFilter='';
+    for(const saved of Object.values(this.modeStates))if(saved.floorFilter&&!this.floorIndices.has(saved.floorFilter))saved.floorFilter='';
+    this.selectedId=this.elements.has(previousSelected)?previousSelected:null;
+    if(this.selectedProposalId&&!this.concept?.records.has(this.selectedProposalId))this.selectedProposalId=null;
+    this.highlightIds=new Set(previousHighlights.filter(id=>this.elements.has(id)&&this.elements.get(id).representation!=='unresolved'&&(!this.data.derived||this.meshes.has(id))));
+    this.revisionChanges={removed_selection:previousSelected&&!this.selectedId?previousSelected:null,unresolved_selection:this.selectedId&&!this.meshes.has(this.selectedId)?this.selectedId:null,removed_highlights:previousHighlights.filter(id=>!this.highlightIds.has(id))};
+    this.annotations=[];this.annotationLayer.replaceChildren();this.createAnnotations();
+    this.syncMode();this.syncOffsets();this.applyAppearance();this.updateBounds();
+    if(initial)this.fit();
+    this.renderer.domElement.dataset.ready='true';this.renderer.domElement.dataset.documentId=this.data.document_id;this.renderer.domElement.dataset.meshCount=String(this.meshes.size);
+    this.disposeRevision(old);candidate.committed=true;
+    return this.getSnapshot();
+  }
+
+  captureView() {
+    return {floorFilter:this.floorFilter,exploded:this.exploded,position:this.camera.position.clone(),target:this.controls.target.clone(),near:this.camera.near,far:this.camera.far,minDistance:this.controls.minDistance,maxDistance:this.controls.maxDistance};
+  }
+  syncMode() {
+    const concept=this.mode==='concept';this.group.visible=!concept;this.inspectionLights.visible=!concept;
+    if(this.concept)this.concept.group.visible=concept;
+    this.renderer.shadowMap.enabled=concept;this.renderer.shadowMap.needsUpdate=true;
+    this.renderer.toneMapping=concept?THREE.ACESFilmicToneMapping:THREE.NoToneMapping;this.renderer.toneMappingExposure=concept?1.12:1;
+    this.scene.background.setHex(concept?0xe9e5dc:0xeef1e9);this.renderer.domElement.dataset.mode=this.mode;
+  }
+  setMode(mode) {
+    if(!['inspection','concept'].includes(mode)||!this.data||mode===this.mode)return this.getSnapshot();
+    const damping=this.controls.enableDamping;this.controls.enableDamping=false;this.controls.update();this.controls.enableDamping=damping;
+    this.modeStates[this.mode]=this.captureView();
+    if(mode==='concept'&&!this.concept){this.concept=new ConceptLayer(this.data,this.meshes);this.concept.setCutaway(this.cutaway);this.scene.add(this.concept.group);this.conceptBuildCount++;}
+    this.mode=mode;const saved=this.modeStates[mode];
+    this.floorFilter=saved?.floorFilter ?? this.floorFilter;
+    this.exploded=saved?.exploded ?? this.exploded;
+    this.syncMode();this.syncOffsets();this.applyAppearance();this.updateBounds();
+    if(saved){this.camera.position.copy(saved.position);this.controls.target.copy(saved.target);this.camera.near=saved.near;this.camera.far=saved.far;this.controls.minDistance=saved.minDistance;this.controls.maxDistance=saved.maxDistance;this.camera.updateProjectionMatrix();this.controls.update();}
+    this.render();return this.getSnapshot();
+  }
+  setCutaway(enabled) {this.cutaway=Boolean(enabled);this.concept?.setCutaway(this.cutaway);this.renderer.shadowMap.needsUpdate=true;this.render();}
+  syncOffsets() {
+    for(const [id,mesh]of this.meshes){const index=this.floorIndices.get(this.elements.get(id).storey_id)||0;mesh.position.z=mesh.userData.baseZ+(this.exploded?index*this.floorSeparation:0);}
+    this.group.updateMatrixWorld(true);this.concept?.syncVisibility(this.floorFilter,this.exploded,this.floorSeparation,this.floorIndices);
+    this.renderer.shadowMap.needsUpdate=true;this.renderer.domElement.dataset.exploded=String(this.exploded);
   }
 
   setHighlights(ids, enabled = true) {
@@ -123,17 +198,14 @@ export class BlueprintViewer {
 
   setExploded(enabled) {
     this.exploded = enabled;
-    for (const [id, mesh] of this.meshes) {
-      const index = this.floorIndices.get(this.elements.get(id).storey_id) || 0;
-      mesh.position.z = mesh.userData.baseZ + (enabled ? index * this.floorSeparation : 0);
-    }
-    this.group.updateMatrixWorld(true);
+    this.syncOffsets();
     this.updateBounds();
     this.fit();
     this.renderer.domElement.dataset.exploded = String(enabled);
   }
 
   updateBounds() {
+    if(this.mode==='concept'&&this.concept){this.bounds=this.concept.syncVisibility(this.floorFilter,this.exploded,this.floorSeparation,this.floorIndices);this.renderer.shadowMap.needsUpdate=true;return;}
     this.bounds = new THREE.Box3();
     for (const mesh of this.meshes.values()) if (mesh.visible) this.bounds.union(new THREE.Box3().setFromObject(mesh));
   }
@@ -204,12 +276,15 @@ export class BlueprintViewer {
     if (!this.elements.has(id)) return;
     const floor = this.elements.get(id).storey_id;
     if (this.floorFilter && this.floorFilter !== floor) this.setFloorFilter(this.floorIndices.has(floor) ? floor : '');
+    this.selectedProposalId=null;
     this.selectedId = id;
     this.applyAppearance();
     this.onSelect(this.elements.get(id));
   }
 
   applyAppearance() {
+    this.concept?.syncVisibility(this.floorFilter,this.exploded,this.floorSeparation,this.floorIndices);
+    this.concept?.applyAppearance(this.highlightIds,this.highlightsEnabled,this.selectedProposalId||this.selectedId,this.showAssumptions);
     const active = this.highlightsEnabled && this.highlightIds.size > 0;
     for (const [id, mesh] of this.meshes) {
       const element = this.elements.get(id);
@@ -242,10 +317,11 @@ export class BlueprintViewer {
 
   fit() {
     if (!this.bounds || this.bounds.isEmpty()) return;
+    const damping=this.controls.enableDamping;this.controls.enableDamping=false;this.controls.update();this.controls.enableDamping=damping;
     const center = this.bounds.getCenter(new THREE.Vector3());
     const size = this.bounds.getSize(new THREE.Vector3());
     const extent = Math.max(size.x,size.y,size.z, .1);
-    const direction = new THREE.Vector3(.9,-1.2,this.data?.derived ? 1.65 : .9).normalize();
+    const direction = this.mode==='concept' ? new THREE.Vector3(.35,-.9,1.35).normalize() : new THREE.Vector3(.9,-1.2,this.data?.derived ? 1.65 : .9).normalize();
     const viewRotation = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(direction, new THREE.Vector3(), this.camera.up)).invert();
     const tanVertical = Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));
     const tanHorizontal = tanVertical * this.camera.aspect;
@@ -277,6 +353,7 @@ export class BlueprintViewer {
     this.pointerDown = null;
     const bounds = this.renderer.domElement.getBoundingClientRect();
     this.raycaster.setFromCamera(new THREE.Vector2((event.clientX-bounds.left)/bounds.width*2-1, -(event.clientY-bounds.top)/bounds.height*2+1), this.camera);
+    if(this.mode==='concept'){const record=this.concept?.pick(this.raycaster);if(record?.kind==='source')this.select(record.source_id);else if(record){this.selectedProposalId=record.id;this.applyAppearance();this.onProposalSelect(record);}return;}
     const active = this.highlightsEnabled && this.highlightIds.size > 0;
     const meshes = [...this.meshes.values()].filter((mesh) => mesh.visible && (!active || this.highlightIds.has(mesh.userData.elementId)));
     const hit = this.raycaster.intersectObjects(meshes, false)[0];
@@ -291,11 +368,12 @@ export class BlueprintViewer {
     this.renderer.setSize(width,height);
     this.render();
   }
-  render() { if (this.renderer && this.container.clientWidth) { this.renderer.render(this.scene,this.camera); this.positionAnnotations(); } }
+  render() {this.needsRender=true;this.camera.updateMatrixWorld();this.positionAnnotations();}
   getSnapshot() {
-    return {document_id:this.data?.document_id, mesh_count:this.meshes.size, element_count:this.elements.size, selected_id:this.selectedId, highlight_ids:[...this.highlightIds], highlights_enabled:this.highlightsEnabled, show_assumptions:this.showAssumptions, floor_filter:this.floorFilter, exploded:this.exploded, camera_position:this.camera.position.toArray(), up_axis:this.camera.up.toArray(), annotations:this.annotations.map((item)=>({element_ids:item.elementIds,floor_id:item.floorId,floor_level:item.floorLevel,visible:!item.button.hidden})), elements:[...this.meshes].map(([id,mesh])=>({id,visible:mesh.visible,opacity:mesh.material.opacity,display_offset_z:mesh.position.z-mesh.userData.baseZ}))};
+    return {mode:this.mode,cutaway:this.cutaway,concept_build_count:this.conceptBuildCount,concept_records:[...(this.concept?.records.values() || [])],concept_placements:this.concept?.placements || {},render_info:{calls:this.renderer.info.render.calls,triangles:this.renderer.info.render.triangles,frames:this.renderCount},camera_target:this.controls.target.toArray(),revision_changes:this.revisionChanges,building_id:this.data?.building_id,revision_id:this.data?.revision_id,revision_number:this.data?.revision_number,document_id:this.data?.document_id, mesh_count:this.meshes.size, element_count:this.elements.size, selected_id:this.selectedId, highlight_ids:[...this.highlightIds], highlights_enabled:this.highlightsEnabled, show_assumptions:this.showAssumptions, floor_filter:this.floorFilter, exploded:this.exploded, camera_position:this.camera.position.toArray(), up_axis:this.camera.up.toArray(), annotations:this.annotations.map((item)=>({element_ids:item.elementIds,floor_id:item.floorId,floor_level:item.floorLevel,visible:!item.button.hidden})), elements:[...this.meshes].map(([id,mesh])=>({id,visible:mesh.visible,opacity:mesh.material.opacity,display_offset_z:mesh.position.z-mesh.userData.baseZ}))};
   }
   clearGeometry() {
+    if(this.concept){this.scene.remove(this.concept.group);this.concept.dispose();this.concept=null;}
     for (const mesh of this.meshes.values()) { mesh.geometry.dispose(); mesh.material.dispose(); for (const edge of mesh.children) { edge.geometry.dispose(); edge.material.dispose(); } }
     this.meshes.clear();
     this.group.clear();
