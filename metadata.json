@@ -1,0 +1,50 @@
+{
+  "cli_version": "0.13.4",
+  "checkpoint_id": "01M7DGJ01K0K9E4GDVP0HJ4E1J",
+  "strategy": "manual-commit",
+  "branch": "blueprint-qa-isolated",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/HANDOFF.md",
+    "docs/PUBLIC_DEMO_RESULTS.md",
+    "docs/VERDA_DEPLOYMENT.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 169447,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 11729664,
+    "output_tokens": 30252,
+    "api_call_count": 61,
+    "subagent_tokens": {
+      "input_tokens": 202236,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 24097024,
+      "output_tokens": 64447,
+      "api_call_count": 130
+    },
+    "subagent_tokens_complete": true
+  },
+  "redaction": {
+    "replacements": 160,
+    "layers": {
+      "betterleaks": 37,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 1,
+      "credentialed_uri": 0,
+      "entropy": 136,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  }
+}

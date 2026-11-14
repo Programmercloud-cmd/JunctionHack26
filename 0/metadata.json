@@ -1,0 +1,67 @@
+{
+  "cli_version": "0.13.4",
+  "checkpoint_id": "01M7DGJ01K0K9E4GDVP0HJ4E1J",
+  "session_id": "01a1daa0-ff86-78d0-94b9-5494d731b204",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-14T17:09:28.568900616Z",
+  "branch": "blueprint-qa-isolated",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/HANDOFF.md",
+    "docs/PUBLIC_DEMO_RESULTS.md",
+    "docs/VERDA_DEPLOYMENT.md"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "70c6d3ce49e4",
+  "checkpoint_transcript_start": 2014,
+  "transcript_lines_at_start": 2014,
+  "compact_transcript_start": 351,
+  "token_usage": {
+    "input_tokens": 169447,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 11729664,
+    "output_tokens": 30252,
+    "api_call_count": 61,
+    "subagent_tokens": {
+      "input_tokens": 202236,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 24097024,
+      "output_tokens": 64447,
+      "api_call_count": 130
+    },
+    "subagent_tokens_complete": true
+  },
+  "session_token_usage": {
+    "input_tokens": 548027,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 50111744,
+    "output_tokens": 113082,
+    "api_call_count": 330,
+    "subagent_tokens": {
+      "input_tokens": 1321467,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 75906176,
+      "output_tokens": 209914,
+      "api_call_count": 500
+    },
+    "subagent_tokens_complete": true
+  },
+  "redaction": {
+    "replacements": 160,
+    "layers": {
+      "betterleaks": 37,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 1,
+      "credentialed_uri": 0,
+      "entropy": 136,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "session_metrics": {
+    "turn_count": 1
+  }
+}
