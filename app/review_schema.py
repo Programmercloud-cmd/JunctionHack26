@@ -30,14 +30,14 @@ class RecordPatch(StrictModel):
     target_id: str | None = None
     floor_id: str | None = None
     record: RoomDescription | BoundaryDescription | OpeningDescription | FeatureDescription | UnresolvedDescription | FloorDescription | None = None
-    evidence: PageRegion
+    evidence: PageRegion = Field(description="Contextual original-page area: left < right and top < bottom, each normalized 0..1. A line-shaped record.source is allowed for boundaries/openings but must NOT be copied here as zero-area evidence.")
     reason: str
     issue_ids: list[str] = Field(default_factory=list)
 
 
 class TransformUpdate(StrictModel):
     floor_id: str
-    evidence: PageRegion
+    evidence: PageRegion = Field(description="Contextual original-page area: left < right and top < bottom, each normalized 0..1. A line-shaped record.source is allowed for boundaries/openings but must NOT be copied here as zero-area evidence.")
     reason: str
 
 

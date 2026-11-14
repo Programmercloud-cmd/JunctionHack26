@@ -58,6 +58,53 @@ class JobRunner:
                 self._update(identity,status="interrupted",phase="interrupted",message="Application stopped; usable revision retained.")
         self.executor.shutdown(wait=False,cancel_futures=True)
 
+    def _bind_provider(self,identity,provider):
+        provider.provider_calls=[]
+        provider.diagnostic_stage=lambda:self.jobs[identity].get("phase","provider")
+        provider.diagnostic_callback=lambda:self._update(identity,provider_calls=deepcopy(provider.provider_calls))
+        return provider
+
+    def _review_candidate(self,identity,provider,document,description,scene,**kwargs):
+        """Persist a completed candidate privately before asking for publication review."""
+        folder=self.store.directory(document.id)/"diagnostics"/(identity+"-candidate-"+uuid.uuid4().hex)
+        folder.mkdir(parents=True,exist_ok=False)
+        previous=kwargs.get("previous_description")
+        def record_map(value):
+            result={}
+            for floor in value.floors if value else []:
+                result[floor.persistent_id]=floor.model_dump(mode="json")
+                for collection in ("rooms","boundaries","openings","features","unresolved"):
+                    result.update({item.persistent_id:item.model_dump(mode="json") for item in getattr(floor,collection)})
+            return result
+        before=record_map(previous);after=record_map(description)
+        audit={"job_id":identity,"stage":self.jobs[identity].get("phase"),"status":"awaiting_review",
+            "revision_id":document.revision_id,"base_revision_id":document.parent_revision_id,
+            "description_sha256":description_hash(description),
+            "previous_description_sha256":description_hash(previous) if previous else None,
+            "changed_ids":sorted(k for k in after if k is not None and before.get(k)!=after[k]),
+            "removed_ids":sorted(k for k in before if k is not None and k not in after)}
+        for name,value in (("description.json",description.model_dump(mode="json")),("scene.json",scene.model_dump(mode="json")),
+                           ("pipeline.json",self.jobs[identity].get("config",{})),("audit.json",audit)):
+            (folder/name).write_text(json.dumps(value,ensure_ascii=False,allow_nan=False))
+        if document.ifc_bytes:(folder/"model.ifc").write_bytes(document.ifc_bytes)
+        entry={"candidate":str(folder.relative_to(self.store.directory(document.id))),"revision_id":document.revision_id,
+            "stage":audit["stage"],"status":"awaiting_review"}
+        entries=deepcopy(self.jobs[identity].get("review_candidates",[]));entries.append(entry)
+        self._update(identity,review_candidates=entries)
+        try:
+            review=ReconstructionReview.model_validate(provider.review_reconstruction(document,description,scene,**kwargs))
+            audit["status"]="reviewed";audit["candidate_supported"]=review.candidate_supported
+            (folder/"review.json").write_text(review.model_dump_json())
+            return review
+        except Exception:
+            audit["status"]="review_failed"
+            raise
+        finally:
+            (folder/"audit.json").write_text(json.dumps(audit,ensure_ascii=False,allow_nan=False))
+            entry["status"]=audit["status"]
+            if "candidate_supported" in audit:entry["candidate_supported"]=audit["candidate_supported"]
+            self._update(identity,review_candidates=entries)
+
     def _update(self,identity,**fields):
         with self.lock:
             job=self.jobs[identity]
@@ -151,7 +198,8 @@ class JobRunner:
     def _extract(self,identity,source_id):
         provider=None
         try:
-            deadline=monotonic()+pipeline_config()["job_seconds"];self.deadlines[identity]=deadline
+            config=pipeline_config();self._update(identity,config=config)
+            deadline=monotonic()+config["job_seconds"];self.deadlines[identity]=deadline
             self._check(identity,deadline)
             # Cache reuse does not construct a credential-requiring provider.
             cached=self.store.cached_interpretation(source_id)
@@ -159,7 +207,7 @@ class JobRunner:
                 current=self.store.merge_interpretation(self.jobs[identity]["building_id"],source_id,cached,job_guard=lambda:self._valid(identity) and monotonic()<self.deadlines.get(identity,float("inf")))
             else:
                 self._update(identity,status="running",phase="extraction_provider",message="Preparing source interpretation.")
-                provider=self.provider_factory();provider.request_deadline=deadline
+                provider=self._bind_provider(identity,self.provider_factory());provider.request_deadline=deadline
                 current=self._source_interpretation(identity,source_id,provider,deadline)
             self._check(identity,deadline)
             self._update(identity,status="complete",phase="complete",message="Source interpretation saved. Ask questions now or explicitly generate 3D.",
@@ -254,11 +302,11 @@ class JobRunner:
     def _reconstruct(self,identity,current,mode):
         provider=None
         try:
-            config=pipeline_config();deadline=monotonic()+config["job_seconds"]
+            config=pipeline_config();self._update(identity,config=config);deadline=monotonic()+config["job_seconds"]
             self.deadlines[identity]=deadline
             self._check(identity,deadline)
             self._update(identity,status="running",phase="provider_setup",message="Preparing requested geometry processing.")
-            provider=self.provider_factory();provider.request_deadline=deadline
+            provider=self._bind_provider(identity,self.provider_factory());provider.request_deadline=deadline
             review=None
             modern=callable(getattr(provider,"extract_interpretation",None))
             if modern:
@@ -289,7 +337,7 @@ class JobRunner:
                             path=self.store.save_candidate(candidate,None,failures,config)
                             self._update(identity,status="needs_attention",phase="complete",message="Candidate lost usable geometry; previous model and saved interpretation retained.",attempts=[{"candidate":path,"accepted":False,"findings":failures}]);return
                         self._update(identity,phase="checking_revision",message="Checking candidate against original sources and prior geometry.")
-                        review=ReconstructionReview.model_validate(provider.review_reconstruction(candidate,candidate.description,candidate.scene,previous_description=current.description,previous_scene=current.scene))
+                        review=ReconstructionReview.model_validate(self._review_candidate(identity,provider,candidate,candidate.description,candidate.scene,previous_description=current.description,previous_scene=current.scene))
                         if not review.candidate_supported:
                             path=self.store.save_candidate(candidate,review,"Candidate not supported by source review.",config)
                             self._update(identity,status="needs_attention",phase="complete",message="Candidate not supported; previous model retained.",attempts=[{"candidate":path,"accepted":False}]);return
@@ -337,7 +385,7 @@ class JobRunner:
                                 attempts=[{"candidate":path,"accepted":False,"findings":failures}])
                             return
                         self._update(identity,phase="checking_revision",message="Checking replacement against original source and previous geometry before publication.")
-                        review=ReconstructionReview.model_validate(provider.review_reconstruction(candidate,candidate.description,candidate.scene,
+                        review=ReconstructionReview.model_validate(self._review_candidate(identity,provider,candidate,candidate.description,candidate.scene,
                             previous_description=current.description,previous_scene=current.scene))
                         self._check(identity,deadline)
                         if not review.candidate_supported:
@@ -352,7 +400,7 @@ class JobRunner:
                 return
             self._check(identity,deadline)
             if review is None:
-                review=ReconstructionReview.model_validate(provider.review_reconstruction(current,current.description,current.scene))
+                review=ReconstructionReview.model_validate(self._review_candidate(identity,provider,current,current.description,current.scene))
             self._check(identity,deadline)
             seen_feedback=set()
             for attempt in range(config["patch_attempts"]+1):
@@ -389,7 +437,7 @@ class JobRunner:
                     return
                 self._check(identity,deadline)
                 self._update(identity,phase="checking_revision",message="Checking corrected geometry and possible regressions against the original.")
-                candidate_review=ReconstructionReview.model_validate(provider.review_reconstruction(candidate,candidate.description,candidate.scene,
+                candidate_review=ReconstructionReview.model_validate(self._review_candidate(identity,provider,candidate,candidate.description,candidate.scene,
                     previous_description=current.description,previous_scene=current.scene,previous_review=review))
                 self._check(identity,deadline)
                 if not candidate_review.candidate_supported:
@@ -416,7 +464,7 @@ class JobRunner:
         provider=None
         try:
             self._check(identity,float("inf"))
-            provider=self.provider_factory()
+            provider=self._bind_provider(identity,self.provider_factory())
             def progress(phase):
                 self._check(identity,float("inf"))
                 self._update(identity,status="running",phase=phase,message=phase)
@@ -451,14 +499,24 @@ class JobRunner:
     def _failure(self,identity,error,provider=None):
         from .reconstruction_errors import reconstruction_error
         phase=getattr(error,"error_stage",self.jobs[identity].get("phase","processing"))
-        mapped={"provider_setup":"provider","extraction_provider":"provider","geometry_enrichment":"provider","interpretation_validation":"description","ifc_generation":"generation","generating":"generation","ifc_reopening":"artifact"}.get(phase,"provider" if "review" in phase else "description")
+        mapped={"provider_setup":"provider","extraction_provider":"provider","geometry_enrichment":"provider",
+            "checking_revision":"provider","reviewing":"provider","correcting":"provider","user_input_review":"provider",
+            "interpretation_validation":"description","ifc_generation":"generation","generating":"generation","ifc_reopening":"artifact"}.get(phase,"provider" if "review" in phase else "description")
+        # A locally rejected data operation is distinct from a provider request failure.
+        if isinstance(error,DocumentError) and mapped=="provider":mapped="description"
         safe=reconstruction_error(error,mapped)
         diagnostic_id=getattr(safe,"diagnostic_id",None) or uuid.uuid4().hex
-        output=getattr(provider,"last_structured_output",None) if provider else None
-        if output is not None:
-            folder=self.store.directory(self.jobs[identity]["building_id"])/"diagnostics";folder.mkdir(exist_ok=True)
-            try:(folder/(diagnostic_id+".json")).write_text(json.dumps({"stage":phase,"structured_output":output},ensure_ascii=False,allow_nan=False))
-            except (OSError,TypeError,ValueError):pass
+        calls=getattr(provider,"provider_calls",[]) if provider else []
+        call=calls[-1] if calls else None
+        bound=bool(call and getattr(provider,"last_response_call_id",None)==call["call_id"])
+        output=getattr(provider,"last_structured_output",None) if bound else None
+        response_text=getattr(provider,"last_response_text",None) if bound else None
+        folder=self.store.directory(self.jobs[identity]["building_id"])/"diagnostics";folder.mkdir(exist_ok=True)
+        payload={"stage":phase,"provider_call":call,"response_call_id":call["call_id"] if bound else None,
+            "response_stage":call["stage"] if bound else None,"structured_output":output,
+            "response_available":bound,"nonthought_response_text":response_text}
+        try:(folder/(diagnostic_id+".json")).write_text(json.dumps(payload,ensure_ascii=False,allow_nan=False))
+        except (OSError,TypeError,ValueError):pass
         current=self.store.get(self.jobs[identity]["building_id"])
         usable=bool(current.scene and any(element.geometry for element in current.scene.elements))
         retained="Previous usable model retained." if usable else "Original sources are saved; no usable model has been generated."
@@ -472,14 +530,14 @@ class JobRunner:
     def _refine_inputs(self,identity,current,candidate,submitted,needs_model,conflicts,changes):
         provider=None;review=None
         try:
-            config=pipeline_config();deadline=monotonic()+config["job_seconds"];self.deadlines[identity]=deadline
+            config=pipeline_config();self._update(identity,config=config);deadline=monotonic()+config["job_seconds"];self.deadlines[identity]=deadline
             self._check(identity,deadline)
             candidate=self.store.prepare(candidate)
             if conflicts:
                 path=self.store.save_candidate(candidate,None,conflicts,config)
                 self._update(identity,status="needs_attention",phase="complete",message="Supplied inputs were saved but conflict with observed source values. Prior usable revision retained.",attempts=[{"candidate":path,"accepted":False}],conflicts=conflicts);return
             if needs_model:
-                provider=self.provider_factory();provider.request_deadline=deadline
+                provider=self._bind_provider(identity,self.provider_factory());provider.request_deadline=deadline
                 self._update(identity,status="running",phase="user_input_review",message="Reviewing supplied correction against original evidence.")
                 # Enrichment is a typed data patch; supplied statements remain attributed inputs.
                 hook=getattr(provider,"refine_user_inputs",None)
@@ -500,9 +558,9 @@ class JobRunner:
                     self._update(identity,status="needs_attention",phase="complete",message="Refined candidate lost usable geometry; submitted inputs and previous revision retained.",attempts=[{"candidate":path,"accepted":False,"findings":failures}]);return
                 if current.pages:
                     if provider is None:
-                        provider=self.provider_factory();provider.request_deadline=deadline
+                        provider=self._bind_provider(identity,self.provider_factory());provider.request_deadline=deadline
                     self._update(identity,phase="checking_revision",message="Checking supplied changes against original sources and regenerated geometry.")
-                    review=ReconstructionReview.model_validate(provider.review_reconstruction(candidate,candidate.description,candidate.scene,previous_description=current.description,previous_scene=current.scene))
+                    review=ReconstructionReview.model_validate(self._review_candidate(identity,provider,candidate,candidate.description,candidate.scene,previous_description=current.description,previous_scene=current.scene))
                     self._update(identity,issues=[issue.model_dump() for issue in review.issues])
                     if not review.candidate_supported:
                         path=self.store.save_candidate(candidate,review,"Source review did not support supplied correction.",config)
