@@ -1,0 +1,19 @@
+Please diagnose and fix the remaining Gemini API failure, prioritizing a working hackathon demo.
+
+Confirmed:
+- Plain Gemini generation and the Decisions gate work.
+- Structured answers originally failed with “Unknown name additional_properties”.
+- The side conversation changed app/provider.py from response_schema=schema to response_json_schema=schema.model_json_schema().
+- Three mocked SDK tests passed, but live reconstruction still returns:
+  ClientError 400 INVALID_ARGUMENT: Request contains an invalid argument.
+
+Reproduce using these unchanged single-floor images:
+assets/junction-dataset/data/cubicasa5k/colorful-1794.png
+assets/junction-dataset/data/cubicasa5k/colorful-1732.png
+
+Investigate the actual rejected request with controlled live tests. Nested schema constraints—30 rooms, 3–40 polygon vertices, and answer lists capped at 4,000—are suspected, NOT a confirmed cause. Do not keep guessing or asking me to change images. Make the smallest effective fix and verify live reconstruction and question answering. Mocked tests alone do not establish API compatibility.
+
+New standing instruction—record this in AGENTS.md:
+Before introducing self-imposed constraints, explicitly communicate what they restrict, why they are needed, whether they are an external requirement or our design choice, and how they might block valid inputs or the demo. Prefer the smallest justified set for this hackathon. Do not silently introduce arbitrary caps or turn this into a blanket approval bureaucracy.
+
+Preserve source grounding, citations, refusal behavior, and the separation of assumed geometry from factual evidence. Where appropriate, keep local validation separate from the schema sent to Gemini.
