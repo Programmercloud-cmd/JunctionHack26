@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const state = { document: null, pageIndex: 0, selectedEvidence: null, sourceSelection: null, result: null, busy: null, providerReady: false, health: null, requestVersion: 0, scene: null, viewer: null, selectedElement: null, selectedComparison: null, view: "drawing" };
+const state = { document: null, pageIndex: 0, selectedEvidence: null, sourceSelection: null, result: null, busy: null, providerReady: false, health: null, requestVersion: 0, scene: null, viewer: null, selectedElement: null, selectedComparison: null, view: "drawing", epoch:0, jobs:[], savedBuildings:[], pollTimer:null, pollingEpoch:null, questionRequest:null, askSubmitting:false, reconstructionSubmitting:false };
 const suggestions = Array.from(document.querySelectorAll("[data-question]"));
 
 function announce(message) { $("announcer").textContent = message; }
@@ -14,10 +14,10 @@ function updateControls() {
   $("drop-zone").setAttribute("aria-disabled", String(busy));
   $("question").disabled = !state.document || busy;
   suggestions.forEach((button) => { button.disabled = !state.document || busy; });
-  $("ask-button").disabled = !state.document || !state.providerReady || busy || !$("question").value.trim();
+  $("ask-button").disabled = !state.document || !state.providerReady || busy || state.askSubmitting || !$("question").value.trim();
   $("ask-label").textContent = state.busy === "ask" ? "Inspecting drawing…" : "Ask the drawing";
   $("upload-progress").hidden = state.busy !== "upload";
-  $("ask-progress").hidden = state.busy !== "ask";
+  $("ask-progress").hidden = state.busy !== "ask" && !state.questionRequest?.pending;
   $("question-help").textContent = !state.document ? "Upload a drawing to get started." : !state.providerReady ? `You can preview the drawing. Configure ${state.health?.provider_label || "the selected provider"} to ask questions.` : "Answers are limited to the supplied drawing.";
   $("previous-page").disabled = !state.document || state.pageIndex === 0;
   $("next-page").disabled = !state.document || state.pageIndex >= state.document.pages.length - 1;
@@ -25,8 +25,14 @@ function updateControls() {
   $("question-form").setAttribute("aria-busy", String(state.busy === "ask"));
   $("source-heading").closest("section").setAttribute("aria-busy", String(state.busy === "upload"));
   $("generate-scene").hidden = !state.document || state.document.kind === "ifc" || Boolean(state.scene);
-  $("generate-scene").disabled = busy || !state.providerReady;
+  $("generate-scene").disabled = busy || !state.providerReady || state.reconstructionSubmitting || state.jobs.some(j=>j.kind==="reconstruction"&&!terminalJob(j));
+  const progressive=Boolean(state.document?.building_id&&state.document?.revision_id),native=state.document?.kind==="ifc"&&!state.scene?.derived;
+  $("building-progress").hidden=!progressive;
+  $("refine-building").hidden=!state.scene||native;$("reconstruct-building").hidden=native;
+  for(const id of ["refine-building","reconstruct-building"])$(id).disabled=busy||!state.providerReady||state.reconstructionSubmitting||state.jobs.some(j=>j.kind==="reconstruction"&&!terminalJob(j));
+  $("open-building").disabled=busy||!$("saved-building-select").value;
   $("show-model").disabled = !state.scene;
+  $("show-concept").disabled = !state.viewer || !state.scene?.elements.some(e=>e.geometry);
   $("show-drawing").hidden = state.document?.kind === "ifc";
   $("scene-progress").hidden = state.busy !== "scene";
 }
@@ -81,6 +87,7 @@ async function checkHealth() {
 }
 
 function resetAnswer() {
+  state.nativeEvidenceToken=(state.nativeEvidenceToken || 0)+1;$("native-record-inspector").hidden=true;
   state.result = null;
   state.selectedEvidence = null;
   state.sourceSelection = null;
@@ -107,36 +114,9 @@ async function uploadFile(file) {
     const result = await request("/api/documents", { method: "POST", body: form }, isIfc ? 180000 : 60000);
     if (version !== state.requestVersion) return;
     if (!result.document_id || !Array.isArray(result.pages) || (result.kind !== "ifc" && !result.pages.length)) throw new Error("The server did not return a usable source document.");
-    clearScene();
-    state.document = result;
-    state.pageIndex = 0;
-    resetAnswer();
-    $("filename").textContent = result.filename || file.name;
-    $("filename").title = result.filename || file.name;
-    $("page-count").textContent = result.kind === "ifc" ? "IFC model" : `${result.pages.length} ${result.pages.length === 1 ? "page" : "pages"}`;
-    $("document-warnings").textContent = Array.isArray(result.warnings) ? result.warnings.join(" ") : "";
-    $("document-warnings").hidden = !$("document-warnings").textContent;
-    $("drop-zone").hidden = true;
-    $("document-view").hidden = false;
-    $("upload-label").textContent = "Replace file";
-    $("zoom").value = "100";
-    $("image-stage").style.width = "100%";
-    if (result.kind === "ifc") {
-      setView("model");
-      await loadScene(await request(result.scene_url || `/api/documents/${result.document_id}/scene`));
-      suggestions[0].dataset.question = "How many windows are in this IFC model?";
-      suggestions[0].textContent = "Count windows";
-      suggestions[1].dataset.question = "How many rooms are in this IFC model?";
-      suggestions[1].textContent = "Count rooms";
-    } else {
-      setView("drawing");
-      renderPage();
-      suggestions[0].dataset.question = "How many bedrooms are shown on this floor plan?";
-      suggestions[0].textContent = "Count bedrooms";
-      suggestions[1].dataset.question = "What is the floor area of the largest room?";
-      suggestions[1].textContent = "Measure a room";
-      if (result.scene_url) await loadScene(await request(result.scene_url));
-    }
+    await activateDocument(result);
+    refreshSavedBuildings();
+    if(result.is_new_upload===true && result.review_status==="source_available" && !result.has_scene && result.kind!=="ifc" && state.providerReady)await startReconstruction("reconstruct");
     announce(`Uploaded ${result.filename || file.name}. Source ready.`);
   } catch (error) { setError("upload-error", error.message); }
   finally {
@@ -144,6 +124,162 @@ async function uploadFile(file) {
     $("file-input").value = "";
     updateControls();
   }
+}
+
+function terminalJob(job) {return ["complete","needs_attention","failed","budget_exhausted","stopped","interrupted"].includes(job.status);}
+function progressiveDocument() {return Boolean(state.document?.building_id&&state.document?.revision_id);}
+function schedulePoll(delay=1000) {
+  clearTimeout(state.pollTimer);
+  const epoch=state.epoch;
+  state.pollTimer=setTimeout(()=>{if(epoch===state.epoch)refreshBuilding();},delay);
+}
+async function refreshSavedBuildings() {
+  $("refresh-buildings").disabled=true;
+  try {
+    const result=await request("/api/buildings",{},15000);state.savedBuildings=result.buildings || [];
+    const selected=$("saved-building-select").value || state.document?.building_id || "";
+    $("saved-building-select").replaceChildren(new Option("Choose a saved building", ""));
+    for(const item of state.savedBuildings)$("saved-building-select").append(new Option(`${item.filename} · ${item.has_scene?"model available":"source available"}`,item.building_id||item.document_id));
+    $("saved-building-select").value=selected;
+    $("saved-buildings-note").textContent=`${state.savedBuildings.length} saved ${state.savedBuildings.length===1?"building":"buildings"}`;
+  }catch(error){$("saved-buildings-note").textContent="Saved building list unavailable. Existing uploads remain usable.";}
+  finally{$("refresh-buildings").disabled=false;updateControls();}
+}
+async function activateDocument(result) {
+  clearTimeout(state.pollTimer);state.epoch++;state.jobs=result.jobs || [];state.questionRequest=null;state.askSubmitting=false;state.reconstructionSubmitting=false;
+  clearScene();state.document=result;state.pageIndex=0;resetAnswer();setError("building-poll-error");
+  $("filename").textContent=result.filename;$("filename").title=result.filename;
+  $("page-count").textContent=result.kind==="ifc"?"IFC model":`${result.pages.length} ${result.pages.length===1?"page":"pages"}`;
+  $("document-warnings").textContent=(result.warnings || []).join(" ");$("document-warnings").hidden=!$("document-warnings").textContent;
+  $("drop-zone").hidden=true;$("document-view").hidden=false;$("upload-label").textContent="Replace file";$("zoom").value="100";$("image-stage").style.width="100%";
+  if(result.kind==="ifc"){
+    setView("model");await loadScene(await request(result.scene_url || `/api/documents/${result.document_id}/scene`));
+    suggestions[0].dataset.question="How many windows are in this IFC model?";suggestions[0].textContent="Count windows";
+    suggestions[1].dataset.question="How many rooms are in this IFC model?";suggestions[1].textContent="Count rooms";
+  }else{
+    setView("drawing");renderPage();
+    suggestions[0].dataset.question="What labeled spaces are shown on this drawing?";suggestions[0].textContent="Identify spaces";
+    suggestions[1].dataset.question="What dimensions are explicitly shown?";suggestions[1].textContent="Inspect dimensions";
+    if(result.scene_url)await loadScene(await request(result.scene_url));
+  }
+  renderBuildingStatus();renderJobs();updateControls();
+  if(progressiveDocument())schedulePoll(0);
+}
+async function openBuilding(id) {
+  if(!id||state.busy)return;
+  if(id===state.document?.building_id){await refreshBuilding();return;}
+  state.busy="upload";const version=++state.requestVersion;updateControls();setError("upload-error");
+  try{const result=await request(`/api/buildings/${id}`);if(version===state.requestVersion){await activateDocument(result);announce(`Opened saved building ${result.filename}. No new reconstruction was started.`);}}
+  catch(error){if(version===state.requestVersion)setError("upload-error",error.message);}
+  finally{if(version===state.requestVersion){state.busy=null;updateControls();}}
+}
+function renderBuildingStatus() {
+  if(!progressiveDocument())return;
+  const document=state.document,labels={source_available:"Source available",source_only:"Source only · no supported floor model",preview_unreviewed:"Preview · not yet reviewed",reviewing:"Preview · review in progress",preview_reviewing:"Preview · review in progress",reviewed_no_action:"Reviewed · no actionable finding",needs_attention:"Needs attention",available:"Model available"};
+  const latest=state.jobs.find(job=>job.kind==="reconstruction");
+  let statusLabel=labels[document.review_status] || (document.review_status || "available").replaceAll("_"," ");
+  if(latest&&!terminalJob(latest))statusLabel=`${state.scene?"Model available":"Source available"} · ${latest.phase==="reviewing"||latest.phase==="checking_revision"?"review":"reconstruction"} in progress`;
+  else if(latest&&latest.status!=="complete"&&document.review_status!=="source_only"){
+    const terminalLabels={failed:"processing failed",stopped:"review stopped",budget_exhausted:"processing budget exhausted",interrupted:"processing interrupted",needs_attention:"needs attention"};
+    statusLabel=`${state.scene?"Model retained":"Source retained"} · ${terminalLabels[latest.status] || latest.status}`;
+  }else if(["preview_reviewing","reviewing"].includes(document.review_status))statusLabel="Preview available · review not completed";
+  $("building-review-status").textContent=`${statusLabel} · revision ${document.revision_number}`;
+  if(state.scene&&document.has_scene&&state.scene.revision_number!==document.revision_number)$("building-review-status").textContent+=` · displayed model revision ${state.scene.revision_number}`;
+  $("source-only-note").hidden=Boolean(state.scene);
+  $("source-only-note").textContent="Original source evidence is available for questions. A source-only record does not establish a floor model; use the explicit reconstruction action when appropriate.";
+  $("unsupported-views").replaceChildren();
+  for(const view of document.unresolved_views || []){
+    const row=window.document.createElement("div");row.className="unsupported-view";
+    const label=window.document.createElement("strong"),reason=window.document.createElement("p"),button=window.document.createElement("button");
+    label.textContent=`${view.label} · ${view.view_type || "unresolved view"}`;reason.textContent=view.reason || "Retained as source evidence; no unsupported floor geometry was invented.";
+    button.type="button";button.className="text-button";button.textContent="Inspect original source ↗";button.addEventListener("click",()=>showSourceRegion(view.source,view.label));
+    row.append(label,reason,button);$("unsupported-views").append(row);
+  }
+  $("unsupported-views").hidden=!$("unsupported-views").childElementCount;
+}
+function rememberJob(job) {
+  if(job.building_id!==state.document?.building_id)return;
+  state.jobs=[job,...state.jobs.filter(j=>j.id!==job.id)];renderBuildingStatus();renderJobs();updateControls();
+}
+function renderJobs() {
+  const open=new Set([...$("building-jobs").querySelectorAll("details[open]")].map(d=>d.dataset.jobId));
+  const historyWasOpen=Boolean($("past-jobs")?.open);
+  $("building-jobs").replaceChildren();
+  const history=document.createElement("details"),historyTitle=document.createElement("summary");history.id="past-jobs";history.open=historyWasOpen;history.append(historyTitle);
+  const latestReconstruction=state.jobs.find(j=>j.kind==="reconstruction")?.id,latestQuestion=state.jobs.find(j=>j.kind==="question")?.id;
+  let historyCount=0;
+  for(const job of state.jobs){
+    const row=document.createElement("details"),summary=document.createElement("summary"),title=document.createElement("strong"),status=document.createElement("span"),message=document.createElement("p");
+    row.className="job-row";row.dataset.jobId=job.id;row.dataset.status=job.status;row.open=open.has(job.id)||!terminalJob(job);
+    title.textContent=job.kind==="question"?`Question · ${job.question || "source inspection"}`:"Reconstruction";
+    status.className="job-status";status.textContent=`${job.status.replaceAll("_"," ")} · ${job.phase.replaceAll("_"," ")}`;
+    message.textContent=job.message || "";summary.append(title,status);
+    if(!terminalJob(job)){
+      const stop=document.createElement("button");stop.type="button";stop.className="text-button job-stop";stop.textContent="Stop";stop.dataset.jobId=job.id;
+      stop.addEventListener("click",async event=>{event.preventDefault();stop.disabled=true;const epoch=state.epoch;try{const stopped=await request(`/api/jobs/${job.id}/stop`,{method:"POST"});if(epoch===state.epoch){rememberJob(stopped);schedulePoll(0);}}catch(error){if(epoch===state.epoch)setError("building-poll-error",error.message);}finally{stop.disabled=false;}});summary.append(stop);
+    }
+    row.append(summary,message);
+    for(const issue of job.issues || []){
+      const item=document.createElement("div"),heading=document.createElement("strong"),detail=document.createElement("p"),source=document.createElement("button");item.className="job-issue";
+      heading.textContent=`${issue.category} · ${issue.discrepancy}`;detail.textContent=[issue.evidence,issue.uncertainty,issue.proposed_action].filter(Boolean).join(" ");
+      source.type="button";source.className="text-button";source.textContent="Inspect finding in source ↗";source.addEventListener("click",()=>showSourceRegion(issue.source,issue.discrepancy));item.append(heading,detail,source);row.append(item);
+    }
+    if(terminalJob(job)&&job.id!==latestReconstruction&&job.id!==latestQuestion){history.append(row);historyCount++;}
+    else $("building-jobs").append(row);
+  }
+  if(historyCount){historyTitle.textContent=`Past jobs (${historyCount})`;$("building-jobs").append(history);}
+  const question=state.jobs.find(j=>j.kind==="question"&&j.request_id===state.questionRequest?.id&&j.building_id===state.questionRequest?.building);
+  if(question&&state.questionRequest.pending){
+    $("ask-progress-label").textContent=question.message || "Inspecting the source";
+    if(terminalJob(question)){
+      state.questionRequest.pending=false;
+      if(question.status==="complete"&&question.answer){renderResult(question.answer,true);}
+      else{setError("ask-error",question.message || "Question stopped without a confirmed answer.");$("answer-empty").hidden=false;}
+    }
+  }
+}
+async function refreshBuilding() {
+  if(!progressiveDocument())return;
+  const epoch=state.epoch,id=state.document.building_id;
+  if(state.pollingEpoch===epoch)return;
+  state.pollingEpoch=epoch;
+  try{
+    const result=await request(`/api/buildings/${id}`,{},15000);
+    if(epoch!==state.epoch||id!==state.document?.building_id)return;
+    // A metadata response can precede a newly submitted job. Retain that local job
+    // until the server's next snapshot contains it, so polling cannot stop early.
+    const jobs=result.jobs || [];
+    state.jobs=[...jobs,...state.jobs.filter(j=>!terminalJob(j)&&!jobs.some(next=>next.id===j.id))];
+    if(result.has_scene&&(!state.scene || result.revision_number>state.scene.revision_number)){
+      const scene=await request(result.scene_url || `/api/documents/${id}/scene`);
+      if(epoch!==state.epoch||id!==state.document?.building_id)return;
+      await loadScene(scene);
+    }
+    if(epoch!==state.epoch)return;
+    state.document=result;
+    const savedOption=[...$("saved-building-select").options].find(option=>option.value===id);
+    if(savedOption)savedOption.textContent=`${result.filename} · ${result.has_scene?"model available":"source available"}`;
+    renderBuildingStatus();renderJobs();setError("building-poll-error");updateControls();
+  }catch(error){if(epoch===state.epoch)setError("building-poll-error",`${error.message} The displayed model remains available. Use Refresh status to retry.`);}
+  finally{
+    if(state.pollingEpoch===epoch)state.pollingEpoch=null;
+    if(epoch===state.epoch&&state.jobs.some(job=>!terminalJob(job)))schedulePoll();
+  }
+}
+async function startReconstruction(mode) {
+  if(!state.document||!state.providerReady||state.reconstructionSubmitting)return;
+  const epoch=state.epoch,document=state.document;setError("scene-error");state.reconstructionSubmitting=true;updateControls();
+  try{
+    if(progressiveDocument()){
+      const job=await request(`/api/buildings/${document.building_id}/reconstruction`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({base_revision_id:document.revision_id,mode})});
+      if(epoch===state.epoch){rememberJob(job);schedulePoll(0);}
+    }else{
+      state.busy="scene";$("scene-progress-text").textContent="Interpreting source plans and generating the model…";updateControls();
+      const scene=await request(`/api/documents/${document.document_id}/scene`,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+      if(epoch===state.epoch)await loadScene(scene);
+    }
+  }catch(error){if(epoch===state.epoch)setError("scene-error",error.message);}
+  finally{if(epoch===state.epoch){state.reconstructionSubmitting=false;if(state.busy==="scene")state.busy=null;updateControls();}}
 }
 
 function renderPage() {
@@ -208,7 +344,12 @@ function addDetail(label, value) {
   $("run-details-list").append(term, description);
 }
 
-function renderResult(result) {
+function answerForDisplayedRevision(result) {
+  if(result.display_revision_id && state.scene?.revision_id && result.display_revision_id!==state.scene.revision_id && result.highlight_ids?.length)return {...result,highlight_ids:[],review_note:[result.review_note,"The model has advanced since this answer was mapped. Original citations remain available; object highlights await a new source check."].filter(Boolean).join(" ")};
+  return result;
+}
+function renderResult(result, preserveView = false) {
+  result=answerForDisplayedRevision(result);
   state.result = result;
   state.selectedEvidence = null;
   state.sourceSelection = null;
@@ -249,7 +390,8 @@ function renderResult(result) {
     $("evidence-list").append(button);
   });
   renderModelEvidence(result.model_evidence || []);
-  updateHighlights();
+  updateHighlights(preserveView);
+  $("answer-review-note").textContent=result.review_note || "";$("answer-review-note").hidden=!result.review_note;
   $("missing-list").replaceChildren();
   const missing = Array.isArray(result.missing_information) ? result.missing_information : [];
   $("missing-section").hidden = missing.length === 0;
@@ -306,24 +448,47 @@ function clearScene() {
   $("model-inventory").hidden = true;
   $("inventory-details").open = false;
   $("no-model-geometry").hidden = true;
+  $("revision-notice").hidden = true;$("concept-selection").hidden=true;$("fit-model").textContent="Reset view";state.selectedProposal=null;
   $("unresolved-model-notice").hidden = true;
   $("model-canvas-container").hidden = false;
   setError("scene-error");
 }
 
+function syncViewerControls(snapshot) {
+  if(!snapshot)return;
+  $("floor-select").value=snapshot.floor_filter || "";$("explode-floors").checked=snapshot.exploded;
+  $("concept-cutaway").checked=snapshot.cutaway;updateLayoutNote();renderFloorDetails();renderInventory();
+  const selected=$("concept-proposal-select").value;
+  $("concept-proposal-select").replaceChildren(new Option("Select a proposal", ""));
+  for(const record of snapshot.concept_records || [])if(record.kind==="proposal")$("concept-proposal-select").append(new Option(`Proposal · ${record.label}`,record.id));
+  $("concept-proposal-select").value=selected;
+}
+function inspectProposal(record) {
+  state.selectedProposal=record;$("element-inspector").hidden=true;
+  $("concept-selection").hidden=false;$("concept-selection-name").textContent=`Proposal · ${record.label}`;
+  $("concept-selection-note").textContent=record.note;
+  $("concept-support-source").hidden=!state.scene?.elements.some(e=>e.id===record.host_id&&e.source.kind==="image");
+  $("concept-proposal-select").value=record.id;announce(`Selected decorative proposal: ${record.label}. This is not source evidence.`);
+}
 function setView(view) {
-  state.view = view;
-  $("drawing-pane").hidden = view !== "drawing";
-  $("model-pane").hidden = view !== "model";
-  $("show-model").setAttribute("aria-pressed", String(view === "model"));
-  $("show-drawing").setAttribute("aria-pressed", String(view === "drawing"));
-  if (view === "model") requestAnimationFrame(() => state.viewer?.resize());
+  if(view==="concept"&&!state.viewer)return;
+  state.view=view;const concept=view==="concept",model=view==="model"||concept;
+  document.body.classList.toggle("concept-mode",concept);
+  $("drawing-pane").hidden=view!=="drawing";$("model-pane").hidden=!model;
+  $("show-model").setAttribute("aria-pressed",String(view==="model"));$("show-concept").setAttribute("aria-pressed",String(concept));
+  $("show-drawing").setAttribute("aria-pressed",String(view==="drawing"));
+  $("model-caption").textContent=concept?"Drag to orbit · click source objects or amber-outlined proposals to inspect their meaning.":"Drag to orbit · scroll to zoom · right-drag to pan · click an object to inspect its source.";
+  if(model&&state.viewer){state.viewer.resize();syncViewerControls(state.viewer.setMode(concept?"concept":"inspection"));requestAnimationFrame(()=>state.viewer?.resize());}
   renderInventory();
 }
 
 async function loadScene(scene) {
-  if (state.scene?.document_id === scene.document_id) return;
   if (scene.document_id !== state.document?.document_id) return;
+  const updating=Boolean(state.viewer&&state.scene?.document_id===scene.document_id);
+  if(updating&&(!scene.revision_id||scene.revision_id===state.scene.revision_id))return;
+  const oldView=state.view, oldSelected=state.selectedElement, oldProposal=state.selectedProposal, oldComparison=$("comparison-floor-select").value;
+  let prepared=null;
+  if(updating){try{prepared=state.viewer.prepareRevision(scene);state.viewer.commitRevision(prepared);}catch(error){setError("scene-error","The model update could not be published. The previous usable revision remains available.");return;}}
   state.scene = scene;
   const unscaled = scene.units !== "m" || (scene.floors || []).some((floor) => floor.scale_status !== "known");
   $("scene-badge").textContent = unscaled ? "Approximate · unscaled" : scene.derived ? "Calibrated footprints · assumed heights" : "IFC geometry · metres";
@@ -336,7 +501,7 @@ async function loadScene(scene) {
   if (scene.derived && unknownFloors.length && unknownFloors.every((floor) => floor.assumptions?.some((assumption) => assumption.property === "page_extent") && !floor.assumptions.some((assumption) => assumption.property === "panel_extent"))) {
     $("scene-summary").textContent += " Uncalibrated diagrams preserve drawing proportions on each source page; this does not establish physical scale or equal drawing scales. Relationships across pages or independently resized diagrams remain schematic.";
   }
-  $("explode-floors").checked = Boolean(scene.derived && scene.floors.length > 1 && (scene.layout === "schematic" || scene.floors.some((floor) => floor.alignment_status !== "supported")));
+  if(!updating) $("explode-floors").checked = Boolean(scene.derived && scene.floors.length > 1 && (scene.layout === "schematic" || scene.floors.some((floor) => floor.alignment_status !== "supported")));
   renderFloors();
   $("comparison-controls").hidden = !scene.derived;
   $("comparison-floor-select").replaceChildren(new Option("All floors on this page", ""));
@@ -345,16 +510,29 @@ async function loadScene(scene) {
   renderInventory();
   $("scene-warnings").textContent = (scene.warnings || []).join(" ");
   $("scene-warnings").hidden = !$("scene-warnings").textContent;
+  $("element-select").replaceChildren(new Option("Select a source object", ""));
   scene.elements.forEach((element) => $("element-select").append(new Option(`${element.kind} · ${element.name || element.id}${element.geometry ? "" : " (no mesh)"}`, element.id)));
-  setView("model");
+  if(!updating)setView("model");
   try {
     const {BlueprintViewer} = await import("/static/viewer.js");
-    state.viewer = new BlueprintViewer($("model-canvas-container"), {onSelect: inspectElement,onUnresolvedSelect: openUnresolvedAnnotation});
-    window.blueprintViewer = state.viewer;
-    state.viewer.loadScene(scene);
-    if ($("explode-floors").checked) state.viewer.setExploded(true);
-    state.viewer.setShowAssumptions($("show-assumptions").checked);
-    updateHighlights();
+    if(!updating){
+      state.viewer = new BlueprintViewer($("model-canvas-container"), {onSelect: inspectElement,onUnresolvedSelect: openUnresolvedAnnotation,onProposalSelect: inspectProposal});
+      window.blueprintViewer = state.viewer;state.viewer.loadScene(scene);
+      if ($("explode-floors").checked) state.viewer.setExploded(true);
+      state.viewer.setShowAssumptions($("show-assumptions").checked);
+    } else {
+      syncViewerControls(state.viewer.getSnapshot());
+      if((scene.floors || []).some(f=>f.id===oldComparison))$("comparison-floor-select").value=oldComparison;
+      $("fit-model").textContent="Fit updated model";
+      const changes=state.viewer.getSnapshot().revision_changes;
+      $("revision-notice").hidden=false;
+      $("revision-notice").textContent=changes.removed_selection||changes.unresolved_selection?"Model updated. The selected object was removed or is now unresolved; its previous source evidence remains available below.":"Model updated. Your view is preserved; use Fit updated model if you want new framing.";
+      if(oldSelected){const current=scene.elements.find(e=>e.id===oldSelected.id);inspectElement(current || oldSelected);if(!current)$("element-geometry-note").textContent="Removed in the current revision. Original source evidence retained; no replacement object was selected.";}
+      if(oldProposal){const record=state.viewer.concept?.records.get(oldProposal.id);if(record)inspectProposal(record);else{$("concept-selection").hidden=true;state.selectedProposal=null;}}
+      setView(oldView);
+    }
+    if(updating&&state.result){state.result=answerForDisplayedRevision(state.result);$("answer-review-note").textContent=state.result.review_note || "";$("answer-review-note").hidden=!state.result.review_note;}
+    updateHighlights(updating);
   } catch (error) {
     $("model-canvas-container").replaceChildren();
     const notice = document.createElement("p");
@@ -368,14 +546,15 @@ async function loadScene(scene) {
   updateControls();
 }
 
-function updateHighlights() {
+function updateHighlights(preserveView = false) {
   const ids = Array.isArray(state.result?.highlight_ids) ? state.result.highlight_ids : [];
-  if ($("floor-select").value && ids.some((id) => state.scene?.elements.some((element) => element.id === id && element.storey_id !== $("floor-select").value))) setFloorFilter("");
+  if (!preserveView && state.viewer?.mode !== "concept" && $("floor-select").value && ids.some((id) => state.scene?.elements.some((element) => element.id === id && element.storey_id !== $("floor-select").value))) setFloorFilter("");
   state.viewer?.setHighlights(ids, $("highlight-answer").checked);
   $("highlight-note").hidden = !state.scene || !state.result;
   if (!state.scene || !state.result) return;
   const missingMeshes = ids.filter((id) => state.scene.elements.some((element) => element.id === id && !element.geometry)).length;
   $("highlight-note").textContent = ids.length ? `${ids.length} ${state.scene.derived ? "interpreted objects" : "source elements"} linked to this answer.${missingMeshes ? ` ${missingMeshes} have no renderable geometry; inspect their source records below.` : ""}` : "This answer has no reliable 3D mapping. Use its source evidence; no model objects have been highlighted.";
+  if($("floor-select").value && ids.some(id=>state.scene.elements.some(e=>e.id===id&&e.storey_id!==$("floor-select").value)))$("highlight-note").textContent+=" Linked objects are on another floor. Your view is preserved; choose All floors or inspect the source evidence to locate them.";
 }
 
 function setFloorFilter(id) {
@@ -393,7 +572,7 @@ function revealEvidenceFloor(evidence) {
     return floor.source.page === evidence.page && l >= fl && t >= ft && r <= fr && b <= fb;
   });
   const id = matches.length === 1 ? matches[0].id : "";
-  if ($("floor-select").value) setFloorFilter(id);
+  if (state.viewer?.mode !== "concept" && $("floor-select").value) setFloorFilter(id);
   if ($("comparison-floor-select").value) $("comparison-floor-select").value = id;
 }
 
@@ -429,7 +608,7 @@ function renderFloors() {
     button.addEventListener("click", () => showSourceRegion(floor.source, floor.label));
     $("floor-source-links").append(button);
   }
-  $("download-ifc").hidden = true;
+  $("download-ifc").hidden = true;$("download-ifc").textContent=scene.derived?"Download derived IFC ↗":"Download source IFC ↗";
   if (scene.ifc_url) {
     const url = new URL(scene.ifc_url, window.location.origin);
     if (url.origin === window.location.origin && url.pathname.startsWith("/api/documents/")) {
@@ -626,6 +805,7 @@ function renderInventory() {
 }
 
 function inspectElement(element) {
+  state.selectedProposal=null;$("concept-selection").hidden=true;
   state.selectedElement = element;
   if (state.viewer && $("floor-select").value !== state.viewer.floorFilter) { $("floor-select").value = state.viewer.floorFilter; renderFloorDetails(); renderInventory(); }
   $("element-select").value = element.id;
@@ -657,7 +837,9 @@ function inspectElement(element) {
   if (!element.properties?.length) inspectorRow($("element-properties"), "Properties", "No additional properties provided.");
   $("element-assumptions").replaceChildren();
   for (const assumption of element.assumptions || []) inspectorRow($("element-assumptions"), assumption.property, `${assumption.value}${assumption.unit ? ` ${assumption.unit}` : ""} — ${assumption.reason}`);
-  $("element-assumptions-section").hidden = !element.assumptions?.length;
+  const conceptRecord=state.viewer?.concept?.records.get(element.id);
+  if(conceptRecord)inspectorRow($("element-assumptions"),"Concept presentation",conceptRecord.note);
+  $("element-assumptions-section").hidden = !element.assumptions?.length && !conceptRecord;
   $("element-source").hidden = element.source.kind !== "image";
   announce(`Selected ${element.name || element.id}. Source properties are available below the model.`);
 }
@@ -665,8 +847,40 @@ function inspectElement(element) {
 function selectModelElement(id) {
   const element = state.scene?.elements.find((item) => item.id === id);
   if (!element) return;
-  setView("model");
+  if(state.view!=="concept")setView("model");
   if (state.viewer) state.viewer.select(id); else inspectElement(element);
+}
+
+function ifcReference(reference) {
+  if(!reference)return "Source reference not provided";
+  return [reference.ifc_type,reference.global_id?`GlobalId ${reference.global_id}`:null,reference.step_id?`STEP #${reference.step_id}`:null].filter(Boolean).join(" · ") || JSON.stringify(reference);
+}
+function nativeValue(value) {return typeof value==="object"?JSON.stringify(value):String(value ?? "Not supplied");}
+async function inspectNativeEvidence(item) {
+  const building=state.document?.building_id,revision=state.result?.answered_revision_id || state.scene?.revision_id || state.document?.revision_id;
+  const epoch=state.epoch,token=state.nativeEvidenceToken=(state.nativeEvidenceToken || 0)+1;
+  if(state.scene?.elements.some(element=>element.id===item.element_id&&element.geometry))selectModelElement(item.element_id);
+  $("native-record-inspector").hidden=false;$("native-record-name").textContent=item.label || "Original IFC record";$("native-record-note").textContent="Loading the original source record from the answered revision…";
+  $("native-record-identity").replaceChildren();$("native-record-values").replaceChildren();$("native-record-coverage").textContent="";
+  if(!building||!revision){$("native-record-note").textContent="A saved source revision is needed to inspect the full original record. The existing model remains available.";return;}
+  try{
+    const payload=await request(`/api/buildings/${encodeURIComponent(building)}/revisions/${encodeURIComponent(revision)}/evidence/${encodeURIComponent(item.element_id)}`);
+    if(epoch!==state.epoch||token!==state.nativeEvidenceToken)return;
+    if(payload.source_kind!=="ifc"||payload.building_id!==building||payload.revision_id!==revision||payload.record?.id!==item.element_id)throw new Error("The source record did not match this citation's building and revision.");
+    const record=payload.record;
+    $("native-record-name").textContent=record.name || record.ifc_type || record.id;
+    $("native-record-note").textContent=`Original supplied IFC record from the answered revision. ${record.geometry_available?"Source geometry is available.":"This record has no viewer geometry; its original properties remain evidence."} Values describe the supplied model, not a survey of the built building.`;
+    inspectorRow($("native-record-identity"),"Record ID",record.id);inspectorRow($("native-record-identity"),"IFC type",record.ifc_type);
+    inspectorRow($("native-record-identity"),"Original reference",ifcReference(record.source));inspectorRow($("native-record-identity"),"Answered revision",revision);
+    for(const [name,value]of Object.entries(record.values || {})){
+      const details=document.createElement("details"),summary=document.createElement("summary"),provenance=document.createElement("p");details.open=name===item.property_name;
+      summary.textContent=`${name}: ${nativeValue(value.value)}${value.unit?` ${value.unit}`:""}`;
+      provenance.textContent=[`Provenance: ${value.provenance || "not specified"}`,ifcReference(value.source || record.source),value.owner?`Owner: ${ifcReference(value.owner)}`:"",value.method || ""].filter(Boolean).join(" · ");
+      details.append(summary,provenance);$("native-record-values").append(details);
+    }
+    if(!Object.keys(record.values || {}).length)$("native-record-values").textContent="No extracted values are available for this source record.";
+    $("native-record-coverage").textContent=JSON.stringify({coverage:payload.coverage,record_limitations:record.missing || []},null,2);
+  }catch(error){if(epoch===state.epoch&&token===state.nativeEvidenceToken)$("native-record-note").textContent=`${error.message} No source property was invented.`;}
 }
 
 function renderModelEvidence(items) {
@@ -682,27 +896,26 @@ function renderModelEvidence(items) {
     observation.textContent = item.observation;
     reference.textContent = item.element_id ? `${item.property_name ? `${item.property_name} · ` : ""}${item.element_id}` : "Complete supplied IFC catalog";
     button.append(title,observation,reference);
-    button.disabled = !item.element_id || !state.scene?.elements.some((element) => element.id === item.element_id);
-    button.addEventListener("click", () => selectModelElement(item.element_id));
+    const native=state.document?.kind==="ifc"&&!state.scene?.derived;
+    button.disabled=!item.element_id || (!native&&!state.scene?.elements.some(element=>element.id===item.element_id));
+    button.addEventListener("click",()=>native?inspectNativeEvidence(item):selectModelElement(item.element_id));
     $("model-evidence-list").append(button);
   }
 }
 
-$("generate-scene").addEventListener("click", async () => {
-  if (!state.document || state.document.kind === "ifc" || state.scene || state.busy || !state.providerReady) return;
-  state.busy = "scene";
-  const version = ++state.requestVersion;
-  setError("scene-error");
-  $("scene-progress-text").textContent = "Interpreting all pages and floor-plan panels. Building an approximate model with source links and explicit assumptions…";
-  updateControls();
-  try {
-    const scene = await request(`/api/documents/${state.document.document_id}/scene`, {method:"POST",headers:{"Content-Type":"application/json"},body:"{}"},180000);
-    if (version === state.requestVersion) await loadScene(scene);
-  } catch (error) { setError("scene-error", error.message); }
-  finally { state.busy = null; updateControls(); }
-});
+$("generate-scene").addEventListener("click",()=>startReconstruction("reconstruct"));
+$("refine-building").addEventListener("click",()=>startReconstruction("refine"));
+$("reconstruct-building").addEventListener("click",()=>startReconstruction("reconstruct"));
+$("refresh-building").addEventListener("click",()=>refreshBuilding());
+$("refresh-buildings").addEventListener("click",refreshSavedBuildings);
+$("saved-building-select").addEventListener("change",updateControls);
+$("open-building").addEventListener("click",()=>openBuilding($("saved-building-select").value));
 $("show-drawing").addEventListener("click", () => setView("drawing"));
 $("show-model").addEventListener("click", () => setView("model"));
+$("show-concept").addEventListener("click",()=>setView("concept"));
+$("concept-cutaway").addEventListener("change",()=>state.viewer?.setCutaway($("concept-cutaway").checked));
+$("concept-proposal-select").addEventListener("change",()=>{const record=state.viewer?.concept?.records.get($("concept-proposal-select").value);if(record){state.viewer.selectedProposalId=record.id;state.viewer.applyAppearance();inspectProposal(record);}});
+$("concept-support-source").addEventListener("click",()=>{const host=state.scene?.elements.find(e=>e.id===state.selectedProposal?.host_id);if(host)showSourceRegion(host.source,`Supporting area for proposal: ${state.selectedProposal.label}`);});
 $("highlight-answer").addEventListener("change", updateHighlights);
 $("show-assumptions").addEventListener("change", () => state.viewer?.setShowAssumptions($("show-assumptions").checked));
 $("fit-model").addEventListener("click", () => state.viewer?.fit());
@@ -730,22 +943,23 @@ $("element-source").addEventListener("click", () => {
 
 $("question-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const question = $("question").value.trim();
-  if (!question || !state.document || state.busy || !state.providerReady) return;
-  resetAnswer();
-  $("answer-empty").hidden = true;
-  state.busy = "ask";
-  const version = ++state.requestVersion;
-  updateControls();
-  try {
-    const result = await request("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ document_id: state.document.document_id, question }) });
-    if (version !== state.requestVersion) return;
-    renderResult(result);
-  } catch (error) {
-    setError("ask-error", error.message);
-    $("answer-empty").hidden = false;
-    announce("The request failed. No answer was confirmed.");
-  } finally { state.busy = null; updateControls(); }
+  const question=$("question").value.trim();
+  if(!question||!state.document||state.busy||state.askSubmitting||!state.providerReady)return;
+  resetAnswer();$("answer-empty").hidden=true;
+  const epoch=state.epoch,building=state.document.document_id;
+  if(state.document.building_id&&state.document.revision_id){
+    const requestId=crypto.randomUUID();state.questionRequest={id:requestId,building,pending:true};state.askSubmitting=true;updateControls();
+    try {
+      const job=await request("/api/questions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({document_id:building,question,revision_id:state.scene?.revision_id||state.document.revision_id,request_id:requestId})});
+      if(epoch===state.epoch&&state.questionRequest?.id===requestId){rememberJob(job);schedulePoll(0);}
+    }catch(error){if(epoch===state.epoch&&state.questionRequest?.id===requestId){state.questionRequest.pending=false;setError("ask-error",error.message);$("answer-empty").hidden=false;}}
+    finally{if(epoch===state.epoch){state.askSubmitting=false;updateControls();}}
+    return;
+  }
+  state.busy="ask";const version=++state.requestVersion;updateControls();
+  try{const result=await request("/api/ask",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({document_id:building,question})});if(version===state.requestVersion)renderResult(result);}
+  catch(error){if(version===state.requestVersion){setError("ask-error",error.message);$("answer-empty").hidden=false;announce("The request failed. No answer was confirmed.");}}
+  finally{state.busy=null;updateControls();}
 });
 
 $("file-input").addEventListener("change", (event) => uploadFile(event.target.files[0]));
@@ -768,3 +982,4 @@ $("page-image").addEventListener("load", renderOverlay);
 $("refresh-health").addEventListener("click", checkHealth);
 updateControls();
 checkHealth();
+refreshSavedBuildings();

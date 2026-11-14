@@ -8,7 +8,7 @@ import time
 import pytest
 
 from test_browser import ask, upload
-from test_browser_3d import scene_page, snapshot
+from test_browser_3d import scene_page, snapshot, generate_scene
 from test_browser_v3 import SemanticFixtureProvider
 
 pytestmark=pytest.mark.skipif(os.getenv("RUN_BROWSER_TESTS")!="1",reason="opt-in browser checks")
@@ -58,7 +58,7 @@ def annotation_server(tmp_path,monkeypatch):
 def test_unresolved_annotations_preserve_geometry_highlights_and_source(annotation_server,scene_page,tmp_path):
     from playwright.sync_api import expect
     page=scene_page;page.goto(annotation_server);upload(page,pdf=True)
-    page.locator("#generate-scene").click()
+    generate_scene(page)
     page.wait_for_function("window.blueprintViewer?.data.derived===true",timeout=30000)
     scene=page.evaluate("window.blueprintViewer.data")
     unresolved=[e for e in scene["elements"] if e["representation"]=="unresolved"]
@@ -127,7 +127,7 @@ def test_all_unresolved_keeps_source_notice_without_fake_model(annotation_server
     from playwright.sync_api import expect
     AnnotationProvider.unresolved_only=True
     page=scene_page;page.goto(annotation_server);upload(page,pdf=True)
-    page.locator("#generate-scene").click()
+    generate_scene(page)
     page.wait_for_function("window.blueprintViewer?.data.derived===true")
     expect(page.locator("#no-model-geometry")).to_be_visible()
     expect(page.locator("#model-canvas-container")).to_be_hidden()

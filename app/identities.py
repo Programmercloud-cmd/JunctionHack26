@@ -78,6 +78,39 @@ def new_identity(registry):
             return value
 
 
+def assign_replacement_identities(document,description):
+    """Bind only unique exact records; uncertain replacement matches get new IDs."""
+    result=description.model_copy(deep=True)
+    previous=document.description
+    registry=deepcopy(document.identity_registry) or {"version":1,"objects":{},"tombstones":[]}
+    seen=set()
+    def signature(record,floor=False):
+        value=record.model_dump(exclude={"persistent_id"}|(set(COLLECTIONS)if floor else set()))
+        return json.dumps(value,sort_keys=True)
+    def unique_pairs(old,new,is_floor=False):
+        left={};right={}
+        for item in old:left.setdefault(signature(item,is_floor),[]).append(item)
+        for item in new:right.setdefault(signature(item,is_floor),[]).append(item)
+        return {id(items[0]):left[key][0]for key,items in right.items()
+                if len(items)==1 and len(left.get(key,[]))==1}
+    floors=unique_pairs(previous.floors if previous else [],result.floors,True)
+    def bind(item,old,collection,parent=None):
+        item.persistent_id=old.persistent_id if old and old.persistent_id else new_identity(registry)
+        registry.setdefault("objects",{})[item.persistent_id]={"collection":collection,"floor_id":parent}
+        seen.add(item.persistent_id)
+    for floor in result.floors:
+        old=floors.get(id(floor));bind(floor,old,"floors")
+        for collection in COLLECTIONS:
+            items=getattr(floor,collection)
+            matches=unique_pairs(getattr(old,collection)if old else [],items)
+            for item in items:bind(item,matches.get(id(item)),collection,floor.persistent_id)
+    for identity in set(registry["objects"])-seen:
+        registry["objects"].pop(identity)
+        if identity not in registry["tombstones"]:registry["tombstones"].append(identity)
+    document.identity_registry=registry
+    return result
+
+
 def validate_identities(description, registry=None):
     seen = set()
     for item,_,_ in records(description):

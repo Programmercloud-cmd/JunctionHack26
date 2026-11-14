@@ -86,6 +86,15 @@ def snapshot(page):
     return page.evaluate("window.blueprintViewer.getSnapshot()")
 
 
+def generate_scene(page):
+    """Accept automatic first preview, or explicitly start a legacy/manual run."""
+    page.wait_for_function("window.blueprintViewer?.data.derived || (state.document && !state.busy && !state.reconstructionSubmitting)")
+    if not page.evaluate("Boolean(window.blueprintViewer?.data.derived) || state.jobs.some(j=>j.kind==='reconstruction'&&!terminalJob(j))"):
+        page.locator('#generate-scene').click()
+    page.wait_for_function("window.blueprintViewer?.data.derived===true",timeout=30000)
+    page.wait_for_function("!state.jobs.some(j=>j.kind==='reconstruction'&&!terminalJob(j))",timeout=30000)
+
+
 @pytest.mark.skipif(not SAMPLE.exists(), reason="External duplex IFC preview not available")
 def test_real_ifc_orbit_counts_highlights_source_and_scene_reuse(scene_server, scene_page):
     from playwright.sync_api import expect
@@ -168,7 +177,7 @@ def test_image_model_assumptions_source_mapping_and_reuse(scene_server, scene_pa
     page.on("request", lambda req: scene_requests.append(req.method) if req.url.endswith("/scene") else None)
     page.goto(scene_server)
     upload(page)
-    page.locator("#generate-scene").click()
+    generate_scene(page)
     page.wait_for_function("window.blueprintViewer?.getSnapshot().mesh_count > 0", timeout=30000)
     expect(page.locator("#scene-badge")).to_have_text("Approximate · unscaled")
     expect(page.locator("#generate-scene")).to_be_hidden()
@@ -198,7 +207,7 @@ def test_image_model_assumptions_source_mapping_and_reuse(scene_server, scene_pa
     assert snapshot(page)["highlight_ids"] == []
     expect(page.locator("#highlight-note")).to_contain_text("no reliable 3D mapping")
     assert page.evaluate("window.savedViewer === window.blueprintViewer")
-    assert scene_requests == ["POST"]
+    assert scene_requests == ["GET"]
     assert SceneFixtureProvider.reconstruction_calls == 1
     page.set_viewport_size({"width":390,"height":844})
     page.locator("#model-canvas-container canvas").scroll_into_view_if_needed()

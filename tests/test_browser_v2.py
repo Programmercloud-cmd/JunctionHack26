@@ -9,7 +9,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from test_browser import FixtureProvider, ask
-from test_browser_3d import scene_page, snapshot
+from test_browser_3d import scene_page, snapshot, generate_scene
 
 pytestmark = pytest.mark.skipif(os.getenv("RUN_BROWSER_TESTS") != "1", reason="opt-in browser checks")
 
@@ -86,7 +86,7 @@ def test_multifloor_original_regions_explosion_and_ifc_roundtrip(building_server
     BuildingFixtureProvider.calibrated=calibrated
     page.goto(building_server); upload_building(page)
     page.locator("#next-page").click()  # generation still includes every page/panel
-    page.locator("#generate-scene").click()
+    generate_scene(page)
     page.wait_for_function("window.blueprintViewer?.data.derived === true",timeout=30000)
     expect(page.locator("#scene-error")).to_be_hidden()
     expected_badge="Calibrated footprints · assumed heights" if calibrated else "Approximate · unscaled"
@@ -130,7 +130,8 @@ def test_multifloor_original_regions_explosion_and_ifc_roundtrip(building_server
     ask(page,"Where is Room 3?")
     expect(page.locator("#answer-text")).to_have_text("Fixture: Room 3 is shown on page 2.")
     assert snapshot(page)["highlight_ids"]==[room3["id"]]
-    assert snapshot(page)["floor_filter"]==""
+    assert snapshot(page)["floor_filter"]==floors[0]["id"]
+    expect(page.locator("#highlight-note")).to_contain_text("Your view is preserved")
     assert all(e["opacity"]==.1 for e in snapshot(page)["elements"] if e["id"]!=room3["id"])
     page.locator("#show-assumptions").check()
     assert snapshot(page)["highlights_enabled"] and snapshot(page)["exploded"]

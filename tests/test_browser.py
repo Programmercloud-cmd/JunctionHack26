@@ -15,6 +15,8 @@ pytestmark = pytest.mark.skipif(os.getenv("RUN_BROWSER_TESTS") != "1", reason="o
 
 
 class FixtureProvider:
+    # This legacy fixture tests pre-review behavior; reviewed QA has dedicated fixtures.
+    legacy_fixture_without_review = True
     def __init__(self):
         from app.schemas import Usage
         self.usage = Usage()
@@ -143,14 +145,14 @@ def test_limitation_unclear_and_operational_error(server, browser_page):
     expect(page.locator("#result")).to_be_hidden()
 
 
-def test_busy_source_is_locked_and_mobile_layout(server, browser_page):
+def test_background_question_keeps_source_available_and_mobile_layout(server, browser_page):
     from playwright.sync_api import expect
     page = browser_page
     page.set_viewport_size({"width": 390, "height": 844})
     page.goto(server)
     upload(page)
     ask(page, "slow count")
-    expect(page.locator("#file-input")).to_be_disabled()
+    expect(page.locator("#file-input")).to_be_enabled()
     expect(page.locator("#answer-text")).to_have_text("Fixture: one labeled room.")
     expect(page.locator("#file-input")).to_be_enabled()
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")

@@ -3,6 +3,8 @@
 ## Scope
 Build a local, lean application: upload JPG/PNG/PDF or IFC, ask a construction-plan question, inspect evidence and an interactive Three.js model. Current scope includes explicitly depicted floors via building description → deterministic IfcOpenShell generation → derived IFC → viewer. Read docs/RECONSTRUCTION_V3_PLAN.md and docs/RECONSTRUCTION_V3_CONTRACT.md. V3 uses explicit physical walls, wall-hosted openings, indoor/outdoor spaces, schematic stairs/furnishings/fixtures, source-linked unresolved records and actual-IFC source comparison. Room polygons must never imply enclosure. Defer unseen/invented floors, DXF/SVG/DWG, Blender/cloud rendering, auth, database and multi-agent runtime.
 
+The active product specification is docs/PRODUCT_SPEC.md, with independently reviewed checkpoints in docs/PRODUCT_PLAN.md. It adds local filesystem bundles, background reconstruction reviews, reviewed QA and the existing concept renderer; these are now authorized scope. Keep the configurable reconstruction model default; Hydrogen was not adopted.
+
 ## Workflow
 - Before introducing self-imposed constraints, explicitly communicate what they restrict, why they are needed, whether they are an external requirement or our design choice, and how they might block valid inputs or the demo. Prefer the smallest justified set for this hackathon. Do not silently introduce arbitrary caps or turn this into a blanket approval bureaucracy.
 - Read docs/PLAN.md, docs/CONTRACT.md and docs/HANDOFF.md before changing behavior.
@@ -14,6 +16,8 @@ Build a local, lean application: upload JPG/PNG/PDF or IFC, ask a construction-p
 - Use injected fake providers for deterministic tests. Never present fixture answers as real inference. API failures are operational errors, not evidence-insufficiency judgments.
 
 ## Product invariants
+- Remain building-type agnostic: preserve original space labels and meaningful non-residential features. Unknown use gets neutral concept styling and explicit schematic fallbacks, never automatic residential furnishing. Separate floor plans from sections, elevations and site plans; unsupported views/features remain source-linked unresolved records without invented floors. Detailed domes/roofs are out of scope.
+- Concept styling/proposals never enter reasoning evidence, source counts or IFC exports. Inspection/concept use the same saved revision. Original sources and usable revisions survive operational failure, stop and restart.
 - One overall source-sufficiency gate: sufficient / insufficient / unclear. Inspect original source material, not only a model summary.
 - Allow derivations with supported inputs. No invented dimensions as facts; no model confidence advertised as accuracy.
 - Unclear gets at most one targeted additional inspection; unresolved stays unclear.

@@ -7,7 +7,7 @@ import time
 import pytest
 
 from test_browser import FixtureProvider, upload
-from test_browser_3d import scene_page, snapshot
+from test_browser_3d import scene_page, snapshot, generate_scene
 
 pytestmark = pytest.mark.skipif(os.getenv("RUN_BROWSER_TESTS") != "1", reason="opt-in browser checks")
 
@@ -54,7 +54,7 @@ def semantic_server(tmp_path,monkeypatch):
 
 def generate(page,server):
     page.goto(server); upload(page)
-    page.locator("#generate-scene").click()
+    generate_scene(page)
     page.wait_for_function("window.blueprintViewer?.data.derived === true",timeout=30000)
 
 
