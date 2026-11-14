@@ -68,7 +68,7 @@ The bootstrap creates a local `.venv` and installs pinned `requirements.txt`. On
 
 ## Scope and behavior
 
-Historical Gemini compatibility diagnosis is in [GEMINI_FIX.md](docs/GEMINI_FIX.md). The reconstruction default remains `gemini-3.1-pro-preview`; Hydrogen was not adopted. Default configurable design budgets are 300 seconds/65,536 output tokens per reconstruction or patch, 120 seconds/16,384 tokens per reconstruction review, 900 seconds per background job and two patch attempts. QA has a 180-second total budget, 45-second calls, at most two support reviews and one meaningful correction. Budget exhaustion is operational, not proof of missing evidence. See `.env.example` and [the reviewed plan](docs/PRODUCT_PLAN.md).
+Historical Gemini compatibility diagnosis is in [GEMINI_FIX.md](docs/GEMINI_FIX.md). The reconstruction default remains `gemini-3.1-pro-preview`; Hydrogen was not adopted. Default configurable design budgets are 300 seconds/65,536 output tokens per reconstruction or patch, 120 seconds/16,384 tokens per reconstruction review, 900 seconds per background job and two patch attempts. QA has a 180-second total budget, 90 seconds per Gemini draft or correction, 45 seconds for other Gemini calls, at most two support reviews and one meaningful correction. Budget exhaustion is operational, not proof of missing evidence. See `.env.example` and [the reviewed plan](docs/PRODUCT_PLAN.md).
 
 The API wire schema and necessary local validation remain separate. Invalid/ambiguous geometry stays as a source-linked unresolved record; an all-unresolved result explicitly says no 3D geometry was reconstructed. Valid walls/features do not depend on room polygons surviving. Source-based answers remain available.
 - Related JPG/PNG/PDF/SVG/DXF sources can be uploaded together or appended. Existing per-file drawing limits remain 10 MiB and, for PDF, five pages; oversized PDFs are rejected, not silently truncated. These are not whole-building page limits.
@@ -97,10 +97,6 @@ Use the same document/question pairs for ordinary Gemini and the gated pipeline.
 API references: [Decisions](https://aistudio.google.com/docs/decisions-api), [models](https://aistudio.google.com/docs/models). The Decisions SDK requires google-genai 3.2 or later; this environment pins the installed version. Model names are configurable because account access can differ.
 
 OpenAI references: [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs), [model catalog](https://developers.openai.com/api/docs/models), [native Decisions (not used by this temporary adapter)](https://developers.openai.com/api/docs/guides/decisions).
-
-## Separate VQA experiment
-
-The upstream VQA experiment is preserved in `VQA/`. Its [original upstream documentation](VQA/README.md) is retained verbatim and includes historical `backend/` paths; use the instructions above for this application. The experiment is not wired into the application provider pipeline.
 
 ## Voice interaction
 

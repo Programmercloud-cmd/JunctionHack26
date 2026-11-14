@@ -1,6 +1,0 @@
-google-genai
-ifcopenshell==0.9.0.post1
-matplotlib
-Pillow
-PyMuPDF
-python-dotenv
