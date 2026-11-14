@@ -1,0 +1,29 @@
+[Unit]
+Description=Blueprint QA hackathon demo
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/srv/blueprint-data
+ConditionPathIsMountPoint=/srv/blueprint-data
+
+[Service]
+Type=simple
+User=blueprint
+Group=blueprint
+WorkingDirectory=/opt/blueprint/current
+EnvironmentFile=/etc/blueprint/application.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStartPre=/usr/bin/mountpoint -q /srv/blueprint-data
+ExecStart=/opt/blueprint/current/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1 --no-access-log
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=infinity
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/blueprint-data
+
+[Install]
+WantedBy=multi-user.target
