@@ -140,6 +140,8 @@ def test_genuine_native_ifc_stays_native_through_store_and_direct_import(tmp_pat
 
 
 class DrawingProvider:
+    # This legacy fixture tests pre-review behavior; reviewed QA has dedicated fixtures.
+    legacy_fixture_without_review = True
     def __init__(self, decisions=("sufficient",)):
         self.decisions=iter(decisions)
         self.calls=[]
@@ -147,7 +149,7 @@ class DrawingProvider:
 
     def gate(self,document,question,crop=None):
         assert document.pages and all(p.path.exists() for p in document.pages)
-        assert json.loads(source_context(document))["association_index_only"]
+        assert json.loads(source_context(document))["source_kind"]=="drawing"
         self.calls.append("gate")
         return GateResult(decision=next(self.decisions))
 
@@ -187,13 +189,16 @@ def test_reopened_context_excludes_generated_dimensions_properties_and_measureme
         document.kind="ifc"
         document.scene.elements[0].properties.append(Property(name="INVENTED_DIMENSION",value=123456,origin="derived"))
         context=source_context(document)
-        assert "TRANSCRIBED_HEIGHT_MARKER" not in context and "9876" not in context
+        # Restored descriptions remain explicitly fallible source interpretations;
+        # neither their measurements nor generated IFC are independent evidence.
+        assert "TRANSCRIBED_HEIGHT_MARKER" in context and "9876" in context
         assert "INVENTED_DIMENSION" not in context and "123456" not in context
         parsed=json.loads(context)
-        assert set(parsed)=={"association_index_only","floors","objects"}
+        assert parsed["source_kind"]=="drawing"
+        assert "Original pages are authoritative" in parsed["evidence_rule"]
         assert all(set(f)=={"id","label","page","bbox"} for f in parsed["floors"])
-        assert all(set(e)=={"id","kind","name","page","bbox","floor_id"} for e in parsed["objects"])
-        assert "measurements" not in context and "assumptions" not in context and "properties" not in context
+        assert all(e["provenance"]=="interpretation" and e["source"]["kind"]=="image" for e in parsed["objects"])
+        assert all("geometry" not in e and "properties" not in e and "assumptions" not in e for e in parsed["objects"])
         bad=DraftAnswer(status="answered",answer="Height from generated IFC",model_evidence=[{
             "element_id":document.scene.elements[0].id,"label":"IFC height","observation":"Assumed height"}])
         with pytest.raises(ProviderError,match="IFC evidence for a drawing"):

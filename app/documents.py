@@ -7,6 +7,9 @@ import threading
 import uuid
 import warnings
 from .scene import Scene
+from .building import BuildingDescription
+from copy import deepcopy
+from dataclasses import replace
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 import pypdfium2 as pdfium
@@ -46,6 +49,25 @@ class Document:
     scene: Scene | None = None
     scene_lock: threading.Lock = field(default_factory=threading.Lock)
     ifc_bytes: bytes | None = None
+    source_bytes: bytes | None = None
+    description: BuildingDescription | None = None
+    reasoning: dict | None = None
+    building_id: str | None = None
+    revision_id: str | None = None
+    parent_revision_id: str | None = None
+    revision_number: int = 0
+    identity_registry: dict = field(default_factory=dict)
+    frame_registry: dict = field(default_factory=dict)
+    question_context: dict | None = None
+    review_status: str = "source_available"
+
+    def snapshot(self):
+        """Pin a request to immutable source bytes and a private revision interpretation."""
+        return replace(self, pages=list(self.pages), warnings=list(self.warnings), scene_lock=threading.Lock(),
+                       scene=self.scene.model_copy(deep=True) if self.scene else None,
+                       description=self.description.model_copy(deep=True) if self.description else None,
+                       reasoning=deepcopy(self.reasoning), identity_registry=deepcopy(self.identity_registry),
+                       frame_registry=deepcopy(self.frame_registry), question_context=deepcopy(self.question_context))
 
     def public(self):
         return {
@@ -57,6 +79,12 @@ class Document:
             "pages": [{"page": p.number, "width": p.width, "height": p.height,
                        "image_url": f"/api/documents/{self.id}/pages/{p.number}"} for p in self.pages],
             "warnings": self.warnings,
+            "building_id": self.building_id or self.id,
+            "revision_id": self.revision_id,
+            "revision_number": self.revision_number,
+            "review_status": self.review_status,
+            "has_scene": self.scene is not None,
+            "unresolved_views": [v.model_dump() for v in self.description.unresolved_views] if self.description else [],
         }
 
 
@@ -116,12 +144,16 @@ class DocumentStore:
                         pages.append(Page(page.number, page.width, page.height, path))
                     safe_name = Path(filename.replace("\\", "/")).name[:200] or "Derived building.ifc"
                     document = Document(document_id, safe_name, pages, scene.warnings,
-                                        kind="drawing", scene=scene, ifc_bytes=data)
+                                        kind="drawing", scene=scene, ifc_bytes=data, source_bytes=data,
+                                        description=manifest.description,
+                                        identity_registry=manifest.identity_registry if manifest.version>=4 else {},
+                                        frame_registry=manifest.frame_registry if manifest.version>=4 else {})
                     self.documents[document_id] = document
                     return document
                 scene = import_ifc(data, document_id)
                 safe_name = Path(filename.replace("\\", "/")).name[:200] or "Building.ifc"
-                document = Document(document_id, safe_name, [], scene.warnings, kind="ifc", scene=scene)
+                document = Document(document_id, safe_name, [], scene.warnings, kind="ifc", scene=scene,
+                                    ifc_bytes=data, source_bytes=data)
                 self.documents[document_id] = document
                 return document
             return self._add(data, filename)
@@ -178,6 +210,6 @@ class DocumentStore:
             for image in images:
                 image.close()
         safe_name = Path(filename.replace("\\", "/")).name[:200] or "Untitled plan"
-        document = Document(document_id, safe_name, pages, notes)
+        document = Document(document_id, safe_name, pages, notes, source_bytes=data)
         self.documents[document_id] = document
         return document

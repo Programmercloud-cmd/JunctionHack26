@@ -12,6 +12,8 @@ class StrictModel(BaseModel):
 class AskRequest(StrictModel):
     document_id: str = Field(min_length=1, max_length=64)
     question: str = Field(min_length=1, max_length=2000)
+    revision_id: str | None = None
+    request_id: str | None = None
 
     @field_validator("question", mode="before")
     @classmethod
@@ -45,6 +47,7 @@ class Proposal(StrictModel):
 class Operand(StrictModel):
     value: float
     evidence_index: int = Field(ge=0)
+    unit: str | None = None
 
 
 class Calculation(StrictModel):
@@ -60,6 +63,26 @@ class ModelEvidence(StrictModel):
     property_name: str | None = None
 
 
+class NativeOperand(StrictModel):
+    object_id: str
+    property_name: str
+
+
+class NativeCalculation(StrictModel):
+    operation: Literal["count", "sum", "difference", "product", "quotient"]
+    scope: Literal["model", "storey", "objects"]
+    entity_type: str | None = None
+    storey_id: str | None = None
+    object_ids: list[str] = Field(default_factory=list)
+    property_name: str | None = None
+    operands: list[NativeOperand] = Field(default_factory=list)
+
+
+class AnswerClaim(StrictModel):
+    id: str | None = None
+    text: str
+
+
 class DraftAnswer(StrictModel):
     status: Literal["answered", "insufficient", "unclear"]
     answer: str = Field(min_length=1, max_length=6000)
@@ -70,6 +93,9 @@ class DraftAnswer(StrictModel):
     calculation: Calculation | None = None
     highlight_ids: list[str] = Field(default_factory=list, max_length=4000)
     model_evidence: list[ModelEvidence] = Field(default_factory=list, max_length=4000)
+    native_calculation: NativeCalculation | None = None
+    claims: list[AnswerClaim] = Field(default_factory=list)
+    retained_claim_ids: list[str] | None = None
 
 
 class CropRequest(StrictModel):
@@ -104,3 +130,10 @@ class Answer(StrictModel):
     usage: Usage
     highlight_ids: list[str] = Field(default_factory=list)
     model_evidence: list[ModelEvidence] = Field(default_factory=list)
+    building_id: str | None = None
+    answered_revision_id: str | None = None
+    display_revision_id: str | None = None
+    review_decision: str | None = None
+    review_passes: int = 0
+    review_note: str = ""
+    calculation_results: list[dict] = Field(default_factory=list)

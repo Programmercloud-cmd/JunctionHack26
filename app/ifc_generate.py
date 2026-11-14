@@ -14,7 +14,7 @@ from shapely.geometry import Polygon, LineString, box
 from .artifact_schema import ARTIFACT_MARKER, DISPLAY_UNIT, MANIFEST_PROPERTY, PSET_NAME, ArtifactManifest, EmbeddedPage
 from .building import BoundaryRegion, BuildingDescription
 from .documents import Document, DocumentError
-from .ifc_import import MAX_ELEMENTS, MAX_IFC_BYTES, MAX_TRIANGLES
+from .ifc_import import MAX_ELEMENTS, MAX_IFC_BYTES, MAX_TRIANGLES, GLOBAL_ID
 from .scene import Assumption, Scene, SceneElement, SceneFloor, SourceRef
 
 
@@ -98,7 +98,7 @@ class _Builder:
         self.aggregate(self.project,[self.building],"building")
 
     def guid(self, key):
-        return ifcopenshell.guid.compress(uuid.uuid5(self.namespace,key).hex)
+        return key if GLOBAL_ID.fullmatch(key) else ifcopenshell.guid.compress(uuid.uuid5(self.namespace,key).hex)
 
     def point(self, coordinates):
         return self.model.create_entity("IfcCartesianPoint",Coordinates=[float(v) for v in coordinates])
@@ -303,7 +303,7 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
         if not localized:
             reason+=" Unlocalized: coarse floor source region only."
         world=None if reason else [_transform(matrix,p) for p in list(shape.exterior.coords)[:-1]]
-        add("IfcSpace",f"{prefix}:room:{i}",room.label,"outdoor" if room.environment=="outdoor" else "room", "space",source,
+        add("IfcSpace",room.persistent_id or f"{prefix}:room:{i}",room.label,"outdoor" if room.environment=="outdoor" else "room", "space",source,
             world,-plate,plate,[_assumption("floor_plate_thickness",plate,unit,"Display-only footprint plate; not a measured slab.")],
             room.basis,room.note,reason,room.environment)
 
@@ -387,7 +387,7 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
         else:
             height=0
         ifc_type={"wall":"IfcWall","railing":"IfcRailing","open_edge":"IfcBuildingElementProxy"}[boundary.kind]
-        entity=add(ifc_type,f"{prefix}:boundary:{i}",boundary.label,boundary.kind,boundary.kind,source,world,0,height,
+        entity=add(ifc_type,boundary.persistent_id or f"{prefix}:boundary:{i}",boundary.label,boundary.kind,boundary.kind,source,world,0,height,
                    assumptions,boundary.basis," ".join(filter(None,[boundary.note,record["padding_note"]])),reason,schematic=boundary.kind!="wall")
         if not reason and boundary.kind=="open_edge" and len(segment_points)>2:
             shape=entity.Representation.Representations[0]
@@ -452,7 +452,7 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
     for i,record in opening_records.items():
         opening=record["description"]
         reason="Conflicting overlapping opening spans on the same host." if record.get("conflict") else record["reason"]
-        key=f"{prefix}:opening:{i}"
+        key=opening.persistent_id or f"{prefix}:opening:{i}"
         assumptions=[];world=None;sill=height=0
         if not reason:
             wall,_,low,high=record["host"]
@@ -509,7 +509,7 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
         if feature.kind=="stairs" and world:
             assumptions.append(_assumption("stair_symbol","Level parallel marks",None,"Symbol marks, not a source step count or rise. No stair travel direction is inferred; mark orientation follows the display footprint only."))
             assumptions.append(_assumption("symbol_mark_thickness",height*.1,unit,"Display relief for level schematic marks; not a riser dimension."))
-        entity=add(ifc_type,f"{prefix}:feature:{i}",feature.label,kind,feature.kind,source,world,plate,height,assumptions,
+        entity=add(ifc_type,feature.persistent_id or f"{prefix}:feature:{i}",feature.label,kind,feature.kind,source,world,plate,height,assumptions,
             feature.basis,feature.note,reason,schematic=True)
         if world:
             builder.feature_symbol(entity,world,feature.kind,plate,height)
@@ -517,7 +517,7 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
         source,localized=_item_source(item.source,[],floor,page)
         reason=item.reason or "Source feature unresolved."
         if not localized:reason+=" Unlocalized: coarse floor source region only."
-        add("IfcBuildingElementProxy",f"{prefix}:unresolved:{i}",item.label,"other",item.category,source,reason=reason)
+        add("IfcBuildingElementProxy",item.persistent_id or f"{prefix}:unresolved:{i}",item.label,"other",item.category,source,reason=reason)
     if spaces:builder.aggregate(storey,spaces,prefix+":spaces")
     if physical:
         builder.model.create_entity("IfcRelContainedInSpatialStructure",GlobalId=builder.guid(prefix+":containment"),RelatedElements=physical,RelatingStructure=storey)
@@ -527,11 +527,22 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
 
 def generate_ifc(description: BuildingDescription, document: Document) -> bytes:
     description = BuildingDescription.model_validate(description)
+    if any(f.view_type != "floor_plan" for f in description.floors):
+        raise DocumentError("Sections, elevations, site plans and uncertain views cannot become floor geometry. Original evidence remains available.",422)
     pages = {p.number:p for p in document.pages}
     warnings = list(description.limitations)
     if not description.floors or any(not _region(f.source,pages) for f in description.floors):
         raise DocumentError("The building description needs depicted floors on available source pages.",422)
-    frames = [_floor_frame(f,pages[f.source.page],warnings) for f in description.floors]
+    from .identities import frame_signature
+    frames = []
+    for floor in description.floors:
+        saved = document.frame_registry.get(floor.persistent_id)
+        if saved:
+            if saved["signature"] != frame_signature(floor):
+                raise DocumentError("Calibration/orientation changes require an explicit source-backed transform update.",409)
+            frames.append(([list(row) for row in saved["transform"]],saved["known"],saved["rotation"]))
+        else:
+            frames.append(_floor_frame(floor,pages[floor.source.page],warnings))
     metric = all(known for _,known,_ in frames)
     # Registration requires a common evidenced anchor AND compatible supported scales.
     aligned = metric and all(f.alignment and f.alignment.group.strip() and f.alignment.basis.strip()
@@ -539,18 +550,21 @@ def generate_ifc(description: BuildingDescription, document: Document) -> bytes:
         and _inside(f.alignment.anchor,f.source.bbox) and f.rotation_degrees is not None
         and f.orientation_basis.strip() for f in description.floors)
     aligned = bool(aligned and len({f.alignment.group for f in description.floors}) == 1)
-    artifact_id = str(uuid.uuid5(uuid.NAMESPACE_URL,"blueprintqa:"+document.id))
+    from .identities import artifact_namespace
+    artifact_id = artifact_namespace(document)
     builder = _Builder(artifact_id,metric)
     floors = []
     for floor_index,(floor,(matrix,known,rotation)) in enumerate(zip(description.floors,frames),start=1):
-        prefix = f"floor:{floor_index}"
+        prefix = floor.persistent_id or f"floor:{floor_index}"
         page = pages[floor.source.page]
         unit = "m" if known else "relative"
         wall_height, wall_thickness, plate_thickness = (2.6,.12,.04) if known else (1.2,.08,.02)
-        if aligned:
+        if aligned and prefix not in document.frame_registry:
             anchor = _transform(matrix,floor.alignment.anchor)
             matrix[0][2] -= anchor[0]
             matrix[1][2] -= anchor[1]
+        document.frame_registry[builder.guid(prefix)] = {"transform":[list(row) for row in matrix],
+            "signature":frame_signature(floor),"known":known,"rotation":rotation,"aligned":aligned}
         storey = builder.model.create_entity("IfcBuildingStorey",GlobalId=builder.guid(prefix),Name=floor.label,
             ObjectPlacement=builder.placement,CompositionType="ELEMENT",Elevation=None)
         builder.aggregate(builder.building,[storey],prefix)
@@ -583,7 +597,9 @@ def generate_ifc(description: BuildingDescription, document: Document) -> bytes:
     if not metric:
         warnings.append("UNSCALED: at least one floor lacks calibration. Project units are relative; mixed-floor distances are not physical measurements.")
     scene = Scene(document_id=document.id,source_kind="image",units="m" if metric else "relative",elements=builder.elements,
-        warnings=warnings,catalog_complete=False,derived=True,artifact_id=artifact_id,floors=floors,layout="aligned" if aligned else "schematic")
+        warnings=warnings,catalog_complete=False,derived=True,artifact_id=artifact_id,floors=floors,layout="aligned" if aligned else "schematic",
+        building_id=document.building_id, revision_id=document.revision_id, parent_revision_id=document.parent_revision_id,
+        revision_number=document.revision_number,review_status=document.review_status)
     if sum(((p.path.stat().st_size+2)//3)*4 for p in document.pages) > MAX_IFC_BYTES:
         raise DocumentError("Embedded source pages would exceed the existing 25 MiB IFC limit; no pages were truncated.",413)
     embedded = []
@@ -591,7 +607,12 @@ def generate_ifc(description: BuildingDescription, document: Document) -> bytes:
         data = page.path.read_bytes()
         embedded.append(EmbeddedPage(number=page.number,width=page.width,height=page.height,sha256=hashlib.sha256(data).hexdigest(),
                                      png_base64=base64.b64encode(data).decode("ascii")))
-    manifest = ArtifactManifest(artifact_id=artifact_id,source_filename=document.filename,pages=embedded,scene=scene,description=description)
+    from .identities import expected_registry
+    document.identity_registry={"version":1,"objects":expected_registry(description,artifact_id),
+                                "tombstones":document.identity_registry.get("tombstones",[])}
+    document.frame_registry={f.id:document.frame_registry[f.id]for f in floors}
+    manifest = ArtifactManifest(artifact_id=artifact_id,source_filename=document.filename,pages=embedded,scene=scene,description=description,
+        identity_registry=document.identity_registry,frame_registry=document.frame_registry)
     builder.pset(builder.project,PSET_NAME,{MANIFEST_PROPERTY:manifest.model_dump_json()},"manifest")
     data = builder.model.to_string().encode("utf-8")
     if len(data)>MAX_IFC_BYTES:

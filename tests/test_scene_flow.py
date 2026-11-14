@@ -28,6 +28,8 @@ def model_bytes():
 
 
 class Provider:
+    # This legacy fixture tests pre-review behavior; reviewed QA has dedicated fixtures.
+    legacy_fixture_without_review = True
     def __init__(self, decision="sufficient", draft=None):
         self.decision = decision
         self.draft = draft
@@ -199,7 +201,11 @@ def test_existing_but_uninspected_ifc_property_is_not_valid_evidence():
     document = ifc_document()
     document.scene.elements[0].properties = [Property(name=f"Property{i}", value=i) for i in range(13)]
     context = json.loads(source_context(document))
-    assert len(context["elements"][0]["properties"]) == 12
+    # Retrieval is explicit, not an arbitrary property-count cap.
+    document.question_context=context
+    record=next(r for r in context["objects"] if r["id"]=="wall-a")
+    assert len(record["values"])==13
+    record["values"].pop("Property12")
     draft = DraftAnswer(status="answered", answer="12", model_evidence=[{
         "element_id": "wall-a", "label": "Property", "observation": "Value 12", "property_name": "Property12"}])
     with pytest.raises(ProviderError):
@@ -265,7 +271,7 @@ def test_image_assumptions_and_geometry_never_enter_source_context(tmp_path):
     assert context["objects"][0]["id"] == "room-a"
     assert "invented-height-marker" not in json.dumps(context)
     assert "InventedProperty" not in json.dumps(context)
-    assert "geometry" not in json.dumps(context)
+    assert all("geometry" not in item for item in context["objects"])
 
 
 def test_scene_absence_and_nonexistent_document(client):

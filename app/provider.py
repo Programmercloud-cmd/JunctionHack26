@@ -5,6 +5,7 @@ from io import BytesIO
 import json
 import os
 from pathlib import Path
+from time import monotonic
 
 from dotenv import load_dotenv
 from google import genai
@@ -21,6 +22,52 @@ load_dotenv(ROOT / ".env.local", override=False)
 class ProviderError(Exception):
     def __init__(self, message: str, status: int = 502):
         self.message, self.status = message, status
+
+
+def configured_number(name, default, *, integer=False):
+    try:
+        value=(int if integer else float)(os.getenv(name,str(default)))
+        if value<=0:raise ValueError()
+        return value
+    except ValueError:
+        raise ProviderError(f"Invalid {name}; configure a positive execution budget.",503) from None
+
+
+def remaining_timeout(provider, seconds):
+    deadline=getattr(provider,"request_deadline",None)
+    if deadline is not None:
+        seconds=min(seconds,deadline-monotonic())
+        if seconds<=0:raise ProviderError("The configured processing budget was exhausted. No evidence-insufficiency conclusion was made.",504)
+    return seconds
+
+
+RECONSTRUCTION_REVIEW_INSTRUCTIONS="""Review the original drawing and ACTUAL reopened IFC overlays together with the interpretation JSON.
+The overlay is geometry evidence about what our generator drew, not factual building evidence. Original pages are authoritative.
+Find missing meaningful features, invented floors/walls, wrong connectivity/thickness/openings/hosts, indoor/outdoor enclosure errors,
+misclassified furnishings and unsupported dimensions. Retain source labels and non-residential features; do not turn sections/elevations/site plans into invented floor rooms.
+Return actionable source-linked issues, distinguishing extraction from generation or display errors. Do not propose data distortion to compensate for a generator bug.
+Inspect full context and what disappeared as well as the requested correction. candidate_supported means the requested candidate changes are supported and no clear regression was found;
+it does not mean complete or verified accurate. For a first preview, report its issues without claiming accuracy. Unsupported corrections remain explicitly uncertain.
+Use original-page coordinates and existing persistent IDs. Do not invent measurements, code, raw IFC or hidden floors."""
+
+RECONSTRUCTION_PATCH_INSTRUCTIONS="""Propose a targeted data-only patch for supported actionable EXTRACTION issues in the supplied review.
+Read original pages/crops and actual IFC overlays. Preserve unrelated records exactly and retain their persistent IDs. Never output Python, raw IFC or application edits.
+Use add/replace/remove operations on the named collections. New records must have persistent_id=null; the server assigns identities.
+For replacements use the existing target_id. A floor replacement changes metadata only: copy its nested records unchanged; edit nested objects through separate operations.
+Never introduce unpictured floors or guessed factual heights. Ambiguous source features remain unresolved. Generation/display issues are not fixable by changing correct source interpretation.
+Do not change calibration/orientation implicitly. Explicit supported changes require transform_updates with original evidence. Return the exact supplied base_revision_id.
+Use source regions and reasons for every operation, tying them to issue IDs. No unrelated redesign, wholesale rewrite or lost doors/walls."""
+
+ANSWER_REVIEW_INSTRUCTIONS="""Does the inspected original evidence support this draft's answer to the user's question, including factual claims and derivations, without treating assumptions as facts?
+Inspect source pages for drawings and faithful original IFC records/coverage for native IFC. JSON interpretation is fallible; generated geometry and concept decoration are not source evidence.
+Check refusals too: missing information is scoped to the material inspected, and clearly available supported answers should not be rejected unnecessarily.
+Consider local validation and server calculation results. Select ONE overall routing judgment, not independent vetoes. supported does not establish guaranteed correctness."""
+
+ANSWER_REPAIR_INSTRUCTIONS="""Correct the internal draft using original evidence, the review routing judgment and concrete validation findings.
+Do not merely rephrase an unsupported assertion. Use newly inspected evidence, a corrected source-bound calculation or repaired citation; otherwise remove unsupported claims or narrow the answer/status.
+Claims carry server IDs. To remove a claim without new evidence, return retained_claim_ids as a strict subset of existing IDs and copy retained claims unchanged; the server composes the remaining text.
+If the requested fact is absent, explain what is missing from inspected material. A visible extrusion does not provide actual height. Do not invent references or dimensions.
+Native calculation operands must reference original records/properties, not supplied model numbers. Use {result} for the deterministic result."""
 
 
 def gemini_wire_schema(schema: dict) -> dict:
@@ -178,7 +225,7 @@ class GeminiProvider:
 
     def _decision_input(self, document, question, crop):
         contents = [{"type": "text", "text": json.dumps({"question": question, "inspected_pages": [p.number for p in document.pages]})}]
-        if context := source_context(document):
+        if context := source_context(document, question):
             contents.append({"type": "text", "text": context})
         for label, png in views(document, crop):
             contents.extend([{"type": "text", "text": label},
@@ -188,6 +235,7 @@ class GeminiProvider:
     def gate(self, document, question, crop=None):
         response = self.client.decisions.create(
             model=self.decision_model,
+            timeout=remaining_timeout(self,45),
             input=self._decision_input(document, question, crop),
             questions={"sufficiency": {
                 "type": "choice", "instructions": GATE_INSTRUCTIONS,
@@ -204,12 +252,16 @@ class GeminiProvider:
         self.usage.output_tokens += getattr(usage, "total_output_tokens", 0) or 0
         return GateResult(decision=answer.choice, confidence=answer.confidence)
 
-    def _generate(self, document, question, instruction, schema, crop=None, *, thinking_level=None, timeout_ms=None, max_tokens=8192, model=None):
+    def _generate(self, document, question, instruction, schema, crop=None, *, thinking_level=None, timeout_ms=None, max_tokens=8192, model=None, extra_views=None, extra_data=None):
         parts = [types.Part.from_text(text=json.dumps({"question": question}))]
-        if context := source_context(document):
+        if context := source_context(document, question):
             parts.append(types.Part.from_text(text=context))
         for label, png in views(document, crop):
             parts.extend([types.Part.from_text(text=label), types.Part.from_bytes(data=png, mime_type="image/png")])
+        for label,png in extra_views or []:
+            parts.extend([types.Part.from_text(text=label),types.Part.from_bytes(data=png,mime_type="image/png")])
+        if extra_data is not None:parts.append(types.Part.from_text(text=json.dumps(extra_data,ensure_ascii=False)))
+        timeout_ms=round(remaining_timeout(self,(timeout_ms or 45000)/1000)*1000)
         response = self.client.models.generate_content(
             model=model or self.model, contents=parts,
             config=types.GenerateContentConfig(system_instruction=instruction, temperature=0,
@@ -230,13 +282,50 @@ class GeminiProvider:
 
     def answer(self, document, question, gate, crop=None):
         return self._generate(document, question, ANSWER_INSTRUCTIONS +
+                              "\nNative IFC numeric calculations must use native_calculation with original object/property references and {result}; code resolves all numeric inputs. Claims may split factual assertions for targeted removal; their IDs are assigned server-side. " +
                               f"\nOverall evidence decision: {gate.decision}.", DraftAnswer, crop)
 
     def reconstruct(self, document, page=None):
         from dataclasses import replace
         from .building import BuildingDescription, BUILDING_PROMPT
-        source = replace(document, scene=None)
+        source = replace(document, scene=None,description=None,reasoning=None,question_context=None)
         return self._generate(source, "Describe every explicitly depicted floor across these original pages.",
                               BUILDING_PROMPT, BuildingDescription,
-                              thinking_level="high", timeout_ms=150000, max_tokens=32768,
+                              thinking_level="high", timeout_ms=round(configured_number("RECONSTRUCTION_CALL_SECONDS",300)*1000), max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True),
                               model=self.reconstruction_model)
+
+    def review_reconstruction(self, document, description, scene, *, previous_description=None, previous_scene=None, previous_review=None):
+        from .review_schema import ReconstructionReview
+        from .review_render import overlay_views,issue_crops
+        images=overlay_views(document,scene)
+        if previous_scene:images+=overlay_views(document,previous_scene,"Previous usable revision")
+        if previous_review:images+=issue_crops(document,previous_review.issues)
+        data={"base_revision_id":document.revision_id,"description":description.model_dump(mode="json"),
+              "previous_description":previous_description.model_dump(mode="json")if previous_description else None,
+              "previous_review":previous_review.model_dump(mode="json")if previous_review else None,
+              "actual_geometry_inventory":[{"id":e.id,"name":e.name,"representation":e.representation,"has_geometry":e.geometry is not None,"note":e.note}for e in scene.elements]}
+        return self._generate(document,"Review this source-grounded building reconstruction and any candidate regressions.",RECONSTRUCTION_REVIEW_INSTRUCTIONS,ReconstructionReview,
+          thinking_level="high",timeout_ms=round(configured_number("RECONSTRUCTION_REVIEW_SECONDS",120)*1000),max_tokens=configured_number("RECONSTRUCTION_REVIEW_TOKENS",16384,integer=True),model=self.reconstruction_model,extra_views=images,extra_data=data)
+
+    def patch_reconstruction(self, document, description, scene, review):
+        from .review_schema import DescriptionPatch
+        from .review_render import overlay_views,issue_crops
+        return self._generate(document,"Propose only supported targeted description corrections.",RECONSTRUCTION_PATCH_INSTRUCTIONS,DescriptionPatch,
+          thinking_level="high",timeout_ms=round(configured_number("RECONSTRUCTION_CALL_SECONDS",300)*1000),max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True),model=self.reconstruction_model,
+          extra_views=overlay_views(document,scene)+issue_crops(document,review.issues),extra_data={"base_revision_id":document.revision_id,"description":description.model_dump(mode="json"),"review":review.model_dump(mode="json")})
+
+    def review_answer(self, document, question, draft, gate, crop=None, *, validation=None):
+        from .review_schema import AnswerReview
+        contents=self._decision_input(document,question,crop)
+        contents.append({"type":"text","text":json.dumps({"draft":draft.model_dump(mode="json"),"gate":gate.model_dump(mode="json"),"validation":validation or{}},ensure_ascii=False)})
+        response=self.client.decisions.create(model=self.decision_model,input=contents,timeout=remaining_timeout(self,45),questions={"support":{"type":"choice","instructions":ANSWER_REVIEW_INSTRUCTIONS,
+          "criteria":{"supported":"Inspected original evidence supports the scoped answer, derivations and limitations.","contradicted":"Inspected original evidence contradicts a claim, derivation or unjustified refusal.","unsupported":"The draft asserts something not established by inspected evidence or treats assumptions as facts.","unclear":"Evidence is ambiguous, conflicting or not adequately inspected to decide support."}}})
+        usage=getattr(response,"usage",None)
+        self.usage.input_tokens+=getattr(usage,"total_input_tokens",0)or 0
+        self.usage.output_tokens+=getattr(usage,"total_output_tokens",0)or 0
+        result=response.answers["support"]
+        return AnswerReview(decision=result.choice,confidence=result.confidence)
+
+    def revise_answer(self, document, question, draft, gate, review, crop=None, *, validation=None):
+        return self._generate(document,question,ANSWER_INSTRUCTIONS+"\n"+ANSWER_REPAIR_INSTRUCTIONS+f"\nOverall sufficiency decision: {gate.decision}.",DraftAnswer,crop,
+          extra_data={"previous_draft":draft.model_dump(mode="json"),"review":review.model_dump(mode="json"),"validation":validation or{}})

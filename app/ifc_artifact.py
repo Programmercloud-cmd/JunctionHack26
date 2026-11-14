@@ -69,9 +69,9 @@ def artifact_from_model(model, document_id):
     if not has_artifact_marker(model):
         return None
     try:
-        from .ifc_import import _catalog, _mesh_elements
+        from .ifc_import import _catalog, _mesh_elements, GLOBAL_ID
         manifest = ArtifactManifest.model_validate_json(_manifest_text(model))
-        if manifest.version == 3 and manifest.description is None:
+        if manifest.version >= 3 and manifest.description is None:
             raise ValueError("Missing original building description")
         scene = manifest.scene.model_copy(deep=True)
         if (not scene.derived or scene.source_kind != "image" or scene.catalog_complete
@@ -97,6 +97,28 @@ def artifact_from_model(model, document_id):
         floor_ids = {f.id for f in scene.floors}
         if len(floor_ids) != len(scene.floors):
             raise ValueError("Duplicate floor identity")
+        if manifest.version >= 4:
+            from .identities import expected_registry,frame_signature
+            expected=expected_registry(manifest.description,manifest.artifact_id)
+            registry=manifest.identity_registry
+            if (registry.get("version")!=1 or registry.get("objects")!=expected
+                    or set(expected)!={e.id for e in scene.elements}|floor_ids):
+                raise ValueError("Identity registry disagrees with description and actual inventory")
+            tombstones=registry.get("tombstones",[])
+            if (len(tombstones)!=len(set(tombstones)) or set(tombstones)&set(expected)
+                    or any(not isinstance(i,str) or not GLOBAL_ID.fullmatch(i)for i in tombstones)):
+                raise ValueError("Invalid or reassigned deleted identity")
+            if set(manifest.frame_registry)!=floor_ids:
+                raise ValueError("Incomplete source frame registry")
+            if any(expected[e.id]["floor_id"]!=e.storey_id for e in scene.elements):
+                raise ValueError("Identity registry assigns an object to another floor")
+            for description,floor in zip(manifest.description.floors,scene.floors,strict=True):
+                saved=manifest.frame_registry[floor.id]
+                if ((description.persistent_id and description.persistent_id!=floor.id)
+                        or saved.get("transform")!=floor.transform or saved.get("signature")!=frame_signature(description)
+                        or saved.get("known")!=(floor.scale_status=="known") or saved.get("rotation")!=floor.rotation_degrees
+                        or saved.get("aligned")!=(floor.alignment_status=="supported")):
+                    raise ValueError("Source frame registry disagrees with original floor provenance")
         for floor in scene.floors:
             if floor.source.kind != "image" or floor.source.page not in page_ids:
                 raise ValueError("Floor missing original page")
@@ -131,7 +153,7 @@ def artifact_from_model(model, document_id):
                 "door": ("IfcDoor",), "window": ("IfcWindow",), "stairs": ("IfcStairFlight",),
                 "furniture": ("IfcFurnishingElement",), "fixture": ("IfcSanitaryTerminal", "IfcFurnishingElement", "IfcBuildingElementProxy"),
                 "other": ("IfcBuildingElementProxy",)}.get(element.kind, ())
-            if manifest.version == 3 and element.representation == "unresolved":
+            if manifest.version >= 3 and element.representation == "unresolved":
                 expected_types = (*expected_types, "IfcBuildingElementProxy")
                 if entity.Representation is not None:
                     raise ValueError("Unresolved item has fabricated geometry")
@@ -147,7 +169,7 @@ def artifact_from_model(model, document_id):
                     or json.loads(metadata["Assumptions"]) != [a.model_dump() for a in element.assumptions]
                     or metadata["EvidenceBasis"] != element.evidence_basis or metadata["Note"] != element.note):
                 raise ValueError("Element metadata disagrees with manifest")
-            if manifest.version == 3:
+            if manifest.version >= 3:
                 if (metadata.get("Representation") != element.representation
                         or metadata.get("SemanticType") != element.semantic_type
                         or metadata.get("Environment") != element.environment):

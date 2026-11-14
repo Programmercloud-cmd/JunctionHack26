@@ -135,6 +135,11 @@ class Scene(StrictModel):
     ifc_url: str | None = None
     layout: Literal["native", "schematic", "aligned"] = "native"
     comparison: list[PlanComparison] = Field(default_factory=list)
+    building_id: str | None = None
+    revision_id: str | None = None
+    parent_revision_id: str | None = None
+    revision_number: int = 0
+    review_status: str = "source_available"
 
     @model_validator(mode="after")
     def unique_ids(self):

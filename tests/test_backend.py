@@ -36,6 +36,8 @@ def evidence(page=1, bbox=None):
 
 
 class FakeProvider:
+    # This legacy fixture tests pre-review behavior; reviewed QA has dedicated fixtures.
+    legacy_fixture_without_review = True
     def __init__(self, decisions=("sufficient",), draft=None):
         self.decisions = iter(decisions)
         self.calls = []

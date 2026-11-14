@@ -170,9 +170,9 @@ def test_reconstruction_budgets_are_scoped_and_qa_budgets_unchanged(sdk_document
     assert endpoints[0].endswith(f"models/{provider.reconstruction_model}:generateContent")
     assert all(path.endswith(f"models/{provider.model}:generateContent") for path in endpoints[1:3])
     for index, (body, timeout) in enumerate(requests):
-        assert timeout["read"] == (150 if index == 0 else 45)
+        assert timeout["read"] == (300 if index == 0 else 45)
         if index < 3:
-            assert body["generationConfig"]["maxOutputTokens"] == (32768 if index == 0 else 8192)
+            assert body["generationConfig"]["maxOutputTokens"] == (65536 if index == 0 else 8192)
             assert "httpOptions" not in body["generationConfig"]
             if index == 0:
                 assert body["generationConfig"]["thinkingConfig"] == {"thinking_level": "HIGH"}

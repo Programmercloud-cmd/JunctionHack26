@@ -41,8 +41,9 @@ def test_whole_document_cached_scene_source_refs_and_assumption_separation(tmp_p
         assert client.get(path).json()==scene and provider.calls==[[1,2]]
         context=json.loads(source_context(app.state.documents.get(doc['document_id'])))
         assert len(context['objects'])==len(scene['elements']) and len(context['floors'])==2
-        assert set(context['objects'][0])=={'id','kind','name','page','bbox','floor_id'}
-        assert 'assumptions' not in json.dumps(context) and 'height' not in json.dumps(context)
+        assert context['source_kind']=='drawing' and context['objects'][0]['provenance']=='interpretation'
+        assert 'geometry' not in context['objects'][0] and 'properties' not in context['objects'][0]
+        assert all('assumptions' not in item and 'geometry' not in item for item in context['objects'])
         data=client.get(scene['ifc_url'])
         assert data.status_code==200 and data.content.startswith(b'ISO-10303-21;')
 
@@ -86,7 +87,8 @@ def test_partial_model_retains_source_and_omitted_room_cannot_highlight(tmp_path
         broken=next(e for e in doc.scene.elements if e.name=='Broken')
         assert broken.geometry is None and broken.representation=='unresolved'
         assert any('unresolved' in w.lower() for w in doc.scene.warnings)
-        assert 'Broken' not in source_context(doc)
+        indexed=next(e for e in json.loads(source_context(doc))['objects'] if e['name']=='Broken')
+        assert indexed['representation']=='unresolved' and indexed['provenance']=='interpretation'
         answer=DraftAnswer(status='answered',answer='Original source remains available.',evidence=[{'page':1,'bbox':[.1,.1,.5,.5],'label':'Broken','observation':'Broken room region'}],highlight_ids=['omitted-id'])
         assert validated_highlights(answer,doc)==[] and answer.evidence
         second=store.add(doc.ifc_bytes,'derived.ifc')

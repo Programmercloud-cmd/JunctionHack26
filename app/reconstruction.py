@@ -12,6 +12,9 @@ def reconstruct_scene(document, page_number, provider):
         raise reconstruction_error(error, "provider") from None
     try:
         description = BuildingDescription.model_validate(output)
+        from .revisions import normalize_views
+        from .identities import assign_identities
+        description = assign_identities(document, normalize_views(description))
         if not description.floors:
             raise DocumentError("No floor diagrams could be described confidently in the supplied pages. Source questions remain available.", 422)
     except Exception as error:
@@ -30,4 +33,5 @@ def reconstruct_scene(document, page_number, provider):
     except Exception as error:
         raise reconstruction_error(error, "artifact") from None
     document.ifc_bytes = data
+    document.description = description
     return scene

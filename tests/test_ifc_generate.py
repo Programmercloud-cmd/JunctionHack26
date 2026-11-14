@@ -78,11 +78,11 @@ def document(tmp_path):
     finally:store.close()
 
 
-def test_v3_exact_description_pixels_stable_ids_and_unscaled_semantics(document):
+def test_v4_exact_description_pixels_stable_ids_and_unscaled_semantics(document):
     d=description()
     model=ifcopenshell.file.from_string(generate_ifc(d,document).decode())
     artifact=manifest(model)
-    assert artifact.version==3 and artifact.description==d
+    assert artifact.version==4 and artifact.description==d
     assert model.by_type("IfcProject")[0].Description==ARTIFACT_MARKER
     assert model.by_type("IfcContextDependentUnit")[0].Name==DISPLAY_UNIT and not model.by_type("IfcSIUnit")
     assert artifact.scene.derived and artifact.scene.source_kind=="image" and not artifact.scene.catalog_complete

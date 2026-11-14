@@ -3,10 +3,11 @@ from typing import Literal
 from .schemas import StrictModel
 from .scene import Scene
 from .building import BuildingDescription
+from pydantic import Field
 
 PSET_NAME = "Pset_BlueprintQA"
 MANIFEST_PROPERTY = "Manifest"
-ARTIFACT_MARKER = "BlueprintQA::DrawingDerived:v3"
+ARTIFACT_MARKER = "BlueprintQA::DrawingDerived:v4"
 DISPLAY_UNIT = "UNSCALED_DISPLAY_UNIT"
 
 
@@ -19,9 +20,11 @@ class EmbeddedPage(StrictModel):
 
 
 class ArtifactManifest(StrictModel):
-    version: Literal[2, 3] = 3
+    version: Literal[2, 3, 4] = 4
     artifact_id: str
     source_filename: str
     pages: list[EmbeddedPage]
     scene: Scene
     description: BuildingDescription | None = None
+    identity_registry: dict = Field(default_factory=dict)
+    frame_registry: dict = Field(default_factory=dict)
