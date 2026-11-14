@@ -1,0 +1,25 @@
+[70] tool exec call: text(await tools.apply_patch("*** Begin Patch\n*** Update File: /home/jcb/dev/github/JunctionHack26/app/provider.py\n@@\n-    def _generate(self, document, question, instruction, schema, crop=None, *, max_output_tokens=8192, timeout_ms=None, thinking_level=None):\n+    def _generate(self, document, question, instruction, schema, crop=None, *, thinking_level=None):\n@@\n-                                               max_output_tokens=max_output_tokens,\n-                                               http_options=types.HttpOptions(timeout=timeout_ms) if timeout_ms is not None else None,\n+                                               max_output_tokens=8192,\n@@\n-                              max_output_tokens=16384, timeout_ms=120000, thinking_level=\"low\")\n+                              thinking_level=\"low\")\n*** Update File: /home/jcb/dev/github/JunctionHack26/tests/test_gemini_schema.py\n@@\n-def test_reconstruction_budget_timeout_and_thinking_do_not_leak_to_other_stages(sdk_document):\n+def test_reconstruction_thinking_is_scoped_and_original_budgets_unchanged(sdk_document):\n@@\n-        assert timeout[\"read\"] == (120 if index == 0 else 45)\n+        assert timeout[\"read\"] == 45\n@@\n-            assert body[\"generationConfig\"][\"maxOutputTokens\"] == (16384 if index == 0 else 8192)\n+            assert body[\"generationConfig\"][\"maxOutputTokens\"] == 8192\n*** End Patch"));
+text(await tools.exec_command({cmd:".venv/bin/python -m pytest tests/test_gemini_schema.py tests/test_backend.py tests/test_reconstruction.py -q",sandbox_permissions:"require_escalated",justification:"Verify the final minimal Gemini fix preserves all original budgets and applies low thinking only to reconstruction.",max_output_tokens:2500,yield_time_ms:1000}));
+
+[71] tool exec result: Script completed
+Wall time 8.4 seconds
+Output:
+
+{}
+{"chunk_id":"1a6a73","wall_time_seconds":1.000848475,"session_id":12448,"original_token_count":0,"output":""}
+
+[72] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[73] tool exec call: text(await tools.write_stdin({session_id:12448,chars:"",yield_time_ms:1000,max_output_tokens:2500}));
+
+[74] tool exec result: Script completed
+Wall time 1.7 seconds
+Output:
+
+{"chunk_id":"c16ff8","wall_time_seconds":1.718209127,"exit_code":0,"original_token_count":25,"output":"......................................................                   [100%]\n54 passed in 6.32s\n"}
+
+[75] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[76] assistant: Final patch keeps original **8,192-token / 45-second limits** and applies low thinking only to reconstruction. Schema compatibility and truncated-response rejection remain.
+
+Focused regressions: **54 passed**. Root owns final live verification.
