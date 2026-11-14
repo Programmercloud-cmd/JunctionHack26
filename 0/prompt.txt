@@ -1,0 +1,5 @@
+[343] tool send_message call: {"target":"voice_backend","message":"REDACTED"}
+
+[344] tool send_message call: {"target":"voice_reviewer","message":"REDACTED"}
+
+[345] assistant: Review found a measurement-preservation bug: punctuation cleanup could turn `.5 m` into `5 m`. It also found citation rules that could remove an ordinary step number or bracketed value. Those are blockers, and I’m having them corrected before accepting the change.
