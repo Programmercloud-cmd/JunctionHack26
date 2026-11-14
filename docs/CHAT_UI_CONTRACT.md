@@ -10,6 +10,8 @@ Capture and deep-copy workspace synchronously at submit; pause timer before awai
 
 Response echoes `request_id,document_id,revision_id,geometry_revision_id,navigation_epoch` and adds `{status:"ready|clarification",actions:[],message,clarification:null|{message,suggestions:[]},usage:{}}`. Message is a deterministic operation summary; factual output only comes from reviewed QA. Clarification concerns intent, never the evidence-sufficiency gate. Operational errors retain existing safe HTTP detail format; 409 means stale context. One selected-provider structured call, existing timeout/output budget, no retry/fallback. Known compact actions execute locally without interpretation.
 
+Provider transport uses `WireChatIntent`: one action-type enum with nullable typed fields. Null fields are removed before strict operation-specific validation; unrelated non-null fields fail rather than being silently discarded. This avoids the broad-union branch ambiguity observed in live Gemini source navigation without changing the public action contract or provider implementation.
+
 ## Typed actions
 
 Every action has a literal `type`. Optional keys below default to null/empty. Unknown types/keys and invalid references fail validation.
@@ -43,6 +45,8 @@ Every action has a literal `type`. Optional keys below default to null/empty. Un
 | `help` | Compact examples and available operations in chat. |
 
 Model selectors resolve exact saved IDs/labels/kinds/floors in code. Duplicate labels clarify. Saved modeled-window selection reports coverage as modeled records, not all real/source windows. Source boxes are copied unchanged; never synthesized tighter boxes. Focused removed objects retain old source evidence, but persistent edits must target current surviving identities. No nearest-object or list-index substitution.
+
+Persistent numeric edits must be explicitly attributed to an adjacent quantity/unit pair in the submitted message (digits and common English number words are supported). Calibration requires explicit normalized original-page endpoints; the navigation catalog cannot establish them. Unsupported phrasing clarifies. Any supplied edit source must exactly match a scoped saved source region. Existing attributed-input validation and review remain the final mutation authority.
 
 Execute actions in order, stopping dependent actions on failure. A deferred selector waits for the explicitly requested reconstruction, then resolves using actual new scene records and checks the request/document/navigation epoch. Partial preview and failed review are reported honestly; no automatic extra reconstruction loop. Revision replacements use existing atomic viewer swap; revalidate tour IDs and pause/report lost targets. Source mode retains ordered IDs/index and model camera so back/next advances exactly once.
 
