@@ -468,7 +468,8 @@ class JobRunner:
             def progress(phase):
                 self._check(identity,float("inf"))
                 self._update(identity,status="running",phase=phase,message=phase)
-            answer=ask(snapshot,question,provider,progress=progress)
+            from .voice_format import with_spoken_answers
+            answer=with_spoken_answers(ask(snapshot,question,provider,progress=progress), question)
             self._check(identity,float("inf"))
             displayed=self.store.get(snapshot.id)
             answer.building_id=snapshot.id;answer.answered_revision_id=snapshot.revision_id

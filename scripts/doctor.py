@@ -6,7 +6,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 print(f"Python: {sys.version.split()[0]}")
 missing = []
-for name in ("fastapi", "uvicorn", "google-genai", "openai", "pillow", "pypdfium2", "ifcopenshell", "shapely", "pytest"):
+for name in ("fastapi", "uvicorn", "google-genai", "elevenlabs", "openai", "pillow", "pypdfium2", "ifcopenshell", "shapely", "pytest"):
     try:
         print(f"{name}: {version(name)}")
     except PackageNotFoundError:
@@ -19,6 +19,8 @@ try:
     print("Selected provider: " + os.getenv("AI_PROVIDER", "gemini"))
     print("Gemini credential: " + ("configured (not verified)" if os.getenv("GEMINI_API_KEY") else "missing"))
     print("OpenAI credential: " + ("configured (not verified)" if os.getenv("OPENAI_API_KEY") else "missing"))
+    print("ElevenLabs credential: " + ("configured (not verified)" if os.getenv("ELEVENLABS_API_KEY") else "missing"))
+    print("ElevenLabs voice: " + ("configured (not verified)" if os.getenv("ELEVENLABS_VOICE_ID") else "missing"))
 except ImportError:
     print("Configuration check unavailable; run bash scripts/bootstrap.sh")
 raise SystemExit(bool(missing))

@@ -101,3 +101,7 @@ OpenAI references: [structured outputs](https://developers.openai.com/api/docs/g
 ## Separate VQA experiment
 
 The upstream VQA experiment is preserved in `VQA/`. Its [original upstream documentation](VQA/README.md) is retained verbatim and includes historical `backend/` paths; use the instructions above for this application. The experiment is not wired into the application provider pipeline.
+
+## Voice interaction
+
+Use optional Gemini Live transcription to draft an editable question and ElevenLabs to read grounded answers aloud. See [voice setup](docs/VOICE.md).

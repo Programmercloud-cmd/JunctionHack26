@@ -167,6 +167,8 @@ class Answer(StrictModel):
     review_note: str = ""
     calculation_results: list[dict] = Field(default_factory=list)
     clarification: Clarification | None = None
+    spoken_answer: str | None = None
+    spoken_answer_with_details: str | None = None
     resolved_question: str | None = None
     support_summary: str = ""
     user_value_evidence: list[str] = Field(default_factory=list)

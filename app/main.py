@@ -39,7 +39,8 @@ class ExtractionRequest(StrictModel):
     retry: bool = True
 
 
-def create_app(*, provider_factory=create_provider, storage_root=None):
+def create_app(*, provider_factory=create_provider, storage_root=None,
+               transcription_factory=None, speech_factory=None):
     @asynccontextmanager
     async def lifespan(application):
         application.state.documents = BuildingStore(Path(storage_root or os.getenv("BLUEPRINT_STORAGE_ROOT") or ROOT / ".runtime"))
@@ -228,7 +229,8 @@ def create_app(*, provider_factory=create_provider, storage_root=None):
                 answer.highlight_ids = validated_highlights(answer, latest)
                 answer.review_note += " Building updated while answering; highlights were rechecked and original citations retained."
             application.state.documents.append_conversation(document.id,assistant_message(document,answer,reply_to=message["id"]))
-            return answer
+            from .voice_format import with_spoken_answers
+            return with_spoken_answers(answer, request.question)
         except (DocumentError, ProviderError) as error:
             raise HTTPException(error.status, error.message) from None
         finally:
@@ -272,6 +274,8 @@ def create_app(*, provider_factory=create_provider, storage_root=None):
         except DocumentError as error:
             raise HTTPException(error.status, error.message) from None
 
+    from .voice import attach_voice_routes
+    attach_voice_routes(application, transcription_factory=transcription_factory, speech_factory=speech_factory)
     return application
 
 

@@ -2,21 +2,23 @@
 
 const $ = (id) => document.getElementById(id);
 const state = { document: null, pageIndex: 0, selectedEvidence: null, sourceSelection: null, result: null, busy: null, providerReady: false, health: null, requestVersion: 0, scene: null, viewer: null, selectedElement: null, selectedComparison: null, view: "drawing", epoch:0, jobs:[], savedBuildings:[], pollTimer:null, pollingEpoch:null, questionRequest:null, askSubmitting:false, reconstructionSubmitting:false, uploadMode:"new", conversation:[], clarificationReply:null, assumptionRows:[], assumptionEdits:new Map(), evidenceRevision:null };
+let voice = null;
 const suggestions = Array.from(document.querySelectorAll("[data-question]"));
 
 function announce(message) { $("announcer").textContent = message; }
 function setError(id, message = "") { $(id).textContent = message; $(id).hidden = !message; }
 function updateControls() {
   const busy = Boolean(state.busy);
+  const recording = Boolean(voice?.recording);
   $("file-input").disabled = busy;
   $("upload-label").disabled = busy;
   $("append-sources").disabled=busy||!state.document;
   $("retry-extraction").disabled=busy||!state.document||!state.providerReady;
   $("upload-label").classList.toggle("is-disabled", busy);
   $("drop-zone").setAttribute("aria-disabled", String(busy));
-  $("question").disabled = !state.document || busy;
-  suggestions.forEach((button) => { button.disabled = !state.document || busy; });
-  $("ask-button").disabled = !state.document || !state.providerReady || busy || state.askSubmitting || !$("question").value.trim();
+  $("question").disabled = !state.document || busy || recording;
+  suggestions.forEach((button) => { button.disabled = !state.document || busy || recording; });
+  $("ask-button").disabled = !state.document || !state.providerReady || busy || recording || state.askSubmitting || !$("question").value.trim();
   $("ask-label").textContent = state.busy === "ask" ? "Inspecting drawing…" : "Ask the drawing";
   $("upload-progress").hidden = state.busy !== "upload";
   $("ask-progress").hidden = state.busy !== "ask" && !state.questionRequest?.pending;
@@ -37,6 +39,7 @@ function updateControls() {
   $("show-concept").disabled = !state.viewer || !state.scene?.elements.some(e=>e.geometry);
   $("show-drawing").hidden = state.document?.kind === "ifc";
   $("scene-progress").hidden = state.busy !== "scene";
+  voice?.syncControls();
 }
 
 async function request(path, options = {}, timeout = 180000) {
@@ -89,6 +92,7 @@ async function checkHealth() {
 }
 
 function resetAnswer() {
+  voice?.stopSpeech(false);
   state.nativeEvidenceToken=(state.nativeEvidenceToken || 0)+1;$("native-record-inspector").hidden=true;
   state.result = null;
   state.selectedEvidence = null;
@@ -109,6 +113,7 @@ async function uploadFile(input, append = false) {
     if(file.size>maxMB*1024*1024){setError("upload-error",`${file.name} exceeds the ${maxMB} MB per-file limit.`);return;}
     if(!/\.(jpe?g|png|pdf|ifc|svg|dxf|dwg)$/i.test(file.name)){setError("upload-error","Choose JPG, PNG, PDF, SVG, DXF or IFC. DWG needs an available converter.");return;}
   }
+  voice?.cancelAll();
   state.busy="upload";const version=++state.requestVersion;updateControls();
   const form=new FormData();for(const file of files)form.append("files",file);
   const path=append&&state.document?`/api/buildings/${state.document.building_id}/sources`:"/api/documents";
@@ -145,7 +150,7 @@ async function refreshSavedBuildings() {
 }
 async function activateDocument(result) {
   clearTimeout(state.pollTimer);state.epoch++;state.jobs=result.jobs || [];state.questionRequest=null;state.askSubmitting=false;state.reconstructionSubmitting=false;
-  clearScene();state.document=result;state.pageIndex=0;state.conversation=[];state.clarificationReply=null;state.assumptionEdits.clear();state.evidenceRevision=null;resetAnswer();setError("building-poll-error");
+  clearScene();state.document=result;voice?.newDocument(result.document_id);state.pageIndex=0;state.conversation=[];state.clarificationReply=null;state.assumptionEdits.clear();state.evidenceRevision=null;resetAnswer();setError("building-poll-error");
   $("filename").textContent=result.filename;$("filename").title=result.filename;
   $("page-count").textContent=result.kind==="ifc"?"IFC model":`${result.pages.length} ${result.pages.length===1?"page":"pages"}`;
   $("document-warnings").textContent=(result.warnings || []).join(" ");$("document-warnings").hidden=!$("document-warnings").textContent;
@@ -166,6 +171,7 @@ async function activateDocument(result) {
 async function openBuilding(id) {
   if(!id||state.busy)return;
   if(id===state.document?.building_id){await refreshBuilding();return;}
+  voice?.cancelAll();
   state.busy="upload";const version=++state.requestVersion;updateControls();setError("upload-error");
   try{const result=await request(`/api/buildings/${id}`);if(version===state.requestVersion){await activateDocument(result);announce(`Opened saved building ${result.filename}. No new reconstruction was started.`);}}
   catch(error){if(version===state.requestVersion)setError("upload-error",error.message);}
@@ -236,7 +242,7 @@ function renderJobs() {
     $("ask-progress-label").textContent=question.message || "Inspecting the source";
     if(terminalJob(question)){
       state.questionRequest.pending=false;
-      if(question.status==="complete"&&question.answer){renderResult(question.answer,true);refreshConversation();}
+      if(question.status==="complete"&&question.answer){renderResult(question.answer,true);voice?.answerReady();refreshConversation();}
       else{setError("ask-error",question.message || "Question stopped without a confirmed answer.");$("answer-empty").hidden=false;}
     }
   }
@@ -357,7 +363,9 @@ function answerForDisplayedRevision(result) {
 }
 function renderResult(result, preserveView = false) {
   result=answerForDisplayedRevision(result);
+  voice?.stopSpeech(false);
   state.result = result;
+  updateControls();
   state.selectedEvidence = null;
   state.sourceSelection = null;
   $("answer-empty").hidden = true;
@@ -520,6 +528,7 @@ async function loadScene(scene) {
   let prepared=null;
   if(updating){try{prepared=state.viewer.prepareRevision(scene);state.viewer.commitRevision(prepared);}catch(error){setError("scene-error","The model update could not be published. The previous usable revision remains available.");return;}}
   state.scene = scene;
+  voice?.refreshVocabulary();
   const unscaled = scene.units !== "m" || (scene.floors || []).some((floor) => floor.scale_status !== "known");
   $("scene-badge").textContent = unscaled ? "Approximate · unscaled" : scene.derived ? "Calibrated footprints · assumed heights" : "IFC geometry · metres";
   $("scene-badge").classList.toggle("unscaled", unscaled);
@@ -1127,7 +1136,9 @@ $("element-source").addEventListener("click", () => {
 $("question-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const question=$("question").value.trim();
-  if(!question||!state.document||state.busy||state.askSubmitting||!state.providerReady)return;
+  if(!question||!state.document||state.busy||state.askSubmitting||!state.providerReady||voice?.recording)return;
+  voice?.cancelAll();
+  voice?.questionSubmitted(question);
   resetAnswer();$("answer-empty").hidden=true;
   const epoch=state.epoch,building=state.document.document_id;
   if(state.document.building_id&&state.document.revision_id){
@@ -1140,7 +1151,7 @@ $("question-form").addEventListener("submit", async (event) => {
     return;
   }
   state.busy="ask";const version=++state.requestVersion;updateControls();
-  try{const result=await request("/api/ask",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({document_id:building,question})});if(version===state.requestVersion)renderResult(result);}
+  try{const result=await request("/api/ask",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({document_id:building,question})});if(version===state.requestVersion){renderResult(result);voice?.answerReady();}}
   catch(error){if(version===state.requestVersion){setError("ask-error",error.message);$("answer-empty").hidden=false;announce("The request failed. No answer was confirmed.");}}
   finally{state.busy=null;updateControls();}
 });
@@ -1163,6 +1174,7 @@ $("zoom").addEventListener("change", () => { $("image-stage").style.width = `${N
 $("page-image").addEventListener("error", () => setError("upload-error", "The drawing preview could not be loaded. Try uploading the file again."));
 $("page-image").addEventListener("load", renderOverlay);
 $("refresh-health").addEventListener("click", checkHealth);
+voice = new window.BlueprintVoice({state: () => state, request, updateControls});
 updateControls();
 checkHealth();
 refreshSavedBuildings();

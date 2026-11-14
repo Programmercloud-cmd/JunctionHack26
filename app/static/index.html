@@ -7,6 +7,7 @@
   <title>Blueprint QA — Ask the drawing</title>
   <link rel="stylesheet" href="/static/styles.css">
   <script type="importmap">{"imports":{"three":"/static/vendor/three/three.module.js"}}</script>
+  <script src="/static/voice.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
@@ -96,6 +97,29 @@
           <label for="question">What would you like to know?</label>
           <textarea id="question" rows="3" maxlength="2000" placeholder="What labeled spaces are shown on this drawing?" required disabled aria-describedby="question-help"></textarea>
           <div class="question-meta"><span id="question-help">Upload a drawing to get started.</span><span id="character-count">0 / 2000</span></div>
+          <div class="voice-panel" aria-label="Voice question controls">
+            <div class="voice-actions"><button id="voice-record" type="button" class="secondary-button" disabled>Speak question</button><button id="voice-stop-recording" type="button" class="secondary-button" hidden>Stop recording</button><button id="voice-cancel" type="button" class="text-button" hidden>Cancel</button></div>
+            <p id="voice-status" role="status" aria-live="polite" data-state="idle">Upload a drawing to use voice.</p>
+            <p class="voice-help">Speak, stop, review the transcript, then ask. Audio is sent to Google while recording.</p>
+            <div id="voice-error" class="error-message" role="alert" hidden></div>
+            <details id="voice-original" hidden><summary>Original transcription</summary><p id="voice-original-text"></p></details>
+            <p id="voice-alias-preview" class="voice-help" hidden></p>
+            <details id="voice-vocabulary"><summary>Room names and vocabulary</summary>
+              <p id="voice-vocabulary-note" class="voice-help">Room names become available when a building model is loaded.</p>
+              <p id="voice-building-terms" class="voice-building-terms"></p>
+              <label for="voice-custom-terms">Additional words or names · one per line</label><textarea id="voice-custom-terms" rows="2" placeholder="Talotekniikka&#10;B-204" disabled></textarea>
+              <p class="voice-help">Names help recognition; they are not evidence about the building.</p>
+              <div class="voice-alias-fields"><label for="voice-alias-name">Easy phrase<input id="voice-alias-name" type="text" placeholder="plant room" disabled></label><label for="voice-alias-target">Room on the plan<select id="voice-alias-target" disabled><option value="">Choose a room…</option></select></label></div>
+              <button id="voice-add-alias" type="button" class="secondary-button" disabled>Add room alias</button>
+              <ul id="voice-alias-list" class="voice-alias-list"></ul>
+              <button id="voice-apply-aliases" type="button" class="text-button" disabled>Preview aliases in question</button>
+              <p class="voice-help">Aliases are kept for this document in this tab. Review substitutions before asking.</p>
+            </details>
+            <div class="voice-playback"><label><input id="voice-auto-read" type="checkbox" disabled> Read answers aloud</label><label><input id="voice-technical-details" type="checkbox" disabled> Read technical details</label><button id="voice-read" type="button" class="text-button" disabled>Read answer</button><button id="voice-play" type="button" class="secondary-button" hidden>Play audio</button><button id="voice-stop-speech" type="button" class="text-button" hidden>Stop audio</button></div>
+            <p class="voice-help">Spoken answers keep the conclusion and limitations. Technical evidence remains on screen.</p>
+            <p id="voice-speech-unavailable" class="voice-help" role="status" hidden>Spoken answer preparation is unavailable. The written answer and evidence remain on screen.</p>
+            <p id="voice-setup" class="voice-help">Checking voice setup…</p><button id="voice-refresh" type="button" class="text-button">Check voice setup</button>
+          </div>
           <div class="suggestions" aria-label="Example questions"><button type="button" data-question="What labeled spaces are shown on this drawing?" disabled>Identify spaces</button><button type="button" data-question="What dimensions are explicitly shown?" disabled>Inspect dimensions</button><button type="button" data-question="What is the ceiling height?" disabled>Check ceiling height</button></div>
           <button id="ask-button" type="submit" class="primary-button" disabled><span id="ask-label">Ask the drawing</span><span aria-hidden="true">↗</span></button>
         </form>
