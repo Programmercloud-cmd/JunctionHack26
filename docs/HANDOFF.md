@@ -1,3 +1,13 @@
+# Public deployment checkpoint — 2026-11-14
+
+Public HTTPS: https://95.133.254.90.sslip.io, Verda CPU release `a470a11`, nine immutable cached examples, shared-code QA/uploads/private work. Code is only in the operator's local `/tmp/junction-verda/private-deployment/demo-access-code.txt`; never print or commit it. Read [PUBLIC_DEMO_RESULTS.md](PUBLIC_DEMO_RESULTS.md) and [VERDA_DEPLOYMENT.md](VERDA_DEPLOYMENT.md) for exact verification, resource IDs, export/rollback/manual teardown and known gaps. No push.
+
+Independent public browser review passed all nine orbit/source/floor/assumption/overlay flows, trusted TLS and access guards. Live Gemini supported1794/1732 QA and11397 original-height refusal passed. Fresh1732 source interpretation and source-only QA survived refresh; geometry produced a partial preview whose correction was rejected, retaining the usable model. Its actual IFC export/reimport and identical original reupload preserved provenance and unscaled assumptions without inference. A server restart preserved516files, five jobs and11bundles; browser reopening worked without inference, while only nine examples remain public. Full browser-enabled tests760passed/one optional skipped; doctor passed.
+
+Separate UI corrective work is coordinated in `/tmp/junction-ui-coordination.md`; it owns isolated routing/controller/viewer presentation changes, while root retains reconstruction, QA, validation, refinement, public access and deployment. Current deployed UI still has a stale retained-preview header, pending-model note and duplicated restored QA card (one persisted answer, no extra inference). These precise findings are assigned to that corrective worktree. Some separate local live count/tour attempts timed out at different provider stages; do not claim those passed or infer insufficiency. Pending corrective changes are not yet deployed. Earlier church full geometry recovery remains unachieved; deployment success does not complete that fidelity objective.
+
+---
+
 # Revision reliability and public demo checkpoint —2026-11-14
 
 Read [REVISION_RELIABILITY_RESULTS.md](REVISION_RELIABILITY_RESULTS.md) for current live recovery evidence.3181 host repair and34/11397 attributed-height recovery passed live and independent browser/source/IFC review. The unseen10262 workflow passed with an explicit loft-as-floor fidelity gap. Church metadata recovery works in an offline control, but its full live batches still fail strict geometry checks; do not claim that recovery complete. Old failures, usable revisions, source-only refusals and portable assumptions are preserved.
