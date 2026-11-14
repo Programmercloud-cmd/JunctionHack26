@@ -1,0 +1,33 @@
+[71] tool send_message call: {"target":"backend","message":"REDACTED"}
+
+[72] assistant: Agent message from /root/plan_review:
+Message Type: FINAL_ANSWER
+Task name: /root
+Sender: /root/plan_review
+Payload:
+Plan fits the hackathon scope. Three decisions need tightening before implementation:
+
+1. **Define the unclear path concretely.** Decisions cannot generate crop instructions. Use either a bounded Gemini crop-selection call or a genuinely higher-resolution rendering, then rerun the single gate. Set an explicit maximum of two gate calls, one optional inspection-planning call, and one answer call. Preserve crop-to-original-page coordinates.
+2. **Make calculation checking implementable.** The contract promises checked calculations without representing operands or formulas. Add a small optional calculation structure with source-linked operands and a restricted operation set, or defer derived numerical answers. Prompt instructions alone do not check arithmetic.
+3. **Specify status precedence.** An insufficient/unclear gate cannot produce `answered`; a sufficient gate may still produce a limitation. Invalid provider schemas are operational errors. Missing or invalid references must never be silently accepted as factual evidence.
+
+Recommended acceptance tests:
+
+| Case | Expected result |
+|---|---|
+| Clear room count with valid source regions | `answered`, references highlight matching original pages |
+| Zero visible instances | May answer zero using the complete inspected region; do not require a detected object |
+| Missing ceiling height | `insufficient`, scoped to inspected pages, no asserted default height |
+| Unclear first pass, sufficient after crop | Exactly one additional inspection, then answer |
+| Unclear after second pass | Remains `unclear`; no unbounded retry |
+| Negative gate followed by confident generated answer | Final response cannot be `answered` |
+| Positive gate followed by missing evidence | Honest limitation or operational validation failure; no uncited answer |
+| Citation refers to a missing page or invalid rectangle | Reject reference; never render outside source bounds |
+| Provider timeout, malformed response, or missing credential | Actionable 502/503; never label as insufficient evidence |
+| JPG with EXIF rotation or PDF page rotation | Display and provider input use the same orientation |
+| Six-page PDF or oversized upload | Explicit rejection; no silent partial inspection |
+| New upload while old request is pending | Old result cannot appear associated with the new document |
+
+Two practical constraints belong in implementation: cap decoded/rendered pixel dimensions as well as upload bytes, and test a citation on page 2 to catch page-index and overlay mistakes.
+
+The API’s `provider_ready` flag should be presented as “configured,” not “connected,” until a live request succeeds. Synthetic provider tests establish workflow behavior only; they cannot establish the gate’s factual reliability.
