@@ -1,0 +1,1 @@
+[150] tool send_message call: {"target":"backend","message":"REDACTED"}
