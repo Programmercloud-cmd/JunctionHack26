@@ -1,0 +1,28 @@
+[300] assistant: Agent message from /root/voice_reviewer:
+Message Type: FINAL_ANSWER
+Task name: /root
+Sender: /root/voice_reviewer
+Payload:
+Revised speech-formatting plan accepted with no remaining blockers.
+
+Required preservation rule: spoken output retains every missing-information entry and next action, even when their wording overlaps the answer. Metadata removal stays narrow; ordinary measurements, window labels, uncertainty, and unrecognized prose remain intact.
+
+[301] assistant: Agent message from /root/voice_planner:
+Message Type: FINAL_ANSWER
+Task name: /root
+Sender: /root/voice_planner
+Payload:
+Revised spoken-answer plan accepted by independent reviewer; no planning blockers.
+
+- Compute `spoken_answer` and `spoken_answer_with_details` after validated answers and calculations.
+- Preserve written answer, evidence, and highlights unchanged.
+- Remove narrowly recognized technical metadata; retain measurements, ordinary window labels, and every uncertainty qualifier.
+- Always append labelled missing-information and next-action text. Never suppress missing information merely because its words appear in the answer.
+- Preserve generic `[1]` unless its context establishes a citation.
+- Honor explicitly requested metadata categories; a “Read technical details” option selects the complete variant.
+- Keep separate proposals written-only; preserve proposal qualifications already in the main answer.
+- Verify exact speech payloads and adversarial uncertainty cases with deterministic and browser tests; no additional inference call.
+
+[302] tool followup_task call: {"target":"voice_backend","message":"REDACTED"}
+
+[303] tool followup_task call: {"target":"voice_frontend","message":"REDACTED"}
