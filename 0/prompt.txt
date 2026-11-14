@@ -1,0 +1,7 @@
+[293] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[294] tool send_message call: {"target":"/root/backend","message":"REDACTED"}
+
+[295] assistant: Plan approved. Use safe, stable error categories and random correlation IDs in existing logs.
+
+Schema paths must exclude unexpected model-supplied field names. Test that source text and credential canaries never appear in logs or responses. Preserve existing error semantics; make functional changes only after capturing the failure.
