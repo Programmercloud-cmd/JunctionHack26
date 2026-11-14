@@ -1,3 +1,5 @@
+/junction-dataset/
+/junction-dataset-preview/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -151,6 +153,14 @@ activemq-data/
 
 # Environments
 .env
+/backend/.gemini_api_key
+/backend/api_key.json
+/backend/.qwen-cache/
+/backend/api_keys.json
+/apikeys.txt
+/output/blueprint-debug-*/
+reasoning.txt
+count_result.png
 .envrc
 .venv
 env/
