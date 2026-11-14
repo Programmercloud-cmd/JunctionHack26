@@ -6,6 +6,12 @@ V3 implements explicit physical boundaries, real wall-hosted openings, indoor/ou
 
 Read [RECONSTRUCTION_V3_PLAN.md](RECONSTRUCTION_V3_PLAN.md), [RECONSTRUCTION_V3_CONTRACT.md](RECONSTRUCTION_V3_CONTRACT.md) and [RECONSTRUCTION_V3_DIAGNOSIS.md](RECONSTRUCTION_V3_DIAGNOSIS.md). V2 verification is historical. The user now explicitly requests suitable progress commits; no pushes or deployment. No new dependencies or services.
 
+## Latest Hydrogen model-only experiment
+
+**Hydrogen was not adopted.** See [HYDROGEN_COMPARISON.md](HYDROGEN_COMPARISON.md) for the reviewed live experiment and source comparisons. Existing configurable reconstruction default remains `gemini-3.1-pro-preview`; no prompt, schema, source-image, generator or UI change was made. On unchanged 1794, Hydrogen fixed the broad kitchen/bath strip, balcony-crossing wall and sink/hob classification, but introduced a one-point bathroom wall (and lost its hosted door) plus a bogus empty floor. Independent reviewer directly interacted with baseline and new IFCs in Chromium and inspected source overlays.
+
+11397 exhausted the unchanged 32,768-token budget. One separately recorded, pre-explained 65,536-token probe kept all other settings and hit the 150-second deadline. No accepted new 11397 description or IFC exists; its fidelity remains uncertain, not worse or insufficient. Artifacts/metadata are under `/tmp/junction-hydrogen-20261114-9_yxhyez/`. Saved baselines are untouched, no fallback/repair loop was added, and no further provider calls are queued.
+
 ## Latest wall and schematic fidelity iteration
 
 See [SCHEMATIC_FIDELITY_PLAN.md](SCHEMATIC_FIDELITY_PLAN.md) and [SCHEMATIC_FIDELITY_RESULTS.md](SCHEMATIC_FIDELITY_RESULTS.md). Replayed exact saved descriptions with unchanged originals, no new Gemini call. Source-plane signed wall bands retain depicted face placement and relative width, including five previously discarded 11397 thicknesses. Supported contacts now meet without endpoint snapping; opening projection survives rotation and voids cut the actual band. Independent wall review checkpoint: `db5988a`.
