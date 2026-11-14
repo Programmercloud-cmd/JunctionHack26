@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#123b36">
+  <title>Blueprint QA — Ask the drawing</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script type="importmap">{"imports":{"three":"/static/vendor/three/three.module.js"}}</script>
+  <script src="/static/voice.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Blueprint QA home"><span class="brand-mark" aria-hidden="true">B<span>Q</span></span><span>Blueprint <strong>QA</strong></span></a>
+    <div class="environment"><span class="status-dot" aria-hidden="true"></span> LOCAL WORKSPACE</div>
+  </header>
+
+  <main>
+    <div class="intro">
+      <div><p class="eyebrow">MAKE BLUEPRINTS TALK</p><h1>Ask the drawing.<br><span>See what supports the answer.</span></h1></div>
+      <p class="intro-note">A floor plan, a question, and a clear trail back to the source. Missing information stays visible.</p>
+    </div>
+
+    <div id="provider-banner" class="notice setup-notice" role="status" hidden>
+      <div><strong id="provider-title">Checking connection</strong><p id="provider-message"></p></div>
+      <button id="refresh-health" type="button" class="text-button">Check again</button>
+    </div>
+
+    <div class="workspace">
+      <section class="source-panel panel" aria-labelledby="source-heading">
+        <div class="panel-heading"><div><span class="step">01</span><h2 id="source-heading">Source drawing</h2></div><button type="button" class="secondary-button upload-label" id="upload-label">Choose file</button></div>
+        <input id="file-input" type="file" accept="image/jpeg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf,.ifc" class="file-input" aria-label="Upload a floor plan or IFC model">
+
+        <div id="drop-zone" class="drop-zone" tabindex="0" role="button" aria-label="Choose a JPG, PNG, PDF floor plan or IFC model. You can also drop a file here.">
+          <div class="plan-icon" aria-hidden="true"><span></span><i></i><b></b></div>
+          <h3>Your drawing starts here</h3>
+          <p>Drop a floor plan or IFC model, or <span class="link-look">choose a file</span></p>
+          <small id="upload-limits">JPG, PNG, PDF · 10 MB / 5 pages · IFC · 25 MB</small>
+        </div>
+
+        <div id="document-view" hidden>
+          <div class="document-bar"><div class="document-name"><span class="file-symbol" aria-hidden="true">▤</span><span id="filename"></span></div><span id="page-count" class="muted"></span></div>
+          <div id="document-warnings" class="document-warnings" hidden></div>
+          <div class="view-tabs"><button id="show-drawing" type="button" aria-pressed="true">Source drawing</button><button id="show-model" type="button" aria-pressed="false">3D model</button><button id="generate-scene" type="button" title="Inspect all uploaded pages and floor-plan panels">Generate building model ↗</button></div>
+          <div id="drawing-pane">
+          <div class="viewer-toolbar">
+            <div class="page-controls"><button id="previous-page" class="icon-button" type="button" aria-label="Previous page">←</button><span id="page-label" aria-live="polite">Page 1</span><button id="next-page" class="icon-button" type="button" aria-label="Next page">→</button></div>
+            <label class="zoom-control" for="zoom">View <select id="zoom"><option value="100">Fit width</option><option value="150">150%</option><option value="200">200%</option></select></label>
+          </div>
+          <div id="viewer" class="viewer" tabindex="0" aria-label="Drawing preview. Use left and right arrow keys to change pages.">
+            <div id="image-stage" class="image-stage"><img id="page-image" alt="Uploaded floor plan"><div id="evidence-overlay" class="evidence-overlay" aria-hidden="true" hidden><span id="overlay-number"></span></div></div>
+          </div>
+          <p id="viewer-caption" class="viewer-caption">Select an evidence reference to locate it on the drawing.</p>
+          </div>
+          <div id="model-pane" hidden>
+            <div class="model-toolbar"><span id="scene-badge" class="scene-badge"></span><button id="fit-model" type="button" class="secondary-button">Reset view</button></div>
+            <div id="floor-controls" class="floor-controls" hidden><label for="floor-select">Floor</label><select id="floor-select"><option value="">All floors</option></select><a id="download-ifc" class="secondary-button" hidden download>Download derived IFC ↗</a></div>
+            <div class="model-switches"><label><input type="checkbox" id="highlight-answer" checked> Highlight answer</label><label><input type="checkbox" id="show-assumptions"> Show assumptions</label><label id="explode-control" hidden><input type="checkbox" id="explode-floors"> Separate floors vertically</label></div>
+            <p id="layout-note" class="layout-note" hidden></p>
+            <div id="model-canvas-container" class="model-canvas-container"></div>
+            <p class="viewer-caption">Drag to orbit · scroll to zoom · right-drag to pan · click an object to inspect its source.</p>
+            <div id="floor-source-links" class="floor-source-links" aria-label="Original floor source regions" hidden></div>
+            <details id="floor-details" class="floor-details" hidden><summary>Floor observations and assumptions</summary><div id="floor-details-content"></div></details>
+            <p id="scene-summary" class="scene-summary"></p>
+            <p id="highlight-note" class="scene-summary" hidden></p>
+            <div id="scene-warnings" class="document-warnings" hidden></div>
+            <div class="element-picker"><label for="element-select">Inspect an element</label><select id="element-select"><option value="">Choose an element…</option></select></div>
+            <section id="element-inspector" class="element-inspector" hidden aria-label="Selected element source"><h3 id="element-name"></h3><p id="element-origin"></p><p id="element-geometry-note"></p><dl id="element-identity"></dl><h4>Source facts and derived values</h4><dl id="element-properties"></dl><div id="element-assumptions-section" hidden><h4>Assumptions · not source facts</h4><dl id="element-assumptions"></dl></div><button id="element-source" type="button" class="secondary-button" hidden>Show region in source drawing ↗</button></section>
+          </div>
+          <div id="scene-progress" class="inline-progress" role="status" hidden><span class="spinner" aria-hidden="true"></span><span id="scene-progress-text">Preparing model…</span></div>
+          <div id="scene-error" class="error-message panel-error" role="alert" hidden></div>
+        </div>
+        <div id="upload-progress" class="inline-progress" role="status" hidden><span class="spinner" aria-hidden="true"></span>Preparing your drawing…</div>
+        <div id="upload-error" class="error-message panel-error" role="alert" hidden></div>
+        <div class="source-footer"><span class="small-square" aria-hidden="true"></span><span>Original source first. Assumptions are never treated as facts.</span></div>
+      </section>
+
+      <section class="answer-panel panel" aria-labelledby="question-heading">
+        <div class="panel-heading"><div><span class="step">02</span><h2 id="question-heading">Ask a question</h2></div><span id="connection-label" class="connection-label">Checking setup…</span></div>
+        <form id="question-form" class="question-form">
+          <p id="provider-mode" class="document-warnings" hidden></p>
+          <label for="question">What would you like to know?</label>
+          <textarea id="question" rows="3" maxlength="2000" placeholder="How many bedrooms are shown on this floor plan?" required disabled aria-describedby="question-help"></textarea>
+          <div class="question-meta"><span id="question-help">Upload a drawing to get started.</span><span id="character-count">0 / 2000</span></div>
+          <div class="voice-panel" aria-label="Voice question controls">
+            <div class="voice-actions"><button id="voice-record" type="button" class="secondary-button" disabled>Speak question</button><button id="voice-stop-recording" type="button" class="secondary-button" hidden>Stop recording</button><button id="voice-cancel" type="button" class="text-button" hidden>Cancel</button></div>
+            <p id="voice-status" role="status" aria-live="polite" data-state="idle">Upload a drawing to use voice.</p>
+            <p class="voice-help">Speak, stop, review the transcript, then ask. Audio is sent to Google while recording.</p>
+            <div id="voice-error" class="error-message" role="alert" hidden></div>
+            <details id="voice-original" hidden><summary>Original transcription</summary><p id="voice-original-text"></p></details>
+            <p id="voice-alias-preview" class="voice-help" hidden></p>
+            <details id="voice-vocabulary"><summary>Room names and vocabulary</summary>
+              <p id="voice-vocabulary-note" class="voice-help">Room names become available when a building model is loaded.</p>
+              <p id="voice-building-terms" class="voice-building-terms"></p>
+              <label for="voice-custom-terms">Additional words or names · one per line</label><textarea id="voice-custom-terms" rows="2" placeholder="Talotekniikka&#10;B-204" disabled></textarea>
+              <p class="voice-help">Names help recognition; they are not evidence about the building.</p>
+              <div class="voice-alias-fields"><label for="voice-alias-name">Easy phrase<input id="voice-alias-name" type="text" placeholder="plant room" disabled></label><label for="voice-alias-target">Room on the plan<select id="voice-alias-target" disabled><option value="">Choose a room…</option></select></label></div>
+              <button id="voice-add-alias" type="button" class="secondary-button" disabled>Add room alias</button>
+              <ul id="voice-alias-list" class="voice-alias-list"></ul>
+              <button id="voice-apply-aliases" type="button" class="text-button" disabled>Preview aliases in question</button>
+              <p class="voice-help">Aliases are kept for this document in this tab. Review substitutions before asking.</p>
+            </details>
+            <div class="voice-playback"><label><input id="voice-auto-read" type="checkbox" disabled> Read answers aloud</label><label><input id="voice-technical-details" type="checkbox" disabled> Read technical details</label><button id="voice-read" type="button" class="text-button" disabled>Read answer</button><button id="voice-play" type="button" class="secondary-button" hidden>Play audio</button><button id="voice-stop-speech" type="button" class="text-button" hidden>Stop audio</button></div>
+            <p class="voice-help">Spoken answers keep the conclusion and limitations. Technical evidence remains on screen.</p>
+            <p id="voice-speech-unavailable" class="voice-help" role="status" hidden>Spoken answer preparation is unavailable. The written answer and evidence remain on screen.</p>
+            <p id="voice-setup" class="voice-help">Checking voice setup…</p><button id="voice-refresh" type="button" class="text-button">Check voice setup</button>
+          </div>
+          <div class="suggestions" aria-label="Example questions"><button type="button" data-question="How many bedrooms are shown on this floor plan?" disabled>Count bedrooms</button><button type="button" data-question="What is the floor area of the largest room?" disabled>Measure a room</button><button type="button" data-question="What is the ceiling height?" disabled>Check ceiling height</button></div>
+          <button id="ask-button" type="submit" class="primary-button" disabled><span id="ask-label">Ask the drawing</span><span aria-hidden="true">↗</span></button>
+        </form>
+
+        <div id="ask-progress" class="ask-progress" role="status" hidden><span class="spinner" aria-hidden="true"></span><div><strong>Inspecting the source</strong><p>Checking whether the drawing supports an answer. Ambiguous details may get one closer inspection.</p></div></div>
+        <div id="ask-error" class="error-message answer-error" role="alert" hidden></div>
+
+        <div id="answer-empty" class="answer-empty"><span class="eyebrow">EVIDENCE BEFORE ANSWERS</span><h3>Know what the plan tells you.<br>And what it doesn’t.</h3><p>Answers link to the drawing. If essential information is missing or ambiguous, you’ll see the limitation and a useful next step.</p><div class="status-legend"><span><i class="legend-dot supported"></i>Supported</span><span><i class="legend-dot missing"></i>Missing information</span><span><i class="legend-dot uncertain"></i>Unclear</span></div></div>
+
+        <article id="result" class="result" hidden aria-labelledby="result-heading">
+          <div class="result-top"><span id="result-status" class="result-status"></span><span id="result-scope" class="result-scope"></span></div>
+          <h3 id="result-heading">Answer</h3><p id="answer-text" class="answer-text"></p>
+          <section id="evidence-section" class="result-section" hidden aria-labelledby="evidence-heading"><h4 id="evidence-heading">Evidence in the drawing</h4><div id="evidence-list" class="evidence-list"></div><p class="evidence-note">References are model-identified regions. Check the highlighted source to verify the answer.</p></section>
+          <section id="model-evidence-section" class="result-section" hidden aria-labelledby="model-evidence-heading"><h4 id="model-evidence-heading">Evidence in the IFC source</h4><div id="model-evidence-list" class="evidence-list"></div><p class="evidence-note">Properties describe the supplied model, not a survey of the built building.</p></section>
+          <section id="missing-section" class="result-section" hidden aria-labelledby="missing-heading"><h4 id="missing-heading">What’s missing or unresolved</h4><ul id="missing-list"></ul></section>
+          <section id="next-section" class="next-action" hidden aria-labelledby="next-heading"><h4 id="next-heading">Next step</h4><p id="next-text"></p></section>
+          <section id="proposal-section" class="proposal" hidden aria-labelledby="proposal-heading"><h4 id="proposal-heading">Proposal · not a fact about this building</h4><p id="proposal-text"></p><small id="proposal-basis"></small></section>
+          <details class="run-details"><summary>Inspection details</summary><dl id="run-details-list"></dl><p>Evidence sufficiency is a model judgment, not a guarantee of correctness.</p></details>
+        </article>
+      </section>
+    </div>
+    <footer class="footer"><span>BLUEPRINT QA / JUNCTION 2026</span><span>Read the source. Question the assumptions.</span></footer>
+  </main>
+  <div id="announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>
