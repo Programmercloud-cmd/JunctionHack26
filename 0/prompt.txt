@@ -1,0 +1,10 @@
+[17] assistant: Agent message from /root/frontend:
+Message Type: FINAL_ANSWER
+Task name: /root
+Sender: /root/frontend
+Payload:
+Implemented V2 frontend with floor selection, original source links, separate-floor display, derived IFC download, explicit scale/alignment assumptions, and visible room plates.
+
+Verified 9 browser tests, including native IFC and generated IFC reopening with stable IDs and restored source pages. No live inference used.
+
+Screenshots: `/tmp/junction-v2-unscaled.png`, `/tmp/junction-v2-calibrated.png`.
