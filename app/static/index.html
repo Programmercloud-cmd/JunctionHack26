@@ -7,9 +7,11 @@
   <title>Blueprint — Your drawings, in conversation</title>
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/access.css">
+  <link rel="stylesheet" href="/static/workspace-controls.css">
   <script type="importmap">{"imports":{"three":"/static/vendor/three/three.module.js"}}</script>
   <script src="/static/app.js" defer></script>
   <script src="/static/chat-workspace.js" defer></script>
+  <script src="/static/workspace-controls.js" defer></script>
   <script src="/static/access.js" defer></script>
 </head>
 <body>
@@ -17,6 +19,7 @@
   <main id="chat-shell" class="chat-shell">
     <section id="chat-column" class="chat-column" aria-label="Blueprint conversation">
       <header class="chat-header"><a href="/" class="chat-brand"><span aria-hidden="true">▧</span> Blueprint</a><span id="chat-connection" role="status">Connecting…</span></header>
+      <nav id="workspace-navigation" class="workspace-navigation" aria-label="Drawing and model controls" hidden></nav>
       <div id="chat-scroll" class="chat-scroll">
         <div id="chat-welcome" class="chat-welcome"><p class="chat-kicker">A conversation with your drawings</p><h1>Start with a blueprint.</h1><p>Attach your plans and ask a question.<br>When you want a closer look, we’ll open the workspace.</p><div class="chat-actions"><button id="welcome-upload" type="button">Attach drawings <span aria-hidden="true">↗</span></button><button id="welcome-saved" type="button">Open saved building</button></div></div>
         <div id="chat-log" class="chat-log" role="log" aria-label="Conversation messages" aria-live="polite" aria-relevant="additions text"></div>
@@ -25,7 +28,9 @@
     </section>
     <section id="visual-workspace" class="visual-workspace" aria-label="Visual workspace" hidden>
       <div class="workspace-caption"><span id="workspace-title">Drawing workspace</span><span id="workspace-status"></span></div>
+      <div id="workspace-tools" class="workspace-tools"></div>
       <div id="workspace-content"></div>
+      <aside id="selection-evidence" class="selection-evidence" aria-label="Selected object evidence"></aside>
     </section>
   </main>
   <!-- Existing operation adapters retain their DOM anchors; presentation lives above. -->
