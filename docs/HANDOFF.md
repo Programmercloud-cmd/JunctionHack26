@@ -1,3 +1,11 @@
+# Revision reliability and public demo checkpoint —2026-11-14
+
+Read [REVISION_RELIABILITY_RESULTS.md](REVISION_RELIABILITY_RESULTS.md) for current live recovery evidence.3181 host repair and34/11397 attributed-height recovery passed live and independent browser/source/IFC review. The unseen10262 workflow passed with an explicit loft-as-floor fidelity gap. Church metadata recovery works in an offline control, but its full live batches still fail strict geometry checks; do not claim that recovery complete. Old failures, usable revisions, source-only refusals and portable assumptions are preserved.
+
+The reviewed public deployment work is now authorized: one Verda CPU server, persistent storage, Gemini, nine curated cached examples, public browsing and shared-code paid/private actions. Plans are [PUBLIC_DEMO_PLAN.md](PUBLIC_DEMO_PLAN.md) and [VERDA_DEPLOYMENT_PLAN.md](VERDA_DEPLOYMENT_PLAN.md). Code holders share one privileged workspace, not private per-user accounts. Sources/model revisions of shared examples are read-only; authenticated QA is allowed against exact pinned originals. UI branchfeat/chat-first-ui was integrated through61f59e9; access-UI integration/public verification is ongoing. No push.
+
+---
+
 # Consolidation checkpoint — 2026-11-14
 
 Work is on `blueprint-qa-isolated`; focused commits are local only. Read [CONSOLIDATION_PLAN.md](CONSOLIDATION_PLAN.md) and [CONSOLIDATION_RESULTS.md](CONSOLIDATION_RESULTS.md) for the current diagnostic evidence and acceptance gaps. No new model, format, renderer, infrastructure or execution-budget increase was introduced.
