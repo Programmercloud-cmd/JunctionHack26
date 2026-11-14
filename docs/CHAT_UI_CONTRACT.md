@@ -39,7 +39,7 @@ Every action has a literal `type`. Optional keys below default to null/empty. Un
 | `retry_extraction` / `refresh` | Existing endpoints. |
 | `stop_job` | `job_id` validated against selected building; ambiguity asks which job. |
 | `inspect_assumptions` / `inspect_inventory` | Source-linked rows in chat, not a settings panel; no mesh for unresolved records. |
-| `set_comparison` | `enabled:boolean`, optional `layer:"spaces|walls|openings|features|unresolved"`; toggles existing actual-IFC source overlay. |
+| `set_comparison` | `enabled:boolean`, optional `layer:"spaces|walls|openings|features|unresolved"`, optional `opacity` in the existing 10–90 percent control range; uses the existing actual-IFC source overlay. |
 | `help` | Compact examples and available operations in chat. |
 
 Model selectors resolve exact saved IDs/labels/kinds/floors in code. Duplicate labels clarify. Saved modeled-window selection reports coverage as modeled records, not all real/source windows. Source boxes are copied unchanged; never synthesized tighter boxes. Focused removed objects retain old source evidence, but persistent edits must target current surviving identities. No nearest-object or list-index substitution.

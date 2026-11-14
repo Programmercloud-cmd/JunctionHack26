@@ -22,6 +22,7 @@ from .jobs import JobRunner
 from .public_access import PublicAccess
 from .user_inputs import RefinementRequest, assumptions
 from .conversation import question_context, user_message, assistant_message
+from .chat_actions import ChatActionRequest, chat_actions
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -104,6 +105,14 @@ def create_app(*, provider_factory=create_provider, storage_root=None):
                 "provider": config["name"], "provider_label": config["label"],
                 "credential_env": config["credential_env"], "gate_kind": config["gate_kind"],
                 "decision_model": config["decision_model"], "limits": {"max_upload_mb": 10, "max_ifc_mb": 25, "max_pages": 5}}
+
+    @application.post("/api/chat/actions")
+    def resolve_chat_actions(request: ChatActionRequest):
+        try:
+            return chat_actions(application.state.documents, application.state.jobs,
+                application.state.provider_factory, request)
+        except (DocumentError, ProviderError) as error:
+            raise HTTPException(error.status, error.message) from None
 
     async def save_uploads(http_request,uploads,building_id=None):
         if not uploads:raise HTTPException(422,"Choose at least one source file.")
