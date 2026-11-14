@@ -1,0 +1,43 @@
+[221] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[222] tool exec call: text(await tools.exec_command({cmd:"cat > tests/test_ifc_generate.py <<'PY'\n\"\"\"Real IFC checks for explicit physical boundaries and accountable feature inventories.\"\"\"\nimport base64\nimport hashlib\nfrom io import BytesIO\nimport json\nfrom types import SimpleNamespace\n\nimport ifcopenshell\nimport ifcopenshell.geom\nimport ifcopenshell.util.element\nfrom PIL import Image\nimport pytest\n\nfrom app.artifact_schema import ARTIFACT_MARKER, DISPLAY_UNIT, MANIFEST_PROPERTY, PSET_NAME, ArtifactManifest\nfrom app.building import BuildingDescription\nfrom app.documents import DocumentError, DocumentStore\nfrom app.ifc_generate import generate_ifc\n\n\ndef region(page=1,bbox=None):\n    return {\"page\":page,\"bbox\":bbox or [0,0,1,1]}\n\n\ndef room(label=\"Room\",polygon=None,environment=\"indoor\"):\n    return {\"label\":label,\"polygon\":polygon or [[.1,.2],[.7,.2],[.7,.8],[.1,.8]],\"environment\":environment,\"basis\":\"observed\",\"note\":\"Visible footprint\"}\n\n\ndef boundary(key=\"w1\",segment=None,kind=\"wall\",**overrides):\n    return {\"key\":key,\"kind\":kind,\"label\":key,\"segment\":segment or [[.1,.2],[.7,.2]],\n            \"source\":region(),\"thickness_segment\":[],\"basis\":\"observed\",\"note\":\"Explicit physical boundary\"}|overrides\n\n\ndef opening(kind=\"door\",host=\"w1\",**overrides):\n    return {\"kind\":kind,\"label\":kind,\"host_wall\":host,\"segment\":[[.2,.2],[.3,.2]],\n            \"source\":region(bbox=[.19,.19,.31,.23]),\"basis\":\"observed\",\"note\":\"Depicted gap\"}|overrides\n\n\ndef feature(kind=\"table\",**overrides):\n    return {\"kind\":kind,\"label\":kind,\"polygon\":[[.2,.3],[.4,.3],[.4,.5],[.2,.5]],\n            \"source\":region(bbox=[.19,.29,.41,.51]),\"basis\":\"observed\",\"note\":\"Visible feature footprint\"}|overrides\n\n\ndef floor(label=\"Ground floor\",**overrides):\n    source=overrides.get(\"source\",region())\n    # Explicit fixture descriptions; production never derives walls from<truncated omitted_approx_tokens="3429" />ation=calibration,alignment=alignment,rotation_degrees=0,orientation_basis=\"Printed orientation\")\n        second=floor(\"Upper\",source=region(page=2),calibration=calibration|{\"source\":region(page=2)},\n                     alignment=alignment|{\"source\":region(page=2)},rotation_degrees=180,orientation_basis=\"Printed orientation\")\n        data=generate_ifc(description(first,second),document)\n        scene,pages,artifact=load_artifact(data,\"new-id\")\n        assert scene.layout==\"aligned\" and [f.source.page for f in scene.floors]==[1,2]\n        for f in scene.floors:\n            assert [r[0]*.1+r[1]*.2+r[2]for r in f.transform[:2]]==pytest.approx([0,0])\n        assert [raw for _,raw in pages]==[p.path.read_bytes()for p in document.pages]\n        assert [e.id for e in scene.elements]==[e.id for e in artifact.scene.elements]\n    finally:store.close()\n\n\ndef test_existing_resource_limits_fail_explicitly(document,monkeypatch):\n    with pytest.raises(DocumentError):generate_ifc(description(floor(source=region(page=2))),document)\n    monkeypatch.setattr(\"app.ifc_generate.MAX_ELEMENTS\",2)\n    with pytest.raises(DocumentError,match=\"element limit\"):generate_ifc(description(),document)\n    monkeypatch.setattr(\"app.ifc_generate.MAX_ELEMENTS\",4000)\n    monkeypatch.setattr(\"app.ifc_generate.MAX_TRIANGLES\",1)\n    with pytest.raises(DocumentError,match=\"triangle limit\"):generate_ifc(description(),document)\n    monkeypatch.setattr(\"app.ifc_generate.MAX_TRIANGLES\",1_000_000)\n    monkeypatch.setattr(\"app.ifc_generate.MAX_IFC_BYTES\",1)\n    with pytest.raises(DocumentError,match=\"25 MiB\"):generate_ifc(description(),document)\nPY\n.venv/bin/python -m pytest tests/test_ifc_generate.py -q --tb=short",sandbox_permissions:"require_escalated",justification:"Replace assigned generator tests with V3 explicit-boundary, source-inventory, opening, and portable IFC kernel regressions.",yield_time_ms:1000,max_output_tokens:3500}));
+
+[223] tool exec result: Script completed
+Wall time 3.8 seconds
+Output:
+
+{"chunk_id":"fdae5a","wall_time_seconds":1.000310055,"session_id":68341,"original_token_count":1,"output":".."}
+
+[224] tool exec call: text(await tools.write_stdin({session_id:68341,chars:"",yield_time_ms:1000,max_output_tokens:4500}));
+
+[225] tool exec result: Script completed
+Wall time 0.0 seconds
+Output:
+
+{"chunk_id":"102505","wall_time_seconds":0.000017133,"exit_code":0,"original_token_count":25,"output":"....................                                                   [100%]\n22 passed in 2.57s\n"}
+
+[226] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[227] tool exec call: text(await tools.apply_patch("*** Begin Patch\n*** Update File: /home/jcb/dev/github/JunctionHack26/app/ifc_generate.py\n@@\n-                if math.isclose(sum(x*y for x,y in zip(axis,cross)),0,abs_tol=1e-8) and math.dist(p,q)>0:\n+                if (math.isclose(sum(x*y for x,y in zip(axis,cross)),0,abs_tol=1e-8) and math.dist(p,q)>0\n+                        and LineString([p,q]).intersects(LineString([a,b]))):\n*** End Patch"));
+text(await tools.exec_command({cmd:".venv/bin/python -m pytest tests/test_ifc_generate.py tests/test_ifc_artifact.py tests/test_ifc_import.py -q --tb=short",sandbox_permissions:"require_escalated",justification:"Verify V3 generation against portable artifact corruption and unchanged native IFC import regressions.",yield_time_ms:1000,max_output_tokens:3500}));
+
+[228] tool exec result: Script completed
+Wall time 7.3 seconds
+Output:
+
+{}
+{"chunk_id":"c40bbf","wall_time_seconds":1.001763296,"session_id":87579,"original_token_count":0,"output":""}
+
+[229] tool exec call: text(await tools.write_stdin({session_id:87579,chars:"",yield_time_ms:1000,max_output_tokens:3500}));
+
+[230] tool exec result: Script completed
+Wall time 2.0 seconds
+Output:
+
+{"chunk_id":"083fe7","wall_time_seconds":1.952201219,"exit_code":0,"original_token_count":28,"output":"...................................................................s     [100%]\n67 passed, 1 skipped in 7.22s\n"}
+
+[231] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[232] assistant: Implemented the V3 generator and tests: explicit walls, independent opening hosts, outdoor footprints, schematic features, and persistent unresolved items. Every entry keeps source provenance and stable identity.
+
+Validation: **67 passed, 1 optional sample test skipped** across generation, artifact reopening/corruption, and native IFC import. Ready for independent review and live visual checks.
