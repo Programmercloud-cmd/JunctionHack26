@@ -1,0 +1,36 @@
+[130] tool exec call: text(await tools.apply_patch("*** Begin Patch\n*** Update File: /home/jcb/dev/github/JunctionHack26/app/static/viewer.js\n@@\n-    const distance = extent / Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));\n+    const direction = new THREE.Vector3(.9,-1.2,.9).normalize();\n+    const viewRotation = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(direction, new THREE.Vector3(), this.camera.up)).invert();\n+    const tanVertical = Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));\n+    const tanHorizontal = tanVertical * this.camera.aspect;\n+    let distance = extent * .1;\n+    // Fit every bounds corner in camera space, including the narrower screen\n+    // dimension. Source geometry is untouched; only the viewpoint changes.\n+    for (const x of [this.bounds.min.x,this.bounds.max.x]) {\n+      for (const y of [this.bounds.min.y,this.bounds.max.y]) {\n+        for (const z of [this.bounds.min.z,this.bounds.max.z]) {\n+          const corner = new THREE.Vector3(x,y,z).sub(center).applyQuaternion(viewRotation);\n+          distance = Math.max(distance, corner.z + Math.abs(corner.x)/tanHorizontal, corner.z + Math.abs(corner.y)/tanVertical);\n+        }\n+      }\n+    }\n+    distance *= 1.12;\n@@\n-    this.camera.position.copy(center).add(new THREE.Vector3(.9,-1.2,.9).normalize().multiplyScalar(distance));\n+    this.camera.position.copy(center).add(direction.multiplyScalar(distance));\n*** End Patch"));
+text(await tools.exec_command({cmd:"cat >> app/static/styles.css <<'EOF'\n#model-evidence-list{max-height:360px;overflow:auto;padding-right:4px;overscroll-behavior:contain}\nEOF\nRUN_BROWSER_TESTS=1 PLAYWRIGHT_BROWSERS_PATH=/tmp/junction-playwright .venv/bin/python -m pytest tests/test_browser_3d.py -q","sandbox_permissions":"require_escalated","justification":"May I rerun both 3D browser acceptance tests after improving camera fit and evidence-list usability?","yield_time_ms":1000,"max_output_tokens":2500}));
+
+>>> TRANSCRIPT DELTA END
+
+Reviewed Codex session id: 01a1d712-659c-79c1-bbf9-ac6ac03106a3
+
+>>> PARENT TURN PERMISSION CONTEXT START
+
+The active permission profile for environment "local" has no explicit denied-read paths/globs.
+
+>>> PARENT TURN PERMISSION CONTEXT END
+
+The Codex agent has requested the following next action:
+
+>>> APPROVAL REQUEST START
+
+Retry reason:
+
+command failed; retry without sandbox?
+
+Assess the exact planned action below. Use read-only tool checks when local state matters.
+
+Planned action JSON:
+
+{
+  "cwd": "/home/jcb/dev/github/JunctionHack26",
+  "environment_id": "local",
+  "files": [
+    "/home/jcb/dev/github/JunctionHack26/app/static/viewer.js"
+  ],
+  "patch": "*** Begin Patch\n*** Update File: /home/jcb/dev/github/JunctionHack26/app/static/viewer.js\n@@\n-    const distance = extent / Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));\n+    const direction = new THREE.Vector3(.9,-1.2,.9).normalize();\n+    const viewRotation = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(direction, new THREE.Vector3(), this.camera.up)).invert();\n+    const tanVertical = Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));\n+    const tanHorizontal = tanVertical * this.camera.aspect;\n+    let distance = extent * .1;\n+    // Fit every bounds corner in camera space, including the narrower screen\n+    // dimension. Source geometry is untouched; only the viewpoint changes.\n+    for (const x of [this.bounds.min.x,this.bounds.max.x]) {\n+      for (const y of [this.bounds.min.y,this.bounds.max.y]) {\n+        for (const z of [this.bounds.min.z,this.bounds.max.z]) {\n+          const corner = new THREE.Vector3(x,y,z).sub(center).applyQuaternion(viewRotation);\n+          distance = Math.max(distance, corner.z + Math.abs(corner.x)/tanHorizontal, corner.z + Math.abs(corner.y)/tanVertical);\n+        }\n+      }\n+    }\n+    distance *= 1.12;\n@@\n-    this.camera.position.copy(center).add(new THREE.Vector3(.9,-1.2,.9).normalize().multiplyScalar(distance));\n+    this.camera.position.copy(center).add(direction.multiplyScalar(distance));\n*** End Patch",
+  "tool": "apply_patch"
+}
+
+>>> APPROVAL REQUEST END
