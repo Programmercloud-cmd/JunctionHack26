@@ -1,0 +1,59 @@
+[92] tool send_message call: {"target":"/root/voice_reviewer","message":"REDACTED"}
+
+[93] tool exec call: text(await tools.write_stdin({session_id:69161,chars:"","yield_time_ms":1000,"max_output_tokens":2000}));
+text(await tools.exec_command({cmd:".venv/bin/python - <<'PY'\nfrom pathlib import Path\np=Path('app/voice_providers.py')\ns=p.read_text().replace('if content.turn_complete:\\n                    yield VoiceEvent(terminal=True)', '# Dedicated TEXT transcription acknowledges the manual activity with\\n                # generation_complete; it need not emit the live-agent turn_complete.\\n                if content.generation_complete or content.turn_complete:\\n                    yield VoiceEvent(terminal=True)')\np.write_text(s)\nPY","workdir":"/home/jcb/dev/github/JunctionHack26-voice","max_output_tokens":500,"sandbox_permissions":"require_escalated","justification":"May I handle the completion signal observed in the live Google transcription probe?"}));
+
+[94] tool exec result: Script completed
+Wall time 5.2 seconds
+Output:
+
+{"chunk_id":"51b64d","wall_time_seconds":0.00001546,"exit_code":0,"original_token_count":25,"output":".....................                                                    [100%]\n21 passed in 2.23s\n"}
+{"chunk_id":"0b4cdd","wall_time_seconds":0.000017955,"exit_code":0,"original_token_count":0,"output":""}
+
+[95] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[96] tool exec call: text(await tools.exec_command({cmd:".venv/bin/python - <<'PY'\nfrom google.genai import live\nimport inspect\nprint(inspect.getsource(live.AsyncSession.receive))\nPY","workdir":"/home/jcb/dev/github/JunctionHack26-voice","max_output_tokens":2200,"sandbox_permissions":"require_escalated","justification":"May I inspect SDK receive-loop closure behavior so disconnected transcription sessions cannot spin?"}));
+
+[97] tool exec result: Script completed
+Wall time 3.6 seconds
+Output:
+
+{"chunk_id":"dca55c","wall_time_seconds":1.017794448,"exit_code":0,"original_token_count":239,"output":"  async def receive(self) -> AsyncIterator[types.LiveServerMessage]:\n    \"\"\"Receive model responses from the server.\n\n    The method will yield the model responses from the server. The returned\n    responses will represent a complete model turn. When the returned message\n    is function call, user must call `send` with the function response to\n    continue the turn.\n\n    Yields:\n      The model responses from the server.\n\n    Example usage:\n\n    .. code-block:: python\n\n      client = genai.Client(api_key=API_KEY)\n\n      async with client.aio.live.connect(model='...') as session:\n        await session.send(input='Hello world!', end_of_turn=True)\n        async for message in session.receive():\n          print(message)\n    \"\"\"\n    # TODO(b/365983264) Handle intermittent issues for the user.\n    while result := await self._receive():\n      if _is_interaction_complete(result.server_content):\n        yield result\n        break\n      yield result\n\n"}
+
+[98] assistant: The backend route tests pass. The live Google test also revealed that dedicated transcription signals completion with `generation_complete`, so I’ve handled that explicitly instead of waiting for a conversational-agent signal that may never arrive.
+
+[99] tool exec call: text(await tools.exec_command({cmd:"cat > tests/test_voice_providers.py <<'PY'\n\"\"\"Provider wire contracts with injected transports; no live calls.\"\"\"\nimport asyncio\nfrom contextlib import asynccontextmanager\nfrom types import SimpleNamespace\n\nimport httpx\nimport pytest\nfrom google.genai import types\n\nfrom app.voice_config import VoiceError, voice_settings\nfrom app.voice_providers import GeminiTranscriptionProvider, GeminiSession, ElevenLabsSpeechProvider\n\n\n@pytest.mark.asyncio\nasync def test_google_wire_manual_activity_vocabulary_and_pcm(monkeypatch):\n    monkeypatch.setenv(\"GEMINI_API_KEY\", \"fake-key\")\n    sent, captured = [], {}\n\n    class Session:\n        async def send_realtime_input(self, **kwargs):\n            sent.append(kwargs)\n\n    class Live:\n        @asynccontextmanager\n        async def connect(self, **kwargs):\n            captured.update(kwargs)\n            yield Session()\n            captured[\"session_closed\"] = True\n\n    class AsyncClient:\n        live = Live()\n        async def aclose(self):\n            captured[\"client_closed\"] = True\n\n    def factory(**kwargs):\n        captured[\"auth\"] = kwargs\n        return SimpleNamespace(aio=AsyncClient())\n\n    provider = GeminiTranscriptionProvider(client_factory=factory)\n    async with provider.connect([\"Väinämöinen\", \"Talotekniikka\"], [\"fi-FI\"]) as session:\n        await session.send_audio(b\"\\0\\0\" * 1600)\n        await session.end_audio()\n    config = captured[\"config\"]\n    assert captured[\"model\"] == \"gemini-3.5-transcribe-live\"\n    assert config.response_modalities == [types.Modality.TEXT]\n    assert config.input_audio_transcription.custom_vocabulary == [\"Väinämöinen\", \"Talotekniikka\"]\n    assert config.input_audio_transcription.language_codes == [\"fi-FI\"]\n    assert config.realtime_input_config.automatic_activity_detection.disabled is True\n    assert isinstance(sent[0][\"activity_start\"], typ<truncated omitted_approx_tokens="1176" />transport=httpx.MockTransport(lambda _: pytest.fail(\"unexpected request\")))\n    provider = ElevenLabsSpeechProvider(client=client)\n    try:\n        with pytest.raises(VoiceError, match=\"ELEVENLABS_API_KEY\"):\n            await provider.synthesize(\"Answer\")\n    finally:\n        await provider.aclose()\n\n\n@pytest.mark.parametrize(\"value\", [\"0\",\"-1\",\"nan\",\"inf\",\"secret-value\"])\ndef test_invalid_timeout_is_safe_configuration_error(monkeypatch,value):\n    monkeypatch.setenv(\"VOICE_FINALIZATION_TIMEOUT_SECONDS\",value)\n    with pytest.raises(VoiceError) as error:\n        voice_settings()\n    assert error.value.status == 503\n    assert \"secret-value\" not in error.value.message\nPY\n.venv/bin/python - <<'PY'\nfrom pathlib import Path\np=Path('app/voice_providers.py')\ns=p.read_text().replace('while True:\\n            async for response in self.session.receive():','while True:\\n            received = False\\n            async for response in self.session.receive():\\n                received = True')\ns=s.replace('yield VoiceEvent(terminal=True)\\n\\n\\nclass GeminiTranscriptionProvider:', 'yield VoiceEvent(terminal=True)\\n            if not received:\\n                raise VoiceError(\"Google transcription connection closed before finalization. Review the received text or record again.\")\\n\\n\\nclass GeminiTranscriptionProvider:')\np.write_text(s)\np=Path('app/voice.py')\ns=p.read_text().replace('    parsed = urlsplit(origin)\\n', '    try:\\n        parsed = urlsplit(origin)\\n    except ValueError:\\n        return False\\n')\np.write_text(s)\nPY\n.venv/bin/python -m pytest -q tests/test_voice.py tests/test_voice_providers.py","workdir":"/home/jcb/dev/github/JunctionHack26-voice","max_output_tokens":2000,"yield_time_ms":1000,"sandbox_permissions":"require_escalated","justification":"May I add provider-wire tests and verify completion, credential safety, exact speech payloads and invalid upstream responses?"}));
+
+[100] tool exec result: Script completed
+Wall time 3.4 seconds
+Output:
+
+{"chunk_id":"d7acfa","wall_time_seconds":1.000774242,"session_id":18238,"original_token_count":0,"output":""}
+
+[101] tool send_message call: {"target":"/root/voice_frontend","message":"REDACTED"}
+
+[102] tool exec call: text(await tools.write_stdin({session_id:18238,chars:"","yield_time_ms":1000,"max_output_tokens":2000}));
+text(await tools.exec_command({cmd:"cat >> tests/test_voice.py <<'PY'\n\n\n@pytest.mark.asyncio\nasync def test_speech_disconnect_cancels_pending_generation():\n    from types import SimpleNamespace\n    from fastapi import FastAPI, Request\n    from app.voice import attach_voice_routes\n\n    entered, cancelled = asyncio.Event(), asyncio.Event()\n    class Speech(FakeSpeech):\n        async def synthesize(self, text):\n            entered.set()\n            try:\n                await asyncio.Future()\n            finally:\n                cancelled.set()\n\n    provider = Speech()\n    application = FastAPI()\n    application.state.documents = SimpleNamespace(get=lambda _: object())\n    attach_voice_routes(application, speech_factory=lambda: provider)\n    endpoint = next(route.endpoint for route in application.routes if route.path == \"/api/voice/speech\")\n    messages = asyncio.Queue()\n    await messages.put({\"type\":\"http.request\", \"body\":b'{\"document_id\":\"fixture\",\"text\":\"Answer\"}', \"more_body\":False})\n    request = Request({\"type\":\"http\", \"method\":\"POST\", \"scheme\":\"http\", \"server\":(\"testserver\",80), \"path\":\"/api/voice/speech\", \"query_string\":b\"\", \"headers\":[]}, messages.get)\n    task = asyncio.create_task(endpoint(request))\n    await asyncio.wait_for(entered.wait(), 1)\n    await messages.put({\"type\":\"http.disconnect\"})\n    response = await asyncio.wait_for(task, 1)\n    assert response.status_code == 204 and cancelled.is_set() and provider.closed\nPY\n.venv/bin/python -m pytest -q tests/test_voice.py tests/test_voice_providers.py","workdir":"/home/jcb/dev/github/JunctionHack26-voice","max_output_tokens":1000,"yield_time_ms":1000,"sandbox_permissions":"require_escalated","justification":"May I verify that stopping a pending speech request cancels the provider operation and releases its client?"}));
+
+[103] tool exec result: Script completed
+Wall time 4.2 seconds
+Output:
+
+{"chunk_id":"a9182d","wall_time_seconds":0.00002576,"exit_code":0,"original_token_count":25,"output":"..................................                                       [100%]\n34 passed in 2.25s\n"}
+{"chunk_id":"ff2d12","wall_time_seconds":1.00078526,"session_id":93677,"original_token_count":0,"output":""}
+
+[104] tool send_message call: {"target":"/root/voice_reviewer","message":"REDACTED"}
+
+[105] tool exec call: text(await tools.write_stdin({session_id:93677,chars:"","yield_time_ms":1000,"max_output_tokens":1000}));
+
+[106] tool exec result: Script completed
+Wall time 0.1 seconds
+Output:
+
+{"chunk_id":"4c3e12","wall_time_seconds":0.000023265,"exit_code":0,"original_token_count":25,"output":"...................................                                      [100%]\n35 passed in 2.30s\n"}
+
+[107] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[108] tool wait_agent call: {"timeout_ms":60000}
+
+[109] tool wait_agent result: {"message":"Wait completed.","timed_out":false}
