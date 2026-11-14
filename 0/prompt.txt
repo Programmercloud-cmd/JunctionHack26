@@ -1,0 +1,15 @@
+[50] tool exec call: text(await tools.write_stdin({session_id:95020,chars:"",yield_time_ms:1000,max_output_tokens:2500}));
+
+[51] tool exec result: Script completed
+Wall time 4.9 seconds
+Output:
+
+{"chunk_id":"5572af","wall_time_seconds":4.859210995,"exit_code":0,"original_token_count":25,"output":"......................................................                   [100%]\n54 passed in 6.33s\n"}
+
+[52] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[53] assistant: Added reconstruction-only limits: **16,384 output tokens and 120 seconds**. Answering, cropping, and gating retain existing limits.
+
+`MAX_TOKENS` now produces a sanitized operational error—even when returned JSON looks valid.
+
+SDK transport and validation regressions: **54 passed**. Ready for root’s integrated live checks.
