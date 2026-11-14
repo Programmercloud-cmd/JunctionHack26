@@ -1,0 +1,3 @@
+<send_user_message_question_reply>
+[{"answer":"Authorized","question":"ElevenLabs authorization is running. Did its approval page open in your browser? Sign in and click Authorize there; don’t paste any API key here.","questionItemId":"[\"request_user_input_async\",\"call_90fe90ecb90942c7b328a7c4a7fa96af\",0]"}]
+</send_user_message_question_reply>
