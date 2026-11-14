@@ -1,0 +1,49 @@
+{
+  "cli_version": "0.13.4",
+  "checkpoint_id": "01M7DF82J45NWJWRM7NDD12MM5",
+  "strategy": "manual-commit",
+  "branch": "blueprint-qa-isolated",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "deploy/verda/install-server.sh",
+    "docs/VERDA_DEPLOYMENT.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1456,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 599040,
+    "output_tokens": 921,
+    "api_call_count": 4,
+    "subagent_tokens": {
+      "input_tokens": 1120,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 407296,
+      "output_tokens": 857,
+      "api_call_count": 3
+    },
+    "subagent_tokens_complete": true
+  },
+  "redaction": {
+    "replacements": 142,
+    "layers": {
+      "betterleaks": 37,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 119,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  }
+}
