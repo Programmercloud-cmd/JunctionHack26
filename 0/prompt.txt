@@ -1,0 +1,25 @@
+[95] tool exec call: text(await tools.write_stdin({session_id:59467,chars:"","yield_time_ms":1000,"max_output_tokens":4000}));
+
+[96] tool exec result: Script completed
+Wall time 0.6 seconds
+Output:
+
+{"chunk_id":"4555b7","wall_time_seconds":0.591125558,"exit_code":0,"original_token_count":25,"output":"......................                                                   [100%]\n22 passed in 2.52s\n"}
+
+[97] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[98] tool send_message call: {"target":"/root/plan_review","message":"REDACTED"}
+
+[99] assistant: Implemented backend in `app/*.py` with 22 passing tests in `tests/test_backend.py`.
+
+- JPG/PNG/PDF upload, normalized previews, limits and opaque IDs.
+- Actual Gemini Decisions gate and structured Gemini responses.
+- One targeted crop retry; maximum four provider calls.
+- Strict gate precedence, validated citations, optional server-side arithmetic.
+- Sanitized provider failures and missing-key errors.
+- SDK serialization tested through intercepted HTTP, including the corrected bounding-box schema.
+- Real Swiss PDF rendering verified.
+
+Injection for browser tests: `create_app(provider_factory=..., storage_root=...)`.
+
+Live Gemini inference remains unverified because no Gemini credential is configured.
