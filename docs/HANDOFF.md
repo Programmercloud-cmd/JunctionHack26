@@ -1,4 +1,20 @@
-# Agent handoff — 2026-11-14, reconstruction V3
+# Agent handoff — 2026-11-14, progressive product
+
+## Current implementation
+
+Read [PRODUCT_SPEC.md](PRODUCT_SPEC.md), [PRODUCT_PLAN.md](PRODUCT_PLAN.md), [PRODUCT_VERIFICATION.md](PRODUCT_VERIFICATION.md) and [QA_REVIEW_VERIFICATION.md](QA_REVIEW_VERIFICATION.md) first. They supersede the historical temporary-session, single-call and no-refinement statements below. The application now has durable filesystem bundles, stable identities/frozen source frames, background source/geometry review with typed patches, native IFC reasoning JSON, reviewed QA, and inspection/concept presentation of the same revision.
+
+Launch saved demo: `BLUEPRINT_STORAGE_ROOT=.runtime/product-demo PORT=8000 bash scripts/dev.sh`. Stop any verification server on port 8768 before using that same store: one process owns a storage root. Existing credentials stay in `.env.local`; Gemini is the final-demo provider and `gemini-3.1-pro-preview` remains the reconstruction default. No new dependencies or remote infrastructure were added.
+
+The saved colorful cases were refined from exact retained descriptions with unchanged original pixels, not freshly re-extracted PNGs. The institute floor-plan/section PDFs were freshly processed. Independent reviewers directly used the browser and original overlays. Supported native/drawing answers and actual-height refusal worked live. Full model fidelity remains incomplete: see the specific omissions, rejected patches and repaired regression in PRODUCT_VERIFICATION. Do not claim “verified accurate.”
+
+Current code commits: `d1c67af`, `490a602`, `8b59635`, `f2cfcbd`, `60c01ab`; no push. The complete browser-inclusive suite passed 411 tests with 1 optional dataset test skipped, and doctor passed. The final space-label mapping fix then passed 99 focused tests plus independent review and fresh live browser acceptance. Never treat fixture corrections as live inference.
+
+Keep building use agnostic: original labels, neutral unknown-use styling, meaningful non-residential features, source-only unsupported views. No invented floors, home furnishings for unknown halls, guessed measured heights, or generated-IFC factual shortcuts. Concept proposals stay outside QA/export. Native citations inspect original records pinned to the answered revision, including records without meshes. Reopen/reupload does not trigger inference; explicit jobs can refine.
+
+Further work should target demonstrated source-fidelity errors. Preserve previous usable revisions on invalid responses, loss, cancellation, budget exhaustion and stale publication. Runtime model patches are data only. Read AGENTS.md before introducing constraints, and retain independent plan/implementation review. Do not add Blender, a database, new formats or detailed domes/roofs as a shortcut.
+
+## Historical V3 handoff (superseded where noted above)
 
 ## Status
 

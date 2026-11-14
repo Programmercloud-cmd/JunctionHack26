@@ -1,5 +1,7 @@
 # First slice
 
+The active product implementation is now specified in [PRODUCT_SPEC.md](PRODUCT_SPEC.md) and independently reviewed in [PRODUCT_PLAN.md](PRODUCT_PLAN.md). Those documents supersede the historical persistence/background/review exclusions below. The source-grounding invariants remain.
+
 Current drawing reconstruction is specified in [RECONSTRUCTION_V3_PLAN.md](RECONSTRUCTION_V3_PLAN.md) and [RECONSTRUCTION_V3_CONTRACT.md](RECONSTRUCTION_V3_CONTRACT.md). These supersede historical single-floor/relative-only restrictions; core evidence and provider invariants remain.
 
 Historical initial slice. The user's later 3D request is implemented under [3D_PLAN.md](3D_PLAN.md) and [3D_CONTRACT.md](3D_CONTRACT.md); those supersede the CAD/3D exclusions below. Core provider and evidence rules remain in force.

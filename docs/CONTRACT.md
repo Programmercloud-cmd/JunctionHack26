@@ -1,5 +1,20 @@
 # API contract v1
 
+## Progressive product extension
+
+The active scope and shared contracts are [PRODUCT_SPEC.md](PRODUCT_SPEC.md) and [PRODUCT_PLAN.md](PRODUCT_PLAN.md). Existing source/scene/download routes remain compatible; `/api/ask` remains a synchronous reviewed-answer route. The browser uses these additions:
+
+- Upload returns `building_id`, `revision_id`, monotonic `revision_number`, `review_status`, `has_scene`, `unresolved_views` and `is_new_upload`. Building identity is a SHA-256 of original uploaded bytes. Only genuinely new drawing uploads automatically start a job in the UI; reopening/reuploading does not start inference.
+- `GET /api/buildings` returns `{buildings:[document_public]}`. `GET /api/buildings/{id}` returns that public record plus saved jobs, newest first.
+- `POST /api/buildings/{id}/reconstruction` accepts `{base_revision_id,mode:"refine"|"reconstruct"}` and returns a job with HTTP202. Genuine native IFC is never automatically reconstructed. Existing usable models require local/source replacement checks before publication; fresh supported sources publish an early preview.
+- `POST /api/questions` accepts `{document_id,question,revision_id?,request_id?}` and returns HTTP202 with a revision-pinned job. `GET /api/jobs/{id}` reports persisted progress and, after successful QA, `answer`. `POST /api/jobs/{id}/stop` prevents late publication; an in-flight provider call may still finish.
+- Jobs distinguish queued/running/complete/needs_attention/failed/budget_exhausted/stopped/interrupted. API or schema failures never become source insufficiency. A failed correction leaves the usable revision intact.
+- `GET /api/buildings/{id}/revisions/{revision}/evidence/{object_id}` returns a faithful native IFC record plus coverage for that exact saved revision, including non-rendered semantic records. Drawing-derived IFC is rejected on this native evidence path and continues to use original page regions.
+- Answers add `building_id`, `answered_revision_id`, `display_revision_id`, support-review metadata and source-bound calculation results. Highlights are revalidated after concurrent reconstruction; original citations survive missing mappings.
+- Portable artifact v4 preserves exact description, server-owned identities/tombstones and source frames. V2/V3 remain readable. Ordinary bbox changes cannot move frames; supported calibration/orientation changes require explicit evidence-backed updates. Concept proposals never enter these artifacts or reasoning records.
+
+Below is the historical initial API contract; the extension above supersedes temporary-session and pre-review behavior.
+
 Current drawing reconstruction is specified in [RECONSTRUCTION_V3_PLAN.md](RECONSTRUCTION_V3_PLAN.md) and [RECONSTRUCTION_V3_CONTRACT.md](RECONSTRUCTION_V3_CONTRACT.md). These supersede historical single-floor/relative-only restrictions; core evidence and provider invariants remain.
 
 Root owns this contract; agents coordinate before changes. JSON uses snake_case.
