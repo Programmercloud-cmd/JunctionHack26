@@ -1,0 +1,8 @@
+[319] tool followup_task call: {"target":"voice_reviewer","message":"REDACTED"}
+
+[320] tool send_message call: {"target":"voice_backend","message":"REDACTED"}
+
+[321] tool sleep call: {"duration_ms":10000}
+
+[322] tool sleep result: Wall time: 0.2124 seconds
+Sleep interrupted by new input.
