@@ -415,22 +415,26 @@ class JobRunner:
             self.futures[identity]=self.executor.submit(self._refine_inputs,identity,document.snapshot(),candidate,submitted,needs_model,conflicts,changes)
             return self.get(identity)
 
-    def question(self,request):
+    def question(self,request,*,pinned_document=None):
         from .conversation import question_context,user_message
-        document=self.store.get(request.document_id)
+        document=pinned_document or self.store.get(request.document_id)
+        if document.id!=request.document_id:raise DocumentError("Pinned question source does not match the request.",409)
         if request.revision_id and request.revision_id!=document.revision_id:
             raise DocumentError("The building updated before this question started; refresh its revision and ask again.",409)
         with self.lock:
             if request.request_id:
                 prior=next((j for j in self.jobs.values() if j["kind"]=="question" and j["building_id"]==document.id and j.get("request_id")==request.request_id),None)
-                if prior:return self.get(prior["id"])
+                if prior:
+                    if prior.get("base_revision_id")!=document.revision_id:
+                        raise DocumentError("This question request ID belongs to another revision; start a new question request.",409)
+                    return self.get(prior["id"])
             context=question_context(self.store,document,request)
             identity=self._new(document,"question",request.request_id)
             message=user_message(document,request,identity)
             self.store.append_conversation(document.id,message)
             snapshot=document.snapshot();snapshot.conversation_context=context
             self._update(identity,question=request.question,user_message_id=message["id"],conversation_id=document.id)
-            self.futures[identity]=self.executor.submit(self._question,identity,snapshot,request.question)
+            self.futures[identity]=self.executor.submit(self._question,identity,snapshot,request.question,pinned_document is not None)
             return self.get(identity)
 
     def stop(self,identity):
@@ -709,7 +713,7 @@ class JobRunner:
                 self._update(identity,usage=provider.usage.model_dump() if hasattr(provider,"usage") else {})
                 provider.close()
 
-    def _question(self,identity,snapshot,question):
+    def _question(self,identity,snapshot,question,pin_display=False):
         provider=None
         try:
             self._check(identity,float("inf"))
@@ -719,7 +723,7 @@ class JobRunner:
                 self._update(identity,status="running",phase=phase,message=phase)
             answer=ask(snapshot,question,provider,progress=progress)
             self._check(identity,float("inf"))
-            displayed=self.store.get(snapshot.id)
+            displayed=snapshot if pin_display else self.store.get(snapshot.id)
             answer.building_id=snapshot.id;answer.answered_revision_id=snapshot.revision_id
             answer.display_revision_id=displayed.revision_id
             if displayed.revision_id!=snapshot.revision_id:
