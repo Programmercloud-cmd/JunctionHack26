@@ -8,7 +8,7 @@ import time
 import pytest
 
 from test_browser import ask, upload
-from test_browser_3d import scene_page, snapshot, generate_scene
+from test_browser_3d import scene_page, snapshot, generate_scene, control, action
 from test_browser_v3 import SemanticFixtureProvider
 
 pytestmark=pytest.mark.skipif(os.getenv("RUN_BROWSER_TESTS")!="1",reason="opt-in browser checks")
@@ -73,7 +73,7 @@ def test_unresolved_annotations_preserve_geometry_highlights_and_source(annotati
     # Raised initial view reveals interiors without changing model coordinates.
     assert page.evaluate("""() => {const v=window.blueprintViewer,d=v.camera.position.clone().sub(v.controls.target);return d.z/Math.hypot(d.x,d.y)>1;}""")
     floor=scene["floors"][0]
-    page.locator("#floor-select").select_option(floor["id"])
+    action(page,{"type":"set_floor","floor_id":floor["id"]})
     expect(page.locator("#unresolved-model-count")).to_have_text("2 unresolved source items on this floor")
     visible=[a for a in snapshot(page)["annotations"] if a["visible"]]
     assert len(visible)==2 and all(a["floor_id"]==floor["id"] for a in visible)
@@ -85,33 +85,33 @@ def test_unresolved_annotations_preserve_geometry_highlights_and_source(annotati
     expect(page.locator("#evidence-overlay")).to_be_visible()
     assert page.locator("#evidence-overlay").evaluate("el=>el.style.left")=="70%"
     assert snapshot(page)["highlight_ids"]==[]
-    page.locator("#show-model").click()
+    control(page,"Show model")
     coarse=page.locator('.unresolved-annotation[data-annotation-kind="floor"]:visible')
     coarse.focus();coarse.press("Enter")
     expect(page.locator("#comparison-selection-detail")).to_contain_text("no precise object location or geometry")
     expect(page.locator("#comparison-inspect")).to_be_hidden()
-    page.locator("#show-model").click();page.locator("#floor-select").select_option("")
-    page.locator("#explode-floors").uncheck()
+    control(page,"Show model");action(page,{"type":"set_floor"})
+    action(page,{"type":"set_separation","enabled":False})
     assert not snapshot(page)["exploded"]
-    page.locator("#explode-floors").check()
+    action(page,{"type":"set_separation","enabled":True})
     assert snapshot(page)["exploded"]
     assert page.evaluate("window.annotationGeometry===JSON.stringify(window.blueprintViewer.data.elements)")
     ask(page,"Where is Room A?")
-    expect(page.locator("#answer-text")).to_have_text("Fixture: Room A on page 2.")
+    expect(page.locator("#chat-log .chat-answer").last).to_contain_text("Fixture: Room A on page 2.")
     answer=snapshot(page)
     assert len(answer["highlight_ids"])==1
     assert all(m["opacity"]==.1 for m in answer["elements"] if m["id"] not in answer["highlight_ids"])
     assert all(e["id"] not in answer["highlight_ids"] for e in unresolved)
     assert all(a["visible"] for a in answer["annotations"])
-    page.locator("#show-assumptions").check()
+    control(page,"Show assumptions")
     assert snapshot(page)["highlight_ids"]==answer["highlight_ids"]
-    page.locator("#highlight-answer").uncheck()
+    control(page,"Hide answer highlights")
     assert snapshot(page)["show_assumptions"]
     # Even a bad display API request cannot turn an unresolved annotation into a mesh highlight.
     page.evaluate("id=>window.blueprintViewer.setHighlights([id],true)",unresolved[0]["id"])
     assert snapshot(page)["highlight_ids"]==[]
     assert page.evaluate("window.annotationGeometry===JSON.stringify(window.blueprintViewer.data.elements)")
-    with page.expect_download() as download:page.locator("#download-ifc").click()
+    with page.expect_download() as download:action(page,{"type":"download_ifc"})
     artifact=tmp_path/"annotated.ifc";download.value.save_as(artifact)
     original_id=scene["document_id"]
     page.locator("#file-input").set_input_files(str(artifact))
@@ -133,8 +133,8 @@ def test_all_unresolved_keeps_source_notice_without_fake_model(annotation_server
     expect(page.locator("#model-canvas-container")).to_be_hidden()
     expect(page.locator("#unresolved-model-count")).to_have_text("4 unresolved source items")
     assert snapshot(page)["mesh_count"]==0
-    page.locator("#review-unresolved").click()
-    expect(page.locator(".unresolved-item").first).to_be_focused()
-    page.locator(".unresolved-item").first.press("Enter")
+    control(page,"Inspect model inventory")
+    source=page.locator("#chat-log .chat-inventory-row").filter(has_text="Ambiguous fixture").first.get_by_role("button",name="Original evidence",exact=True)
+    source.focus();source.press("Enter")
     expect(page.locator("#page-image")).to_be_visible()
     expect(page.locator("#evidence-overlay")).to_be_visible()

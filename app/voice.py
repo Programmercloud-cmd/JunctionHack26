@@ -103,7 +103,8 @@ def attach_voice_routes(application, transcription_factory=None, speech_factory=
 
     @application.websocket("/api/voice/transcribe")
     async def transcribe(websocket: WebSocket):
-        if not _same_origin(websocket):
+        access = getattr(application.state, "access", None)
+        if (access is not None and not access.is_editor(websocket)) or not _same_origin(websocket):
             await websocket.close(code=1008)
             return
         await websocket.accept()

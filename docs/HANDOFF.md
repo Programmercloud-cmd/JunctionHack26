@@ -1,3 +1,33 @@
+# UI correction integration checkpoint — 2026-11-14
+
+The reviewed UI branch through `40a2809` was integrated without conflicts or overwriting uncommitted work. Runtime release `1bb9c04` is deployed at https://95.133.254.90.sslip.io. Read [CHAT_UI_INTEGRATION_RESULTS.md](CHAT_UI_INTEGRATION_RESULTS.md) for commit mapping, direct browser evidence and open accuracy findings. The full integrated browser-enabled suite passed 811 tests with one skipped; doctor passed. The public access, provider switch, reconstruction and refinement contracts are unchanged. No push.
+
+Compact controls, exact source/geometry revision navigation, captured QA during orbit/tab changes, persistent provenance, independent overlays, terminal status and restored-answer deduplication passed independent integrated browser review. Safe exception labels and upstream HTTP status were added to existing provider-call records; no request/exception text, new stage, retry, model switch or timeout increase. The code-only deployment preserved 613 files, 14 buildings, 11 jobs, all revision pointers and credentials; no reseeding occurred.
+
+Fresh exact window-count QA completed on both historical artifacts, and focused-source/tour continuation passed. **Neither count is factually accepted:** 11397 misses upper stair-side glazing; 1794 misses the MH/balcony opening above the door. Both omissions are also absent from the saved description/index/IFC, while full original images were supplied to QA. Positive review decisions failed to catch the omissions. Causal dependence on the incomplete inventory is unproven; a source-context comparison experiment is proposed but not run. Historical count provider failures, the focused-source ReadTimeout and the original undiagnosed generic exception remain preserved. Do not close factual count acceptance or describe the transport causes as fixed.
+
+The historical deployment/UI notes below describe earlier checkpoints and are superseded by this section where conflicting. Final public-browser recheck is recorded in the integration results.
+
+---
+
+# Public deployment checkpoint — 2026-11-14
+
+Public HTTPS: https://95.133.254.90.sslip.io, Verda CPU release `a470a11`, nine immutable cached examples, shared-code QA/uploads/private work. Code is only in the operator's local `/tmp/junction-verda/private-deployment/demo-access-code.txt`; never print or commit it. Read [PUBLIC_DEMO_RESULTS.md](PUBLIC_DEMO_RESULTS.md) and [VERDA_DEPLOYMENT.md](VERDA_DEPLOYMENT.md) for exact verification, resource IDs, export/rollback/manual teardown and known gaps. No push.
+
+Independent public browser review passed all nine orbit/source/floor/assumption/overlay flows, trusted TLS and access guards. Live Gemini supported1794/1732 QA and11397 original-height refusal passed. Fresh1732 source interpretation and source-only QA survived refresh; geometry produced a partial preview whose correction was rejected, retaining the usable model. Its actual IFC export/reimport and identical original reupload preserved provenance and unscaled assumptions without inference. A server restart preserved516files, five jobs and11bundles; browser reopening worked without inference, while only nine examples remain public. Full browser-enabled tests760passed/one optional skipped; doctor passed.
+
+Separate UI corrective work is coordinated in `/tmp/junction-ui-coordination.md`; it owns isolated routing/controller/viewer presentation changes, while root retains reconstruction, QA, validation, refinement, public access and deployment. Current deployed UI still has a stale retained-preview header, pending-model note and duplicated restored QA card (one persisted answer, no extra inference). These precise findings are assigned to that corrective worktree. Some separate local live count/tour attempts timed out at different provider stages; do not claim those passed or infer insufficiency. Pending corrective changes are not yet deployed. Earlier church full geometry recovery remains unachieved; deployment success does not complete that fidelity objective.
+
+---
+
+# Revision reliability and public demo checkpoint —2026-11-14
+
+Read [REVISION_RELIABILITY_RESULTS.md](REVISION_RELIABILITY_RESULTS.md) for current live recovery evidence.3181 host repair and34/11397 attributed-height recovery passed live and independent browser/source/IFC review. The unseen10262 workflow passed with an explicit loft-as-floor fidelity gap. Church metadata recovery works in an offline control, but its full live batches still fail strict geometry checks; do not claim that recovery complete. Old failures, usable revisions, source-only refusals and portable assumptions are preserved.
+
+The reviewed public deployment work is now authorized: one Verda CPU server, persistent storage, Gemini, nine curated cached examples, public browsing and shared-code paid/private actions. Plans are [PUBLIC_DEMO_PLAN.md](PUBLIC_DEMO_PLAN.md) and [VERDA_DEPLOYMENT_PLAN.md](VERDA_DEPLOYMENT_PLAN.md). Code holders share one privileged workspace, not private per-user accounts. Sources/model revisions of shared examples are read-only; authenticated QA is allowed against exact pinned originals. UI branchfeat/chat-first-ui was integrated through61f59e9; access-UI integration/public verification is ongoing. No push.
+
+---
+
 # Consolidation checkpoint — 2026-11-14
 
 Work is on `blueprint-qa-isolated`; focused commits are local only. Read [CONSOLIDATION_PLAN.md](CONSOLIDATION_PLAN.md) and [CONSOLIDATION_RESULTS.md](CONSOLIDATION_RESULTS.md) for the current diagnostic evidence and acceptance gaps. No new model, format, renderer, infrastructure or execution-budget increase was introduced.

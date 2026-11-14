@@ -15,7 +15,7 @@ import wave
 import pytest
 
 from test_browser import upload
-from test_browser_3d import SceneFixtureProvider
+from test_browser_3d import SceneFixtureProvider, generate_scene
 
 pytestmark = pytest.mark.skipif(os.getenv("RUN_BROWSER_TESTS") != "1", reason="opt-in browser checks")
 
@@ -161,7 +161,7 @@ def ready(page, url, model=False):
     page.goto(url); upload(page)
     expect(page.locator("#voice-record")).to_be_enabled()
     if model:
-        page.locator("#generate-scene").click()
+        generate_scene(page)
         page.wait_for_function("window.blueprintViewer?.data.elements.length > 0")
         expect(page.locator("#voice-alias-target option")).to_have_count(3)
 
@@ -372,7 +372,7 @@ def test_second_spoken_question_starts_fresh_but_preserves_unsent_draft(voice_se
         page.locator("#voice-stop-recording").click()
         expect(page.locator("#voice-status")).to_contain_text("Transcript ready")
         assert submit_and_get_answer(page)["answer"] == "Fixture: one labeled room."
-        expect(page.locator("#result")).to_be_visible()
+        expect(page.locator("#chat-log .chat-answer").last).to_be_visible()
         expect(page.locator("#voice-record")).to_be_enabled()
     assert state.questions and set(state.questions) == {"Where is plant room?"}
     page.locator("#question").fill("On the upper floor:")

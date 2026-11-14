@@ -1,0 +1,11 @@
+# Replace DEMO_HOST with the allocated IP-derived hostname before validation.
+DEMO_HOST {
+    encode zstd gzip
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+    }
+    # Public browsing and code-gated work are enforced by app.public_access.
+    # Keep cookies/Origin intact. Never expose the application port publicly.
+    reverse_proxy 127.0.0.1:8000
+}

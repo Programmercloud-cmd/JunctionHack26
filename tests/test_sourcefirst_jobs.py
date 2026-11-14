@@ -224,7 +224,11 @@ def test_numeric_geometry_refinement_reviews_originals_before_publication(tmp_pa
                 assert document.pages[0].path.exists() and kwargs['previous_scene']
                 assert document.user_values[0]['provenance']=='user_provided'
                 assert document.description.floors[0].height is None
-                return ReconstructionReview(candidate_supported=supported,summary='Fixture original-source conflict check')
+                assert kwargs['change_context']['requested_inputs']
+                assert kwargs['previous_user_values']==[]
+                return ReconstructionReview(candidate_supported=supported,summary='Fixture original-source conflict check',candidate_assessment={
+                    'delta_support':'supported' if supported else 'unsupported','source_conflicts':[],
+                    'new_regressions':[],'pre_existing_issue_ids':[],'unresolved':[],'unresolved_delta':[],'issue_resolutions':[]})
             return ReconstructionReview(candidate_supported=True,summary='Fixture first model')
     store=BuildingStore(tmp_path);document=store.add(png(),'plan.png');provider=NumericReview();runner=JobRunner(store,lambda:provider)
     try:

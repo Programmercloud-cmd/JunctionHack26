@@ -6,7 +6,7 @@ let voice = null;
 const suggestions = Array.from(document.querySelectorAll("[data-question]"));
 
 function announce(message) { $("announcer").textContent = message; }
-function setError(id, message = "") { $(id).textContent = message; $(id).hidden = !message; }
+function setError(id, message = "") { $(id).textContent = message; $(id).hidden = !message; window.chatUI?.onError(id,message); }
 function updateControls() {
   const busy = Boolean(state.busy);
   const recording = Boolean(voice?.recording);
@@ -24,7 +24,7 @@ function updateControls() {
   $("ask-progress").hidden = state.busy !== "ask" && !state.questionRequest?.pending;
   $("question-help").textContent = !state.document ? "Upload a drawing to get started." : !state.providerReady ? `You can preview the drawing. Configure ${state.health?.provider_label || "the selected provider"} to ask questions.` : "Answers are limited to the supplied drawing.";
   $("previous-page").disabled = !state.document || state.pageIndex === 0;
-  $("next-page").disabled = !state.document || state.pageIndex >= state.document.pages.length - 1;
+  $("next-page").disabled = !state.document || state.pageIndex >= displayPages().length - 1;
   $("character-count").textContent = `${$("question").value.length} / 2000`;
   $("question-form").setAttribute("aria-busy", String(state.busy === "ask"));
   $("source-heading").closest("section").setAttribute("aria-busy", String(state.busy === "upload"));
@@ -40,6 +40,7 @@ function updateControls() {
   $("show-drawing").hidden = state.document?.kind === "ifc";
   $("scene-progress").hidden = state.busy !== "scene";
   voice?.syncControls();
+  window.chatUI?.syncControls();
 }
 
 async function request(path, options = {}, timeout = 180000) {
@@ -113,6 +114,7 @@ async function uploadFile(input, append = false) {
   }
   voice?.cancelAll();
   state.busy="upload";const version=++state.requestVersion;updateControls();
+  window.chatUI?.onUpload(files,append);
   const form=new FormData();for(const file of files)form.append("files",file);
   const path=append&&state.document?`/api/buildings/${state.document.building_id}/sources`:"/api/documents";
   try{
@@ -164,6 +166,7 @@ async function activateDocument(result) {
     if(result.scene_url)await loadScene(await request(result.scene_url));
   }
   renderSourceList();renderBuildingStatus();renderJobs();updateControls();
+  window.chatUI?.onDocument(result);
   if(progressiveDocument()){await Promise.allSettled([refreshConversation(),refreshAssumptions()]);schedulePoll(0);}
 }
 async function openBuilding(id) {
@@ -203,6 +206,48 @@ function rememberJob(job) {
   if(job.building_id!==state.document?.building_id)return;
   state.jobs=[job,...state.jobs.filter(j=>j.id!==job.id)];renderBuildingStatus();renderJobs();updateControls();
 }
+function renderJobRecovery(row, job) {
+  for(const value of job.submitted_values || []){
+    const item=document.createElement("p");item.className="job-submitted-value";
+    const scope=[value.scope?.floor_id,value.scope?.object_id].filter(Boolean).join(" / ");
+    item.textContent=`Submitted input (user-provided; see outcome above): ${(value.property || "value").replaceAll("_"," ")}${scope?` · ${scope}`:""} = ${nativeValue(value.value)}${value.unit?` ${value.unit}`:""}${value.reason?`. ${value.reason}`:""}`;
+    row.append(item);
+  }
+  if(!job.recovery_events?.length)return;
+  const history=document.createElement("section"),title=document.createElement("strong");history.className="job-recovery";
+  title.textContent="Recovery history";history.append(title);
+  for(const event of job.recovery_events){
+    const item=document.createElement("div"),heading=document.createElement("p"),detail=document.createElement("p");item.className="job-recovery-event";
+    const labels={rejection:"Correction rejected",authorization:"Additional target review",stopped:"Recovery stopped"};
+    heading.textContent=`${event.attempt?`Attempt ${event.attempt} · `:""}${labels[event.kind] || "Recovery update"}`;
+    detail.textContent=event.message || "";item.append(heading,detail);
+    if(event.kind==="rejection"&&event.feedback){
+      const feedback=event.feedback,reason=document.createElement("p"),expected=document.createElement("p");
+      reason.textContent=[feedback.code,feedback.target_id?`Target ${feedback.target_id}`:"",feedback.explanation].filter(Boolean).join(" · ");
+      expected.textContent=feedback.expected_contract?`Required correction: ${feedback.expected_contract}`:"";item.append(reason,expected);
+    }
+    if(event.kind==="authorization"){
+      const sourceRevision=event.base_revision_id || job.base_revision_id;
+      for(const decision of event.decisions || []){
+        const entry=document.createElement("div"),outcome=document.createElement("p"),reason=document.createElement("p");entry.className="job-target-decision";
+        const labels={approved:"Approved correction target",denied:"Denied",unclear:"Unclear · not authorized"};
+        outcome.textContent=`${labels[decision.decision] || "Not authorized"} · target ${decision.target_id}${decision.issue_id?` · issue ${decision.issue_id}`:""}`;
+        reason.textContent=decision.reason || "";entry.append(outcome,reason);
+        if(decision.evidence&&typeof sourceRevision==="string"&&/^[a-f0-9]{32}$/i.test(sourceRevision)){
+          const source=document.createElement("button");source.type="button";source.className="text-button job-target-source";source.textContent="Inspect reviewed target in original source ↗";
+          source.addEventListener("click",()=>showSourceRegion(decision.evidence,`Reviewed target ${decision.target_id}`,sourceRevision));entry.append(source);
+        }
+        item.append(entry);
+      }
+      for(const request of event.requests || [])if(!(event.decisions || []).some(decision=>decision.request_id===request.request_id)){
+        const pending=document.createElement("p");pending.textContent=`Requested target ${request.target_id} · no authorization decision recorded`;item.append(pending);
+      }
+      const note=document.createElement("p");note.textContent="Target approval permits a proposed correction; it does not mean a change was applied or accepted.";item.append(note);
+    }
+    history.append(item);
+  }
+  row.append(history);
+}
 function renderJobs() {
   const open=new Set([...$("building-jobs").querySelectorAll("details[open]")].map(d=>d.dataset.jobId));
   const historyWasOpen=Boolean($("past-jobs")?.open);
@@ -226,6 +271,7 @@ function renderJobs() {
       // The server publishes a sanitized diagnostic separately from provider internals.
       diagnostic.textContent=`Failure detail: ${job.diagnostic_message}`;row.append(diagnostic);
     }
+    renderJobRecovery(row,job);
     for(const issue of job.issues || []){
       const item=document.createElement("div"),heading=document.createElement("strong"),detail=document.createElement("p"),source=document.createElement("button");item.className="job-issue";
       heading.textContent=`${issue.category} · ${issue.discrepancy}`;detail.textContent=[issue.evidence,issue.uncertainty,issue.proposed_action].filter(Boolean).join(" ");
@@ -244,6 +290,7 @@ function renderJobs() {
       else{setError("ask-error",question.message || "Question stopped without a confirmed answer.");$("answer-empty").hidden=false;}
     }
   }
+  window.chatUI?.onJobs(state.jobs);
 }
 async function refreshBuilding() {
   if(!progressiveDocument())return;
@@ -269,6 +316,7 @@ async function refreshBuilding() {
     const savedOption=[...$("saved-building-select").options].find(option=>option.value===id);
     if(savedOption)savedOption.textContent=`${result.filename} · ${result.has_scene?"model available":"source available"}`;
     renderBuildingStatus();renderJobs();setError("building-poll-error");updateControls();
+    window.chatUI?.onDocument(state.document);
   }catch(error){if(epoch===state.epoch)setError("building-poll-error",`${error.message} The displayed model remains available. Use Refresh status to retry.`);}
   finally{
     if(state.pollingEpoch===epoch)state.pollingEpoch=null;
@@ -291,11 +339,15 @@ async function startReconstruction(mode) {
   finally{if(epoch===state.epoch){state.reconstructionSubmitting=false;if(state.busy==="scene")state.busy=null;updateControls();}}
 }
 
+function displayPages() {
+  const sourceView=window.chatUI?.sourceView();
+  return state.evidenceRevision&&sourceView?.revision_id===state.evidenceRevision?sourceView.pages:state.document?.pages||[];
+}
 function renderPage() {
-  if (!state.document?.pages.length) return;
-  const page = state.document.pages[state.pageIndex];
-  $("page-label").textContent = `${page.source_filename || state.document.filename} · page ${page.source_page || page.page} (${state.pageIndex+1}/${state.document.pages.length})${state.evidenceRevision?" · answered revision":""}`;
-  $("page-image").alt = `${state.document.filename}, page ${page.page}`;
+  const pages=displayPages(),page=pages[state.pageIndex];
+  if (!page) return;
+  $("page-label").textContent = `${page.source_filename || state.document.filename} · page ${page.source_page || page.page} (${state.pageIndex+1}/${pages.length})${state.evidenceRevision?" · source revision":""}`;
+  $("page-image").alt = `${page.source_filename || "Original drawing"}, page ${page.source_page || page.page}`;
   // Only load normalized page previews from this application.
   const preview=state.evidenceRevision?`/api/buildings/${state.document.building_id}/revisions/${state.evidenceRevision}/pages/${page.page}`:page.image_url;
   const url = new URL(preview, window.location.origin);
@@ -312,7 +364,7 @@ function renderPage() {
 
 function renderOverlay() {
   const evidence = state.sourceSelection || (state.selectedEvidence === null ? null : state.result?.evidence?.[state.selectedEvidence]);
-  const page = state.document?.pages[state.pageIndex];
+  const page = displayPages()[state.pageIndex];
   const overlay = $("evidence-overlay");
   overlay.hidden = true;
   $("viewer-caption").textContent = "Select an evidence reference to locate it on the drawing.";
@@ -325,7 +377,7 @@ function renderOverlay() {
   overlay.style.height = `${(bottom - top) * 100}%`;
   $("overlay-number").textContent = state.sourceSelection ? "Source" : String(state.selectedEvidence + 1);
   overlay.hidden = false;
-  $("viewer-caption").textContent = `${state.sourceSelection ? "Model source region" : `Reference ${state.selectedEvidence + 1}`} · Page ${evidence.page} · ${evidence.label}`;
+  $("viewer-caption").textContent = `${state.sourceSelection ? "Saved source region" : `Reference ${state.selectedEvidence + 1}`} · Page ${evidence.page} · ${evidence.label}`;
   $("viewer").scrollTo({ left: Math.max(0, overlay.offsetLeft + overlay.offsetWidth / 2 - $("viewer").clientWidth / 2), top: Math.max(0, overlay.offsetTop + overlay.offsetHeight / 2 - $("viewer").clientHeight / 2), behavior: "instant" });
 }
 
@@ -448,6 +500,7 @@ function renderResult(result, preserveView = false) {
   if (Number.isFinite(result.usage?.output_tokens)) addDetail("Output tokens", result.usage.output_tokens.toLocaleString());
   renderOverlay();
   announce(`${labels[result.status] || "Inspection complete"}. ${result.answer || ""}`);
+  window.chatUI?.syncHighlights();
 }
 
 function clearScene() {
@@ -499,12 +552,13 @@ function syncViewerControls(snapshot) {
   for(const record of snapshot.concept_records || [])if(record.kind==="proposal")$("concept-proposal-select").append(new Option(`Proposal · ${record.label}`,record.id));
   $("concept-proposal-select").value=selected;
 }
-function inspectProposal(record) {
+function inspectProposal(record, options = {}) {
   state.selectedProposal=record;$("element-inspector").hidden=true;
   $("concept-selection").hidden=false;$("concept-selection-name").textContent=`Proposal · ${record.label}`;
   $("concept-selection-note").textContent=record.note;
   $("concept-support-source").hidden=!state.scene?.elements.some(e=>e.id===record.host_id&&e.source.kind==="image");
   $("concept-proposal-select").value=record.id;announce(`Selected decorative proposal: ${record.label}. This is not source evidence.`);
+  window.chatUI?.onProposal(record, options);
 }
 function setView(view) {
   if(view==="concept"&&!state.viewer)return;
@@ -522,6 +576,7 @@ async function loadScene(scene) {
   if (scene.document_id !== state.document?.document_id) return;
   const updating=Boolean(state.viewer&&state.scene?.document_id===scene.document_id);
   if(updating&&(!scene.revision_id||scene.revision_id===state.scene.revision_id))return;
+  const oldSceneRevision=state.scene?.revision_id;
   const oldView=state.view, oldSelected=state.selectedElement, oldProposal=state.selectedProposal, oldComparison=$("comparison-floor-select").value;
   let prepared=null;
   if(updating){try{prepared=state.viewer.prepareRevision(scene);state.viewer.commitRevision(prepared);}catch(error){setError("scene-error","The model update could not be published. The previous usable revision remains available.");return;}}
@@ -564,8 +619,8 @@ async function loadScene(scene) {
       const changes=state.viewer.getSnapshot().revision_changes;
       $("revision-notice").hidden=false;
       $("revision-notice").textContent=changes.removed_selection||changes.unresolved_selection?"Model updated. The selected object was removed or is now unresolved; its previous source evidence remains available below.":"Model updated. Your view is preserved; use Fit updated model if you want new framing.";
-      if(oldSelected){const current=scene.elements.find(e=>e.id===oldSelected.id);inspectElement(current || oldSelected);if(!current)$("element-geometry-note").textContent="Removed in the current revision. Original source evidence retained; no replacement object was selected.";}
-      if(oldProposal){const record=state.viewer.concept?.records.get(oldProposal.id);if(record)inspectProposal(record);else{$("concept-selection").hidden=true;state.selectedProposal=null;}}
+      if(oldSelected){const current=scene.elements.find(e=>e.id===oldSelected.id);inspectElement(current || oldSelected,{automatic:true,source_revision_id:current?scene.revision_id:oldSceneRevision});if(!current)$("element-geometry-note").textContent="Removed in the current revision. Original source evidence retained; no replacement object was selected.";}
+      if(oldProposal){const record=state.viewer.concept?.records.get(oldProposal.id);if(record)inspectProposal(record,{automatic:true});else{$("concept-selection").hidden=true;state.selectedProposal=null;}}
       setView(oldView);
     }
     if(updating&&state.result){state.result=answerForDisplayedRevision(state.result);$("answer-review-note").textContent=state.result.review_note || "";$("answer-review-note").hidden=!state.result.review_note;}
@@ -581,9 +636,11 @@ async function loadScene(scene) {
     window.blueprintViewer = null;
   }
   updateControls();
+  window.chatUI?.onScene(scene);
 }
 
 function updateHighlights(preserveView = false) {
+  if(window.chatUI){window.chatUI.syncHighlights();return;}
   const ids = Array.isArray(state.result?.highlight_ids) ? state.result.highlight_ids : [];
   if (!preserveView && state.viewer?.mode !== "concept" && $("floor-select").value && ids.some((id) => state.scene?.elements.some((element) => element.id === id && element.storey_id !== $("floor-select").value))) setFloorFilter("");
   state.viewer?.setHighlights(ids, $("highlight-answer").checked);
@@ -614,9 +671,9 @@ function revealEvidenceFloor(evidence) {
   if ($("comparison-floor-select").value) $("comparison-floor-select").value = id;
 }
 
-function showSourceRegion(source, label) {
+function showSourceRegion(source, label, revision=null) {
   if(!source||source.kind==="ifc")return;
-  state.evidenceRevision=null;
+  state.evidenceRevision=revision;
   const index = state.document?.pages.findIndex((page) => page.page === source.page) ?? -1;
   if (index < 0) return;
   revealEvidenceFloor(source);
@@ -627,6 +684,7 @@ function showSourceRegion(source, label) {
   setView("drawing");
   renderPage();
   announce(`Showing original source region for ${label}, page ${source.page}.`);
+  window.chatUI?.openWorkspace("source");
 }
 
 function renderFloors() {
@@ -757,11 +815,11 @@ function selectComparison(id) {
 function renderComparison() {
   const overlay = $("comparison-overlay");
   overlay.replaceChildren();
-  const enabled = Boolean(state.scene?.derived && $("show-comparison").checked);
+  const enabled = Boolean(state.scene?.derived && $("show-comparison").checked && (!state.evidenceRevision||state.evidenceRevision===state.scene.revision_id));
   $("comparison-options").hidden = !enabled;
   overlay.toggleAttribute("hidden", !enabled);
   if (!enabled) return;
-  const page = state.document?.pages[state.pageIndex]?.page;
+  const page = displayPages()[state.pageIndex]?.page;
   const floor = $("comparison-floor-select").value;
   const layers = new Set([...document.querySelectorAll("[data-comparison-layer]:checked")].map((input) => input.dataset.comparisonLayer));
   const entries = (state.scene.comparison || []).filter((entry) => entry.page === page && (!floor || entry.floor_id === floor) && layers.has(entry.layer));
@@ -818,7 +876,7 @@ function renderInventory() {
   panel.hidden = !state.scene?.derived;
   if (panel.hidden) { $("unresolved-model-notice").hidden=true; return; }
   const floor = $(state.view === "drawing" ? "comparison-floor-select" : "floor-select").value;
-  const page = state.document?.pages[state.pageIndex]?.page;
+  const page = displayPages()[state.pageIndex]?.page;
   const elements = state.scene.elements.filter((element) => (!floor || element.storey_id === floor) && (state.view !== "drawing" || element.source.page === page));
   const modelUnresolved=state.scene.elements.filter((element)=>(element.representation === "unresolved" || !element.geometry) && (!$("floor-select").value || element.storey_id === $("floor-select").value));
   $("unresolved-model-notice").hidden=!modelUnresolved.length;
@@ -849,7 +907,7 @@ function renderInventory() {
   }
 }
 
-function inspectElement(element) {
+function inspectElement(element, options = {}) {
   state.selectedProposal=null;$("concept-selection").hidden=true;
   state.selectedElement = element;
   if (state.viewer && $("floor-select").value !== state.viewer.floorFilter) { $("floor-select").value = state.viewer.floorFilter; renderFloorDetails(); renderInventory(); }
@@ -887,6 +945,7 @@ function inspectElement(element) {
   $("element-assumptions-section").hidden = !element.assumptions?.length && !conceptRecord;
   $("element-source").hidden = element.source.kind !== "image";
   announce(`Selected ${element.name || element.id}. Source properties are available below the model.`);
+  window.chatUI?.onSelection(element, options);
 }
 
 function selectModelElement(id) {
@@ -901,8 +960,8 @@ function ifcReference(reference) {
   return [reference.ifc_type,reference.global_id?`GlobalId ${reference.global_id}`:null,reference.step_id?`STEP #${reference.step_id}`:null].filter(Boolean).join(" · ") || JSON.stringify(reference);
 }
 function nativeValue(value) {return typeof value==="object"?JSON.stringify(value):String(value ?? "Not supplied");}
-async function inspectNativeEvidence(item) {
-  const building=state.document?.building_id,revision=state.result?.answered_revision_id || state.scene?.revision_id || state.document?.revision_id;
+async function inspectNativeEvidence(item, revisionOverride = null) {
+  const building=state.document?.building_id,revision=revisionOverride || state.result?.answered_revision_id || state.scene?.revision_id || state.document?.revision_id;
   const epoch=state.epoch,token=state.nativeEvidenceToken=(state.nativeEvidenceToken || 0)+1;
   if(state.scene?.elements.some(element=>element.id===item.element_id&&element.geometry))selectModelElement(item.element_id);
   $("native-record-inspector").hidden=false;$("native-record-name").textContent=item.label || "Original IFC record";$("native-record-note").textContent="Loading the original source record from the answered revision…";
@@ -980,6 +1039,7 @@ async function refreshConversation() {
   }catch(error){if(epoch===state.epoch)setError("conversation-error",`Conversation history is unavailable: ${error.message}`);}
 }
 function renderConversation() {
+  if(window.chatUI){window.chatUI.mergeConversation(state.conversation);return;}
   const container=$("conversation");container.replaceChildren();
   const latestAssistant=[...state.conversation].reverse().find(m=>m.answer);
   state.clarificationReply=latestAssistant?.answer?.status==="clarification"?latestAssistant.id:null;
@@ -1011,7 +1071,7 @@ async function refreshAssumptions() {
     const payload=await request(`/api/buildings/${id}/assumptions`,{},15000);if(epoch!==state.epoch)return;
     // Keep unsent edits pinned to the revision the user actually inspected.
     if(!state.assumptionEdits.size)state.assumptionsRevision=payload.revision_id;
-    state.assumptionRows=payload.rows || [];renderAssumptions();setError("assumption-error");
+    state.assumptionDataRevision=payload.revision_id;state.assumptionRows=payload.rows || [];renderAssumptions();setError("assumption-error");window.dispatchEvent(new CustomEvent("blueprint:workspace"));
   }catch(error){if(epoch===state.epoch)setError("assumption-error",error.message);}
 }
 function renderAssumptions() {
@@ -1133,6 +1193,7 @@ $("element-source").addEventListener("click", () => {
 
 $("question-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if(window.chatUI){window.chatUI.submit();return;}
   const question=$("question").value.trim();
   if(!question||!state.document||state.busy||state.askSubmitting||!state.providerReady||voice?.recording)return;
   voice?.cancelAll();
@@ -1164,7 +1225,13 @@ sourcePanel.addEventListener("dragleave", (event) => { if (!sourcePanel.contains
 sourcePanel.addEventListener("drop", (event) => { event.preventDefault(); $("drop-zone").classList.remove("drag-over"); if (!state.busy) { uploadFile(event.dataTransfer.files); } });
 $("question").addEventListener("input", updateControls);
 suggestions.forEach((button) => button.addEventListener("click", () => { $("question").value = button.dataset.question; updateControls(); $("question").focus(); }));
-function changePage(direction) { if (!state.document) return; const index = state.pageIndex + direction; if (index < 0 || index >= state.document.pages.length) return; state.evidenceRevision=null; state.pageIndex = index; $("comparison-floor-select").value = ""; renderPage(); }
+function changePage(direction) {
+  if (!state.document) return;
+  const pages=displayPages(),index=state.pageIndex+direction;
+  if(index<0||index>=pages.length)return;
+  if(window.chatUI)return window.chatUI.execute({type:"browse_source",page:pages[index].page,source_revision_id:window.chatUI.sourceView().revision_id}).catch(error=>setError("upload-error",error.message));
+  state.evidenceRevision=null;state.pageIndex=index;$("comparison-floor-select").value="";renderPage();
+}
 $("previous-page").addEventListener("click", () => changePage(-1));
 $("next-page").addEventListener("click", () => changePage(1));
 $("viewer").addEventListener("keydown", (event) => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); changePage(event.key === "ArrowLeft" ? -1 : 1); } });

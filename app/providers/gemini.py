@@ -8,12 +8,13 @@ import os
 import uuid
 from pathlib import Path
 from time import monotonic
+from typing import ClassVar
 
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types
-from google.genai.errors import APIError
-from httpx2 import TimeoutException
+from google.genai import errors as genai_errors, types
+from google.genai import _interactions as decision_errors
+import httpx2
 from pydantic import ValidationError
 
 from ..documents import Document
@@ -56,7 +57,8 @@ def _begin_call(provider, schema, model, max_tokens, timeout_ms, thinking_level=
         "schema": schema if isinstance(schema, str) else schema.__name__, "model": model,
         "max_output_tokens": max_tokens, "timeout_ms": timeout_ms, "thinking_level": thinking_level,
         "elapsed_ms": None, "finish_reason": None, "prompt_tokens": None,
-        "candidate_tokens": None, "thought_tokens": None, "outcome": "request_started"}
+        "candidate_tokens": None, "thought_tokens": None, "outcome": "request_started",
+        "exception_type": None, "http_status": None}
     if not hasattr(provider, "provider_calls"): provider.provider_calls = []
     provider.provider_calls.append(record)
     return record, monotonic()
@@ -66,6 +68,52 @@ def _finish_call(provider, record, started):
     record["elapsed_ms"] = round((monotonic()-started)*1000)
     callback = getattr(provider, "diagnostic_callback", None)
     if callback: callback()
+
+
+def _record_exception(record, error):
+    """Record fixed class labels and upstream status, never exception/source text."""
+    known = (
+        (genai_errors.ClientError, "ClientError"),
+        (genai_errors.ServerError, "ServerError"),
+        (genai_errors.APIError, "APIError"),
+        (decision_errors.APITimeoutError, "APITimeoutError"),
+        (decision_errors.APIConnectionError, "APIConnectionError"),
+        (decision_errors.BadRequestError, "BadRequestError"),
+        (decision_errors.AuthenticationError, "AuthenticationError"),
+        (decision_errors.PermissionDeniedError, "PermissionDeniedError"),
+        (decision_errors.NotFoundError, "NotFoundError"),
+        (decision_errors.ConflictError, "ConflictError"),
+        (decision_errors.UnprocessableEntityError, "UnprocessableEntityError"),
+        (decision_errors.RateLimitError, "RateLimitError"),
+        (decision_errors.InternalServerError, "InternalServerError"),
+        (decision_errors.APIStatusError, "APIStatusError"),
+        (decision_errors.APIResponseValidationError, "APIResponseValidationError"),
+        (decision_errors.APIError, "APIError"),
+        (httpx2.ReadTimeout, "ReadTimeout"),
+        (httpx2.ConnectTimeout, "ConnectTimeout"),
+        (httpx2.WriteTimeout, "WriteTimeout"),
+        (httpx2.PoolTimeout, "PoolTimeout"),
+        (httpx2.TimeoutException, "TimeoutException"),
+        (httpx2.ConnectError, "ConnectError"),
+        (httpx2.ReadError, "ReadError"),
+        (httpx2.WriteError, "WriteError"),
+        (httpx2.CloseError, "CloseError"),
+        (httpx2.ProxyError, "ProxyError"),
+        (httpx2.RemoteProtocolError, "RemoteProtocolError"),
+        (httpx2.LocalProtocolError, "LocalProtocolError"),
+        (httpx2.TransportError, "TransportError"),
+        (httpx2.HTTPStatusError, "HTTPStatusError"),
+        (httpx2.HTTPError, "HTTPError"),
+        (ValidationError, "ValidationError"),
+        (json.JSONDecodeError, "JSONDecodeError"),
+        (ProviderError, "ProviderError"),
+    )
+    record["exception_type"] = next((label for kind, label in known if isinstance(error, kind)), "UnexpectedError")
+    status = (error.code if isinstance(error, genai_errors.APIError) else
+        error.status_code if isinstance(error, decision_errors.APIStatusError) else
+        error.response.status_code if isinstance(error, httpx2.HTTPStatusError) else None)
+    # Valid HTTP status metadata only; local ProviderError.status is not upstream.
+    record["http_status"] = status if type(status) is int and 100 <= status <= 599 else None
 
 
 def _source_catalog(document):
@@ -81,6 +129,80 @@ def _patch_targets(review):
         "explicit_target_ids": issue.object_ids,
         "target_scope": "listed_existing_ids_only" if issue.object_ids else "reviewed_source_region_subject_to_local_validation",
         "source": issue.source.model_dump(mode="json")} for issue in review.issues]
+
+
+def _authorization_review_scopes(review):
+    """Current grants are the baseline for reviewing exact requested additions."""
+    return [{"issue_id": issue.id, "category": issue.category, "actionable": issue.actionable,
+        "currently_authorized_target_ids": issue.object_ids,
+        "source": issue.source.model_dump(mode="json")} for issue in review.issues]
+
+
+def _json_data(value):
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, list):
+        return [_json_data(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _json_data(item) for key, item in value.items()}
+    return value
+
+
+def _reconstruction_review_schema(change_context):
+    from ..review_schema import ReconstructionReview
+    if change_context is None:
+        return ReconstructionReview
+    from ..review_schema import CandidateAssessment
+
+    class DeltaCandidateAssessment(CandidateAssessment):
+        # Legacy saved reviews remain readable through CandidateAssessment. A
+        # fresh response must name uncertainty about the requested change only.
+        unresolved: ClassVar[None] = None
+        unresolved_delta: list[str]
+
+    class CandidateReconstructionReview(ReconstructionReview):
+        candidate_assessment: DeltaCandidateAssessment
+
+    return CandidateReconstructionReview
+
+
+FLOOR_METADATA_INSTRUCTIONS = """For an EXISTING floor's metadata, use floor_metadata_updates with its exact floor_id and explicit typed field/value changes.
+Never copy or empty its rooms, boundaries, openings, features, unresolved records or measurements. Edit nested objects through separate operations.
+Only named metadata fields change; unspecified fields remain unchanged. Use explicit null only to clear a nullable metadata field with source support.
+Do not replace the whole existing floor to correct its bbox. Supported depicted floor additions/removals still use their separately validated operations.
+Metadata updates need their own contextual source evidence, reason and applicable issue_ids; frame changes still require explicit transform_updates.
+"""
+
+
+CANDIDATE_REVIEW_INSTRUCTIONS = """The supplied change_context pins the REQUESTED DELTA against the previous usable revision.
+Return candidate_assessment with delta_support, source_conflicts, new_regressions, pre_existing_issue_ids, unresolved_delta and issue_resolutions.
+unresolved_delta lists ONLY uncertainty about support for the requested change; use [] when that change has no unresolved support question.
+Pre-existing omissions belong in issues and pre_existing_issue_ids, never unresolved_delta merely because they remain unfixed. Do not return the legacy unresolved field.
+Inspect the original source and BOTH actual reopened IFC overlays, deterministic geometry delta, submitted inputs, previous_user_values and current user_values.
+Separate unchanged pre-existing omissions from defects introduced by this change. Preserve unresolved prior findings in issues and link their existing IDs where applicable;
+do not invent a previously accepted review when baseline findings are missing or come from a rejected candidate. A newly noticed defect unchanged in both scenes is pre-existing, not a new regression.
+Resolve a prior finding only with an explicit issue_resolutions entry naming that exact prior issue_id, contextual original-source evidence and a specific reason supported by the affected actual before/after geometry or source interpretation.
+Use an empty issue_resolutions list when no prior issue was demonstrably fixed. A vertical display-height change cannot resolve an unrelated missing opening, fixture or source-layout defect.
+Keep demonstrably resolved prior findings in issue_resolutions rather than presenting them again as active issues.
+Do not drop prior findings silently or claim resolution merely because candidate_supported is true; the server validates each resolution against the actual affected-target delta and retains history.
+Do not reject a supported attributed height/display change merely because unrelated omissions already existed. Still reject source conflicts, new regressions or unclear change support.
+candidate_supported concerns this requested change and absence of new regressions, not completeness of the whole building. Set it false for unsupported/unclear delta support or source conflicts/new regressions.
+Unchanged XY alone does not prove support. Check actual vertical effects and dependent stairs/storeys against requested values and the explicit display convention.
+User-supplied height must not become an observed source height or calibrate XY. Inspect original measurements even when missing from the interpretation.
+"""
+
+
+TARGET_REVIEW_INSTRUCTIONS = """Inspect ORIGINAL source pages and actual reopened IFC before deciding each requested additional correction target.
+Return the exact supplied base_revision_id and exactly one decision for every request_id: approved, denied or unclear, with contextual positive-area original evidence and a specific reason.
+Only the exact requested existing target for its existing actionable extraction issue can be approved. Preserve request_id, issue_id and target_id exactly.
+The existing_issue_target_scopes currently_authorized_target_ids are the CURRENT authorization baseline, not an eligibility ceiling for this review.
+Each additional_target_requests entry is an explicit request even when its target is absent from the old issue's object_ids. Absence from the old authorized list is not itself a reason to deny.
+An explicitly requested host wall, neighboring object or additional opening is eligible only when inspected ORIGINAL evidence establishes why changing that exact target is necessary to address the existing issue.
+Never grant an unrequested target, new issue, host/dependency wildcard or broad region authority. Proximity or an opening's host reference alone is not sufficient evidence and never grants automatic authority.
+Approve only when inspected original evidence supports changing that precise target to address the stated issue; ambiguous support is unclear.
+This is permission to propose a source-supported change, not acceptance of any patch or a claim of building accuracy. The complete held proposal remains subject to atomic local validation and candidate review.
+Do not repair coordinates or invent source evidence. Keep original-source facts, user inputs and derived geometry distinct.
+"""
 
 
 PATCH_EVIDENCE_INSTRUCTIONS = """Every operation.evidence and transform_updates[*].evidence is a contextual ORIGINAL-page AREA:
@@ -111,13 +233,18 @@ Do not classify a valid implicitly closed polygon as broken merely because its f
 RECONSTRUCTION_PATCH_INSTRUCTIONS="""Propose a targeted data-only patch for supported actionable EXTRACTION issues in the supplied review.
 Read original pages/crops and actual IFC overlays. Preserve unrelated records exactly and retain their persistent IDs. Never output Python, raw IFC or application edits.
 Use add/replace/remove operations on the named collections. New records must have persistent_id=null; the server assigns identities.
-For replacements use the existing target_id. A floor replacement changes metadata only: copy its nested records unchanged; edit nested objects through separate operations.
+For replacements use the existing target_id; existing floor metadata uses floor_metadata_updates rather than a copied floor record.
 Never introduce unpictured floors or guessed factual heights. Ambiguous source features remain unresolved. Generation/display issues are not fixable by changing correct source interpretation.
 Do not change calibration/orientation implicitly. Explicit supported changes require transform_updates with original evidence. Return the exact supplied base_revision_id.
 Use source regions and reasons for every operation, tying them to issue IDs. No unrelated redesign, wholesale rewrite or lost doors/walls.
 The supplied issue_target_scopes reflects existing validation: when an issue lists object IDs, replacements/removals must target those exact IDs.
 A door issue does not authorize replacing a neighboring wall unless that wall ID is listed in an applicable actionable extraction issue.
-Broad source boxes or issue prose do not grant authority to edit unlisted objects. Leave unsupported edits unapplied rather than inventing issue IDs.""" + PATCH_EVIDENCE_INSTRUCTIONS
+Broad source boxes or issue prose do not grant authority to edit unlisted objects. Never invent issue IDs.
+Use validation_feedback to correct the specified local contract failure; do not repeat the same rejected proposal with different wording.
+If an existing extra target is necessary, include additional_target_requests with unique request_id, exact base_revision_id, existing issue_id, target_id, floor_id, collection, original evidence and source-grounded reason.
+You may return its proposed operations in the SAME response; the server holds the entire patch pending original-evidence review of requested targets.
+A request is not authorization. Only explicitly approved supplied authorizations add exact targets to the stated issue, never a wildcard.
+Denied or unclear targets cannot be edited, and an unauthorized operation rejects the entire patch. Do not silently omit an unresolved required change or claim success.""" + PATCH_EVIDENCE_INSTRUCTIONS + FLOOR_METADATA_INSTRUCTIONS
 
 ANSWER_REVIEW_INSTRUCTIONS="""Does the inspected original evidence support this draft's answer to the user's question, including factual claims and derivations, without treating assumptions as facts?
 Inspect source pages for drawings and faithful original IFC records/coverage for native IFC. JSON interpretation is fallible; generated geometry and concept decoration are not source evidence.
@@ -173,6 +300,13 @@ def gemini_wire_schema(schema: dict) -> dict:
         # add/replace unusable. Require the key; removal explicitly supplies null.
         required=patch.setdefault("required",[])
         if "record" not in required:required.append("record")
+    # Metadata changes retain their discriminated local types. Use the same
+    # JSON-text boundary for the new union instead of expanding Gemini grammar.
+    metadata=result.get("$defs",{}).get("FloorMetadataUpdate",{})
+    changes=metadata.get("properties",{}).get("changes")
+    if isinstance(changes,dict):
+        changes.clear()
+        changes.update(type="string",description="JSON-encoded array of typed metadata field/value changes. Only explicitly listed fields change; never include nested floor inventories.")
     return result
 
 
@@ -273,7 +407,7 @@ Address the supplied missing_geometry_requests. Existing valid segments do not n
 For inventory gaps inspect all meaningful source features; for individual field gaps preserve unrelated geometry and semantics exactly.
 Preserve existing persistent IDs, labels, sources and unrelated semantic records. Add newly inspected records with persistent_id=null.
 Use replace operations to fill geometry on existing records; do not remove an existing record merely because its geometry is unknown.
-A floor replacement changes floor metadata only and must preserve its nested records unchanged; patch objects separately.
+Use floor_metadata_updates for an existing floor's metadata; patch nested objects separately.
 Trace real explicit walls and hosted openings, not room enclosure or door swings. Preserve genuine thick/tapered wall footprints.
 Do not attach openings to a nearby arbitrary wall. Every correction cites original source regions and a specific reason.
 Every bbox/point/segment/polygon uses NORMALIZED DECIMAL FRACTIONS in [0,1] of the ORIGINAL PAGE: x=horizontal pixel/page width and y=vertical pixel/page height.
@@ -282,7 +416,7 @@ Register corresponding floors using supported stair/exterior anchors; same-page 
 Do not rescale floors independently or replace unequal footprints. Unknown heights remain explicit display assumptions.
 No unseen floors, invented dimensions, code or raw IFC. Unsupported relationships remain source-linked unresolved records.
 This is geometry enrichment, not a claim that a reviewer verified the interpretation. issue_ids may be empty.
-""" + PATCH_EVIDENCE_INSTRUCTIONS
+""" + PATCH_EVIDENCE_INSTRUCTIONS + FLOOR_METADATA_INSTRUCTIONS
 
 PROVENANCE_QA_INSTRUCTIONS = """
 For drawing questions, inspect original images even if extraction is incomplete or geometry failed.
@@ -418,8 +552,9 @@ class GeminiProvider:
             self.usage.output_tokens += record["reported_output_tokens"] or 0
             record["outcome"] = "validated_response"
             return response
-        except Exception:
+        except Exception as error:
             record["outcome"] = "provider_error"
+            _record_exception(record, error)
             raise
         finally: _finish_call(self,record,started)
 
@@ -446,7 +581,7 @@ class GeminiProvider:
             from ..review_schema import DescriptionPatch
             if schema is DescriptionPatch:
                 parts.append(types.Part.from_text(text=json.dumps({"record_schemas":schema.model_json_schema().get("$defs",{})})))
-                instruction += "\nWIRE FORMAT: operations[*].record is a JSON-encoded STRING containing the complete typed record object, or null for removal. Use the supplied record schemas and preserve replacement fields exactly. Do not return {} or code."
+                instruction += "\nWIRE FORMAT: operations[*].record is a JSON-encoded STRING containing the complete typed record object, or null for removal. floor_metadata_updates[*].changes is a JSON-encoded STRING containing an array of typed field/value changes, including explicit null only for a supported nullable field clear. Use the supplied record schemas and preserve replacement fields exactly. Do not return {} or code."
             timeout_ms = round(remaining_timeout(self,(timeout_ms or 45000)/1000)*1000)
             record["timeout_ms"] = timeout_ms
             response = self.client.models.generate_content(model=model or self.model, contents=parts,
@@ -483,17 +618,24 @@ class GeminiProvider:
                         operation["record"] = json.loads(operation["record"])
                         if not isinstance(operation["record"],dict):
                             raise ProviderError("The patch record must decode to a typed JSON object. No change was applied.")
+                metadata = decoded.get("floor_metadata_updates",[]) if isinstance(decoded,dict) else []
+                for update in metadata if isinstance(metadata,list) else []:
+                    if isinstance(update,dict) and isinstance(update.get("changes"),str):
+                        update["changes"] = json.loads(update["changes"])
+                        if not isinstance(update["changes"],list):
+                            raise ProviderError("Floor metadata changes must decode to a typed array. No change was applied.")
                 result = schema.model_validate(decoded)
             else: result = schema.model_validate_json(self.last_response_text)
             record["outcome"] = "validated_response"
             return result
         except Exception as error:
+            _record_exception(record, error)
             if record["outcome"] == "request_started":
                 record["outcome"] = ("response_json_rejected" if isinstance(error,json.JSONDecodeError) or isinstance(error,ValidationError) and any(e["type"]=="json_invalid" for e in error.errors(include_input=False)) else
                     "response_schema_rejected" if isinstance(error,ValidationError) else "provider_error")
             if schema is DraftAnswer and (
-                isinstance(error, (TimeoutException, TimeoutError))
-                or isinstance(error, APIError) and error.code in {408, 504}
+                isinstance(error, (httpx2.TimeoutException, TimeoutError))
+                or isinstance(error, genai_errors.APIError) and error.code in {408, 504}
             ):
                 record["outcome"] = "provider_timeout"
                 raise ProviderError("Gemini timed out while drafting the answer. Please retry. No evidence conclusion was made.", 504) from None
@@ -547,8 +689,7 @@ class GeminiProvider:
             max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True),model=self.reconstruction_model, include_qa_context=False,
             extra_data={"base_revision_id":document.revision_id,"description":document.description.model_dump(mode="json"),"user_edits":edits})
 
-    def review_reconstruction(self, document, description, scene, *, previous_description=None, previous_scene=None, previous_review=None):
-        from ..review_schema import ReconstructionReview
+    def review_reconstruction(self, document, description, scene, *, previous_description=None, previous_scene=None, previous_review=None, change_context=None, previous_user_values=None):
         from ..review_render import overlay_views,issue_crops
         images=overlay_views(document,scene)
         if previous_scene:images+=overlay_views(document,previous_scene,"Previous usable revision")
@@ -557,15 +698,33 @@ class GeminiProvider:
               "previous_description":previous_description.model_dump(mode="json")if previous_description else None,
               "previous_review":previous_review.model_dump(mode="json")if previous_review else None,
               "actual_geometry_inventory":[{"id":e.id,"name":e.name,"representation":e.representation,"has_geometry":e.geometry is not None,"note":e.note}for e in scene.elements]}
-        return self._generate(document,"Review this source-grounded building reconstruction and any candidate regressions.",RECONSTRUCTION_REVIEW_INSTRUCTIONS,ReconstructionReview,
+        if change_context is not None:data["change_context"]=_json_data(change_context)
+        if previous_user_values is not None:data["previous_user_values"]=_json_data(previous_user_values)
+        instructions=RECONSTRUCTION_REVIEW_INSTRUCTIONS+("\n"+CANDIDATE_REVIEW_INSTRUCTIONS if change_context is not None else "")
+        return self._generate(document,"Review this source-grounded building reconstruction and any candidate regressions.",instructions,_reconstruction_review_schema(change_context),
           thinking_level="high",timeout_ms=round(configured_number("RECONSTRUCTION_REVIEW_SECONDS",120)*1000),max_tokens=configured_number("RECONSTRUCTION_REVIEW_TOKENS",16384,integer=True),model=self.reconstruction_model, include_qa_context=False,extra_views=images,extra_data=data)
 
-    def patch_reconstruction(self, document, description, scene, review):
+    def patch_reconstruction(self, document, description, scene, review, *, validation_feedback=None, authorizations=None):
         from ..review_schema import DescriptionPatch
         from ..review_render import overlay_views,issue_crops
+        data={"base_revision_id":document.revision_id,"description":description.model_dump(mode="json"),"user_values":document.user_values,"review":review.model_dump(mode="json"),"issue_target_scopes":_patch_targets(review)}
+        if validation_feedback is not None:data["validation_feedback"]=_json_data(validation_feedback)
+        if authorizations is not None:data["authorizations"]=_json_data(authorizations)
         return self._generate(document,"Propose only supported targeted description corrections.",RECONSTRUCTION_PATCH_INSTRUCTIONS,DescriptionPatch,
           thinking_level="high",timeout_ms=round(configured_number("RECONSTRUCTION_CALL_SECONDS",300)*1000),max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True),model=self.reconstruction_model, include_qa_context=False,
-          extra_views=overlay_views(document,scene)+issue_crops(document,review.issues),extra_data={"base_revision_id":document.revision_id,"description":description.model_dump(mode="json"),"user_values":document.user_values,"review":review.model_dump(mode="json"),"issue_target_scopes":_patch_targets(review)})
+          extra_views=overlay_views(document,scene)+issue_crops(document,review.issues),extra_data=data)
+
+    def review_target_requests(self, document, description, scene, review, requests, *, validation_feedback=None):
+        from ..review_schema import AuthorizationReview
+        from ..review_render import overlay_views,issue_crops
+        data={"base_revision_id":document.revision_id,"description":description.model_dump(mode="json"),
+              "user_values":document.user_values,"review":review.model_dump(mode="json"),
+              "existing_issue_target_scopes":_authorization_review_scopes(review),"additional_target_requests":_json_data(requests),
+              "actual_geometry_inventory":[{"id":e.id,"name":e.name,"representation":e.representation,"has_geometry":e.geometry is not None,"note":e.note}for e in scene.elements]}
+        if validation_feedback is not None:data["validation_feedback"]=_json_data(validation_feedback)
+        return self._generate(document,"Inspect original evidence for the exact requested additional targets.",TARGET_REVIEW_INSTRUCTIONS,AuthorizationReview,
+          thinking_level="high",timeout_ms=round(configured_number("RECONSTRUCTION_REVIEW_SECONDS",120)*1000),max_tokens=configured_number("RECONSTRUCTION_REVIEW_TOKENS",16384,integer=True),model=self.reconstruction_model,include_qa_context=False,
+          extra_views=overlay_views(document,scene)+issue_crops(document,review.issues),extra_data=data)
 
     def review_answer(self, document, question, draft, gate, crop=None, *, validation=None):
         from ..review_schema import AnswerReview

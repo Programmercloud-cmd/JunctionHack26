@@ -9,16 +9,20 @@ from time import monotonic
 import uuid
 
 from .building import BuildingDescription,BUILDING_PROMPT
-from .documents import DocumentError
+from .documents import DocumentError, resolve_reference
 from .providers.gemini import ProviderError,configured_number,settings
 from .identities import assign_identities,assign_replacement_identities
 from .ifc_generate import generate_ifc
 from .ifc_artifact import load_artifact
 from .reasoning import build_reasoning
-from .revisions import apply_patch,apply_enrichment,needs_geometry,regression_findings,description_hash,normalize_views
+from .revisions import (apply_patch,apply_enrichment,needs_geometry,regression_findings,description_hash,normalize_views,
+    PatchRejection,validate_target_requests,authorize_targets,proposal_fingerprint)
 from .review_schema import ReconstructionReview
+from .revision_delta import build_revision_delta,validate_candidate_review
 from .vlm import VLM
 from .highlights import validated_highlights
+
+PRIOR_CANDIDATE_PREFIX="Previously reported on a separate candidate with unchanged source description and target representations; verify against originals. "
 
 TERMINAL={"complete","needs_attention","failed","budget_exhausted","stopped","interrupted"}
 
@@ -94,6 +98,25 @@ class JobRunner:
         self._update(identity,review_candidates=entries)
         try:
             review=ReconstructionReview.model_validate(provider.review_reconstruction(document,description,scene,**kwargs))
+            # Keep the returned assessment distinct from our publication decision.
+            # This is private response data, never a provider request or reasoning trace.
+            (folder/"review-response.json").write_text(review.model_dump_json())
+            audit["returned_candidate_supported"]=review.candidate_supported
+            known_ids=set(before)|set(after)
+            for issue in review.issues:
+                resolve_reference(document,issue.source.page,issue.source.source_id,issue.source.source_page)
+                if any(identity not in known_ids for identity in issue.object_ids):
+                    raise DocumentError("Review finding references an unknown source object identity.",422)
+            context=kwargs.get("change_context")
+            if context is not None:
+                # Missing/unclear delta assessment never becomes publication permission.
+                blockers=validate_candidate_review(review,context)
+                audit["delta_blockers"]=blockers
+                resolved,resolution_failures=self._resolved_findings(document,review,kwargs.get("previous_review"),context)
+                blockers+=resolution_failures
+                if blockers:
+                    review=review.model_copy(update={"candidate_supported":False})
+                review=self._carry_findings(review,kwargs.get("previous_review"),resolved if not blockers else ())
             audit["status"]="reviewed";audit["candidate_supported"]=review.candidate_supported
             (folder/"review.json").write_text(review.model_dump_json())
             return review
@@ -105,6 +128,164 @@ class JobRunner:
             entry["status"]=audit["status"]
             if "candidate_supported" in audit:entry["candidate_supported"]=audit["candidate_supported"]
             self._update(identity,review_candidates=entries)
+
+    @staticmethod
+    def _carry_findings(review,previous,resolved=()):
+        """A limited refinement review cannot silently erase existing fidelity findings."""
+        def key(issue):
+            value=issue.model_dump(mode="json");value.pop("id",None)
+            # Ignore only our repeated provenance annotation, never substantive
+            # reviewer uncertainty. Saved historical reviews remain untouched.
+            while value["uncertainty"].startswith(PRIOR_CANDIDATE_PREFIX):
+                value["uncertainty"]=value["uncertainty"][len(PRIOR_CANDIDATE_PREFIX):]
+            return json.dumps(value,sort_keys=True)
+        issues=[];seen=set();ids=set()
+        candidates=[(issue,False)for issue in review.issues]
+        if previous:candidates.extend((issue,True)for issue in previous.issues)
+        for issue,is_previous in candidates:
+            if is_previous and issue.id in resolved:continue
+            fingerprint=key(issue)
+            if fingerprint in seen:continue
+            retained=issue.model_copy(deep=True)
+            if retained.id in ids:
+                retained.id="retained:"+retained.id+":"+hashlib.sha256(fingerprint.encode()).hexdigest()[:12]
+            issues.append(retained);seen.add(fingerprint);ids.add(retained.id)
+        return review.model_copy(update={"issues":issues})
+
+    @staticmethod
+    def _resolved_findings(document,review,previous,context):
+        """Retiring an old finding requires an explicit source-linked changed result."""
+        assessment=review.candidate_assessment
+        if assessment is None:return set(),[]
+        prior={issue.id:issue for issue in previous.issues} if previous else {}
+        active={issue.id for issue in review.issues};seen=set();resolved=set();failures=[]
+        changed={item["id"] for item in context.get("object_changes",[])}
+        changed.update(item["floor_id"] for item in context.get("frame_changes",[]))
+        elements={element.id:element for element in document.scene.elements}
+        floors={floor.id:floor for floor in document.scene.floors}
+        def touches(a,b):
+            return a.page==b.page and min(a.bbox[2],b.bbox[2])>=max(a.bbox[0],b.bbox[0]) and min(a.bbox[3],b.bbox[3])>=max(a.bbox[1],b.bbox[1])
+        for resolution in assessment.issue_resolutions:
+            issue=prior.get(resolution.issue_id)
+            valid=issue is not None and resolution.issue_id not in seen and resolution.issue_id not in active and bool(resolution.reason.strip())
+            seen.add(resolution.issue_id)
+            try:resolve_reference(document,resolution.evidence.page,resolution.evidence.source_id,resolution.evidence.source_page)
+            except DocumentError:valid=False
+            if issue:
+                affected=set(issue.object_ids)&changed
+                if not issue.object_ids:
+                    affected={key for key in changed if key in elements and touches(elements[key].source,issue.source)}
+                related=[elements[key].source if key in elements else floors[key].source for key in affected if key in elements or key in floors]
+                valid=valid and touches(issue.source,resolution.evidence) and any(touches(source,resolution.evidence)for source in related)
+                # One repaired member cannot hide other still-unresolved members.
+                valid=valid and all(key not in elements or elements[key].geometry is not None for key in issue.object_ids)
+                if context.get("pure_height_change") and issue.category!="display":valid=False
+            if valid:resolved.add(resolution.issue_id)
+            else:failures.append("A prior finding resolution lacks a supported complete source-linked change: "+resolution.issue_id)
+        return resolved,failures
+
+    def _baseline_review(self,document):
+        """Carry only source/identity-valid findings attributable to this baseline."""
+        directory=self.store.directory(document.id)
+        folder=directory/"revisions"/document.revision_id
+        previous=None
+        elements={e.id:e.model_dump(mode="json")for e in document.scene.elements} if document.scene else {}
+        floors={f.id:f.model_dump(mode="json")for f in document.scene.floors} if document.scene else {}
+        known=set(elements)|set(floors)
+        def horizontal_representation(element):
+            value={key:deepcopy(element.get(key))for key in ("source","storey_id","representation","geometry_origin",
+                "evidence_basis","name","semantic_type","environment")}
+            geometry=deepcopy(element.get("geometry"))
+            if geometry:
+                if geometry.get("type")=="mesh":
+                    positions=geometry.get("positions",[])
+                    geometry["positions"]=[positions[index:index+2]for index in range(0,len(positions),3)]
+                else:
+                    for key in ("center","size"):
+                        if geometry.get(key):geometry[key]=geometry[key][:2]
+            value["geometry"]=geometry
+            return value
+        def valid(issue):
+            try:resolve_reference(document,issue.source.page,issue.source.source_id,issue.source.source_page)
+            except DocumentError:return False
+            return all(identity in known for identity in issue.object_ids)
+        path=folder/"review.json"
+        if path.exists():
+            info=json.loads((folder/"revision.json").read_text())
+            if hashlib.sha256(path.read_bytes()).hexdigest()!=info["hashes"].get("review.json"):
+                raise DocumentError("Saved revision review failed integrity validation.",422)
+            saved=ReconstructionReview.model_validate_json(path.read_text())
+            previous=saved.model_copy(update={"issues":[issue for issue in saved.issues if valid(issue)]})
+        # Job.issues can describe a REJECTED candidate. Mere base-revision equality
+        # is not evidence that its defects existed in the published model.
+        for job in self.for_building(document.id):
+            if document.revision_id not in (job.get("base_revision_id"),job.get("revision_id")):continue
+            for entry in job.get("review_candidates",[]):
+                candidate=(directory/entry["candidate"]).resolve()
+                if not candidate.is_relative_to(directory.resolve()):continue
+                try:
+                    audit=json.loads((candidate/"audit.json").read_text())
+                    if audit.get("status")!="reviewed":continue
+                    exact=entry.get("revision_id")==document.revision_id
+                    if not exact and audit.get("base_revision_id")!=document.revision_id:continue
+                    description=json.loads((candidate/"description.json").read_text())
+                    if description!=document.description.model_dump(mode="json"):continue
+                    scene=json.loads((candidate/"scene.json").read_text())
+                    candidate_elements={e["id"]:e for e in scene["elements"]}
+                    candidate_floors={f["id"]:f for f in scene["floors"]}
+                    if set(candidate_elements)!=set(elements) or set(candidate_floors)!=set(floors):continue
+                    saved=ReconstructionReview.model_validate_json((candidate/"review.json").read_text())
+                except (OSError,ValueError,KeyError):continue
+                retained=[]
+                for issue in saved.issues:
+                    if not valid(issue):continue
+                    if not exact:
+                        if issue.category=="display":continue
+                        # Explicit target defects can be carried only when the
+                        # complete target representation is unchanged, not just XY.
+                        if any((elements.get(key) or floors.get(key))!=(candidate_elements.get(key) or candidate_floors.get(key))for key in issue.object_ids):continue
+                        if not issue.object_ids:
+                            if issue.category!="extraction":continue
+                            # A region-only finding must not import a candidate's
+                            # changed plan geometry under the name of a baseline gap.
+                            if any(horizontal_representation(elements[key])!=horizontal_representation(candidate_elements[key])for key in elements):continue
+                        issue=issue.model_copy(deep=True)
+                        if not issue.uncertainty.startswith(PRIOR_CANDIDATE_PREFIX):
+                            issue.uncertainty=PRIOR_CANDIDATE_PREFIX+issue.uncertainty
+                    retained.append(issue)
+                saved=saved.model_copy(update={"issues":retained})
+                previous=self._carry_findings(previous or saved,saved)
+        return previous
+
+    @staticmethod
+    def _geometry_loss_feedback(before,after,failures):
+        """Only completed same-identity mesh losses are recoverable here.
+
+        Diagnostics never authorize another target or excuse a geometry loss.
+        Mixed frame/missing-object failures retain their existing terminal path.
+        """
+        if before.scene is None or after.scene is None:return None
+        old={element.id:element for element in before.scene.elements}
+        new={element.id:element for element in after.scene.elements}
+        lost=sorted(key for key in old.keys()&new.keys() if old[key].geometry and not new[key].geometry)
+        expected={"Previously renderable object became unresolved/unrenderable: "+key for key in lost}
+        if not lost or set(failures)!=expected:return None
+        return {"code":"geometry_regression",
+            "explanation":"Proposed geometry made previously renderable objects unresolved.",
+            "expected_contract":"Correct the identified geometry using original evidence and existing reviewed authority. "
+                "Preserve other usable objects; request any additional target explicitly. Do not pad, snap or invent geometry to bypass validation.",
+            "geometry_losses":[{"target_id":key,"floor_id":new[key].storey_id,
+                "before_representation":old[key].representation,"after_representation":new[key].representation,
+                "candidate_diagnostic":new[key].note}for key in lost]}
+
+    def _recovery_event(self,identity,**event):
+        events=deepcopy(self.jobs[identity].get("recovery_events",[]));events.append(event)
+        self._update(identity,recovery_events=events)
+
+    def _unresolved_correction(self,identity,review,message):
+        # Do not publish a new revision merely to label a rejected/no-op proposal.
+        self._update(identity,status="needs_attention",phase="complete",message=message,
+                     issues=[issue.model_dump()for issue in review.issues])
 
     def _update(self,identity,**fields):
         with self.lock:
@@ -235,22 +416,26 @@ class JobRunner:
             self.futures[identity]=self.executor.submit(self._refine_inputs,identity,document.snapshot(),candidate,submitted,needs_model,conflicts,changes)
             return self.get(identity)
 
-    def question(self,request):
+    def question(self,request,*,pinned_document=None):
         from .conversation import question_context,user_message
-        document=self.store.get(request.document_id)
+        document=pinned_document or self.store.get(request.document_id)
+        if document.id!=request.document_id:raise DocumentError("Pinned question source does not match the request.",409)
         if request.revision_id and request.revision_id!=document.revision_id:
             raise DocumentError("The building updated before this question started; refresh its revision and ask again.",409)
         with self.lock:
             if request.request_id:
                 prior=next((j for j in self.jobs.values() if j["kind"]=="question" and j["building_id"]==document.id and j.get("request_id")==request.request_id),None)
-                if prior:return self.get(prior["id"])
+                if prior:
+                    if prior.get("base_revision_id")!=document.revision_id:
+                        raise DocumentError("This question request ID belongs to another revision; start a new question request.",409)
+                    return self.get(prior["id"])
             context=question_context(self.store,document,request)
             identity=self._new(document,"question",request.request_id)
             message=user_message(document,request,identity)
             self.store.append_conversation(document.id,message)
             snapshot=document.snapshot();snapshot.conversation_context=context
             self._update(identity,question=request.question,user_message_id=message["id"],conversation_id=document.id)
-            self.futures[identity]=self.executor.submit(self._question,identity,snapshot,request.question)
+            self.futures[identity]=self.executor.submit(self._question,identity,snapshot,request.question,pinned_document is not None)
             return self.get(identity)
 
     def stop(self,identity):
@@ -338,7 +523,12 @@ class JobRunner:
                             path=self.store.save_candidate(candidate,None,failures,config)
                             self._update(identity,status="needs_attention",phase="complete",message="Candidate lost usable geometry; previous model and saved interpretation retained.",attempts=[{"candidate":path,"accepted":False,"findings":failures}]);return
                         self._update(identity,phase="checking_revision",message="Checking candidate against original sources and prior geometry.")
-                        review=ReconstructionReview.model_validate(self._review_candidate(identity,provider,candidate,candidate.description,candidate.scene,previous_description=current.description,previous_scene=current.scene))
+                        prior=self._baseline_review(current)
+                        context=build_revision_delta(current,candidate,[],changes)
+                        context["prior_findings"]=[i.model_dump(mode="json")for i in prior.issues] if prior else []
+                        review=ReconstructionReview.model_validate(self._review_candidate(identity,provider,candidate,candidate.description,candidate.scene,
+                            previous_description=current.description,previous_scene=current.scene,previous_review=prior,
+                            previous_user_values=current.user_values,change_context=context))
                         if not review.candidate_supported:
                             path=self.store.save_candidate(candidate,review,"Candidate not supported by source review.",config)
                             self._update(identity,status="needs_attention",phase="complete",message="Candidate not supported; previous model retained.",attempts=[{"candidate":path,"accepted":False}]);return
@@ -386,8 +576,12 @@ class JobRunner:
                                 attempts=[{"candidate":path,"accepted":False,"findings":failures}])
                             return
                         self._update(identity,phase="checking_revision",message="Checking replacement against original source and previous geometry before publication.")
+                        prior=self._baseline_review(current)
+                        context=build_revision_delta(current,candidate,[],{})
+                        context["prior_findings"]=[i.model_dump(mode="json")for i in prior.issues] if prior else []
                         review=ReconstructionReview.model_validate(self._review_candidate(identity,provider,candidate,candidate.description,candidate.scene,
-                            previous_description=current.description,previous_scene=current.scene))
+                            previous_description=current.description,previous_scene=current.scene,previous_review=prior,
+                            previous_user_values=current.user_values,change_context=context))
                         self._check(identity,deadline)
                         if not review.candidate_supported:
                             path=self.store.save_candidate(candidate,review,"Replacement not supported against original source.",config)
@@ -403,8 +597,8 @@ class JobRunner:
             if review is None:
                 review=ReconstructionReview.model_validate(self._review_candidate(identity,provider,current,current.description,current.scene))
             self._check(identity,deadline)
-            seen_feedback=set()
-            for attempt in range(config["patch_attempts"]+1):
+            feedback=None;authorizations=[];seen_proposals=set();reviewed_requests=set()
+            for attempt in range(config["patch_attempts"]):
                 self._update(identity,issues=[i.model_dump()for i in review.issues])
                 actionable=[i for i in review.issues if i.actionable and i.category=="extraction"]
                 if not actionable:
@@ -412,44 +606,103 @@ class JobRunner:
                         "reviewed_issues" if review.issues or not review.candidate_supported else "reviewed_no_action",
                         "Review stopped: remaining uncertainty is visible." if review.issues or not review.candidate_supported else "Review found no further supported correction. This is not a guarantee of accuracy.")
                     return
-                if attempt==config["patch_attempts"]:
-                    self._update(identity,status="budget_exhausted",phase="complete",message="Configured correction-attempt budget reached; best available revision retained.")
-                    return
-                fingerprint=json.dumps(sorted((tuple(sorted(i.object_ids)),i.source.page,tuple(i.source.bbox),i.proposed_action)for i in actionable))
-                if fingerprint in seen_feedback:
-                    self._finish_review(identity,current,review,config,"reviewed_issues","Review repeated without material progress; usable revision retained.")
-                    return
-                seen_feedback.add(fingerprint)
                 self._check(identity,deadline)
-                self._update(identity,phase="correcting",message="Applying a targeted source-backed correction.")
-                patch=provider.patch_reconstruction(current,current.description,current.scene,review)
+                self._update(identity,phase="correcting",message="Proposing a targeted correction within the reviewed source scope.")
+                kwargs={}
+                if feedback is not None:kwargs["validation_feedback"]=feedback
+                if authorizations:kwargs["authorizations"]=[g.model_dump(mode="json")for g in authorizations]
+                patch=provider.patch_reconstruction(current,current.description,current.scene,review,**kwargs)
                 self._check(identity,deadline)
-                # Persist structured model output for failed-patch diagnosis, never the provider request.
                 self._update(identity,last_proposed_patch=patch.model_dump() if hasattr(patch,"model_dump") else patch)
-                candidate,changes=apply_patch(current,patch,review)
+                fingerprint=proposal_fingerprint(patch)
+                authority=tuple(sorted((g.issue_id,g.target_id,json.dumps(g.evidence,sort_keys=True))for g in authorizations))
+                state=(description_hash(current.description),authority,fingerprint)
+                if state in seen_proposals:
+                    self._recovery_event(identity,kind="stopped",attempt=attempt+1,message="The same material proposal repeated with unchanged authorization.")
+                    self._unresolved_correction(identity,review,"Correction repeated without material progress; previous usable revision retained.")
+                    return
+                seen_proposals.add(state)
+                grants_before=len(authorizations);decisions=[]
+                try:
+                    requests=validate_target_requests(current,review,patch.additional_target_requests)
+                    pending=[]
+                    for request in requests:
+                        key=(current.revision_id,request.issue_id,request.target_id,request.floor_id,request.collection,
+                             json.dumps(request.evidence.model_dump(mode="json"),sort_keys=True))
+                        if key not in reviewed_requests:pending.append(request)
+                    if pending:
+                        self._check(identity,deadline)
+                        self._update(identity,phase="reviewing_targets",message="Inspecting original evidence before authorizing requested additional targets.")
+                        scope_review=provider.review_target_requests(current,current.description,current.scene,review,pending,
+                                                                    validation_feedback=feedback)
+                        self._check(identity,deadline)
+                        new_grants=authorize_targets(current,review,pending,scope_review)
+                        decisions=[d.model_dump(mode="json")for d in scope_review.decisions]
+                        self._recovery_event(identity,kind="authorization",attempt=attempt+1,base_revision_id=current.revision_id,
+                            requests=[r.model_dump(mode="json")for r in pending],decisions=decisions,
+                            message="Additional targets were inspected against the original; only explicit approvals grant scope.")
+                        for request in pending:
+                            reviewed_requests.add((current.revision_id,request.issue_id,request.target_id,request.floor_id,request.collection,
+                                                   json.dumps(request.evidence.model_dump(mode="json"),sort_keys=True)))
+                        known={(g.issue_id,g.target_id)for g in authorizations}
+                        authorizations.extend(g for g in new_grants if (g.issue_id,g.target_id)not in known)
+                    self._update(identity,phase="validating_patch",message="Validating all proposed edits atomically against source and authorized targets.")
+                    candidate,changes=apply_patch(current,patch,review,authorizations=authorizations)
+                except PatchRejection as error:
+                    feedback={**error.feedback,"base_revision_id":current.revision_id,"proposal_sha256":fingerprint,
+                              "rejected_proposal":patch.model_dump(mode="json"),"authorization_decisions":decisions}
+                    self._recovery_event(identity,kind="rejection",attempt=attempt+1,
+                        feedback={k:v for k,v in feedback.items()if k!="rejected_proposal"},
+                        message=error.message)
+                    self._update(identity,last_validation_feedback=feedback)
+                    if error.feedback.get("code")=="no_material_change" and len(authorizations)==grants_before:
+                        self._unresolved_correction(identity,review,"Correction made no material change; unresolved findings and previous usable revision retained.")
+                        return
+                    if attempt+1==config["patch_attempts"]:
+                        self._unresolved_correction(identity,review,"Correction remains unresolved after the configured attempts: "+error.message+" Previous usable revision retained.")
+                        return
+                    continue
                 candidate=self.store.prepare(candidate)
                 self._geometry(candidate)
                 failures=regression_findings(current,candidate,changes)
                 if failures:
                     candidate_path=self.store.save_candidate(candidate,review,failures,config)
+                    self._update(identity,attempts=self.jobs[identity]["attempts"]+
+                        [{"candidate":candidate_path,"accepted":False,"findings":failures}])
+                    geometry_feedback=self._geometry_loss_feedback(current,candidate,failures)
+                    if geometry_feedback:
+                        feedback={**geometry_feedback,"base_revision_id":current.revision_id,
+                            "proposal_sha256":fingerprint,"rejected_proposal":patch.model_dump(mode="json")}
+                        self._recovery_event(identity,kind="rejection",attempt=attempt+1,
+                            feedback={key:value for key,value in feedback.items()if key!="rejected_proposal"},
+                            message=geometry_feedback["explanation"])
+                        self._update(identity,last_validation_feedback=feedback)
+                        if attempt+1<config["patch_attempts"]:continue
                     self._update(identity,status="needs_attention",phase="complete",
-                        message="Candidate rejected: geometry disappeared or an unchanged frame moved. Previous usable revision retained.",
-                        attempts=self.jobs[identity]["attempts"]+[{"candidate":candidate_path,"accepted":False,"findings":failures}])
+                        message="Candidate rejected: geometry disappeared or an unchanged frame moved. Previous usable revision retained.")
                     return
                 self._check(identity,deadline)
-                self._update(identity,phase="checking_revision",message="Checking corrected geometry and possible regressions against the original.")
+                context=build_revision_delta(current,candidate,[],changes)
+                context["prior_findings"]=[i.model_dump(mode="json")for i in review.issues]
+                self._update(identity,phase="checking_revision",message="Checking the requested correction and actual IFC changes against original evidence.")
                 candidate_review=ReconstructionReview.model_validate(self._review_candidate(identity,provider,candidate,candidate.description,candidate.scene,
-                    previous_description=current.description,previous_scene=current.scene,previous_review=review))
+                    previous_description=current.description,previous_scene=current.scene,previous_review=review,
+                    previous_user_values=current.user_values,change_context=context))
                 self._check(identity,deadline)
                 if not candidate_review.candidate_supported:
-                    path=self.store.save_candidate(candidate,candidate_review,"Source/geometry reviewer did not support the candidate.",config)
-                    self._update(identity,status="needs_attention",phase="complete",message="Candidate was not supported by source review; previous usable revision retained.",
+                    path=self.store.save_candidate(candidate,candidate_review,"Source/geometry reviewer did not support the candidate delta.",config)
+                    self._update(identity,status="needs_attention",phase="complete",message="Candidate change was not supported by source review; previous usable model retained.",
                         attempts=self.jobs[identity]["attempts"]+[{"candidate":path,"accepted":False,"review":candidate_review.model_dump()}],
                         candidate_issues=[i.model_dump()for i in candidate_review.issues])
                     return
                 current=self._publish(identity,candidate,current.revision_id,status="preview_reviewing",review=candidate_review,config=config)
                 self._update(identity,attempts=self.jobs[identity]["attempts"]+[{"revision_id":current.revision_id,"accepted":True,"changes":changes}])
-                review=candidate_review
+                review=candidate_review;feedback=None;authorizations=[];reviewed_requests=set()
+            if not review.issues and review.candidate_supported:
+                self._finish_review(identity,current,review,config,"reviewed_no_action",
+                    "Requested corrections were reviewed; no further supported correction was identified. This is not a guarantee of accuracy.")
+            else:
+                self._unresolved_correction(identity,review,"Configured correction attempts completed; latest supported revision retained with remaining findings.")
         except JobStopped:
             self._update(identity,status="stopped",phase="stopped",message="Stopped; previous usable revision retained.")
         except JobBudget:
@@ -461,7 +714,7 @@ class JobRunner:
                 self._update(identity,usage=provider.usage.model_dump() if hasattr(provider,"usage") else {})
                 provider.close()
 
-    def _question(self,identity,snapshot,question):
+    def _question(self,identity,snapshot,question,pin_display=False):
         provider=None
         try:
             self._check(identity,float("inf"))
@@ -472,7 +725,7 @@ class JobRunner:
             from .voice_format import with_spoken_answers
             answer=with_spoken_answers(VLM(provider).answer(snapshot,question,progress=progress), question)
             self._check(identity,float("inf"))
-            displayed=self.store.get(snapshot.id)
+            displayed=snapshot if pin_display else self.store.get(snapshot.id)
             answer.building_id=snapshot.id;answer.answered_revision_id=snapshot.revision_id
             answer.display_revision_id=displayed.revision_id
             if displayed.revision_id!=snapshot.revision_id:
@@ -561,8 +814,19 @@ class JobRunner:
                 if current.pages:
                     if provider is None:
                         provider=self._bind_provider(identity,self.provider_factory());provider.request_deadline=deadline
+                    previous_review=self._baseline_review(current)
+                    context=build_revision_delta(current,candidate,submitted,changes)
+                    context["prior_findings"]=[i.model_dump(mode="json")for i in previous_review.issues] if previous_review else []
+                    self._update(identity,change_context=context)
+                    if context["local_failures"]:
+                        path=self.store.save_candidate(candidate,previous_review,context["local_failures"],config)
+                        self._update(identity,status="needs_attention",phase="complete",
+                            message="Refinement changed unrelated geometry or attribution; previous model and submitted inputs retained.",
+                            attempts=[{"candidate":path,"accepted":False,"findings":context["local_failures"]}]);return
                     self._update(identity,phase="checking_revision",message="Checking supplied changes against original sources and regenerated geometry.")
-                    review=ReconstructionReview.model_validate(self._review_candidate(identity,provider,candidate,candidate.description,candidate.scene,previous_description=current.description,previous_scene=current.scene))
+                    review=ReconstructionReview.model_validate(self._review_candidate(identity,provider,candidate,candidate.description,candidate.scene,
+                        previous_description=current.description,previous_scene=current.scene,previous_review=previous_review,
+                        previous_user_values=current.user_values,change_context=context))
                     self._update(identity,issues=[issue.model_dump() for issue in review.issues])
                     if not review.candidate_supported:
                         path=self.store.save_candidate(candidate,review,"Source review did not support supplied correction.",config)

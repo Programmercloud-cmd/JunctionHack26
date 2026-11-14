@@ -7,7 +7,7 @@ import time
 import pytest
 
 from test_browser import FixtureProvider, upload
-from test_browser_3d import scene_page, snapshot, generate_scene
+from test_browser_3d import scene_page, snapshot, generate_scene, control, action, focus_element
 
 pytestmark = pytest.mark.skipif(os.getenv("RUN_BROWSER_TESTS") != "1", reason="opt-in browser checks")
 
@@ -66,7 +66,8 @@ def test_actual_geometry_overlay_layers_clicks_unresolved_and_reopen(semantic_se
     expect(page.locator("#inventory-counts")).to_contain_text("1 unresolved")
     assert any(e["kind"]=="stairs" and e["representation"]=="schematic" for e in scene["elements"])
     assert len([e for e in scene["elements"] if e["kind"]=="wall"])==1
-    page.locator("#show-drawing").click(); page.locator("#show-comparison").check()
+    initial_highlights=snapshot(page)["highlights_enabled"]
+    action(page,{"type":"set_comparison","enabled":True})
     expect(page.locator("#comparison-overlay")).to_be_visible()
     expect(page.locator("#comparison-note")).to_contain_text("assumed opening heights")
     for layer in ["spaces","walls","openings","features","unresolved"]:
@@ -80,38 +81,39 @@ def test_actual_geometry_overlay_layers_clicks_unresolved_and_reopen(semantic_se
     points=[p for ring in room_entry["polygons"] for p in ring]
     assert min(p[0] for p in points)==pytest.approx(.1)
     assert max(p[0] for p in points)==pytest.approx(.6)
-    page.locator('[data-comparison-layer="spaces"]').uncheck()
+    action(page,{"type":"set_comparison","enabled":False,"layer":"spaces"})
+    expect(page.locator("#comparison-overlay")).to_be_visible()
     assert page.locator('#comparison-overlay [data-layer="spaces"]').count()==0
-    assert snapshot(page)["highlights_enabled"] and not snapshot(page)["show_assumptions"]
-    page.locator("#comparison-opacity").fill("30")
+    assert snapshot(page)["highlights_enabled"]==initial_highlights and not snapshot(page)["show_assumptions"]
+    action(page,{"type":"set_comparison","enabled":True,"opacity":30})
     expect(page.locator("#comparison-opacity-value")).to_have_text("30%")
     chair=next(e for e in scene["elements"] if e["semantic_type"]=="chair")
-    page.locator("#inventory-details summary").click()
+    control(page,"Inspect model inventory")
     expect(page.locator("#inventory-kind-counts")).to_contain_text("chair: 1")
-    page.locator(f'.inventory-source-item[data-element-id="{chair["id"]}"]').click()
-    expect(page.locator("#comparison-selection-name")).to_have_text("Chair")
+    page.locator("#chat-log .chat-inventory-row").filter(has=page.get_by_text("Chair",exact=True)).last.get_by_role("button",name="Original evidence",exact=True).click()
     selected=page.locator(f'#comparison-overlay [data-element-id="{chair["id"]}"]')
     selected.click()
     expect(page.locator("#comparison-selection-name")).to_have_text("Chair")
     selected.focus(); selected.press("Enter")
     expect(page.locator("#comparison-selection-name")).to_have_text("Chair")
-    page.locator("#comparison-inspect").click()
+    focus_element(page,chair["id"])
     expect(page.locator("#element-identity")).to_contain_text("schematic")
     expect(page.locator("#element-geometry-note")).to_contain_text("not source measurements")
-    page.locator(".unresolved-item").click()
+    control(page,"Inspect model inventory")
+    page.locator("#chat-log .chat-inventory-row").filter(has_text="Ambiguous fixture").last.get_by_role("button",name="Original evidence",exact=True).click()
+    page.locator('#comparison-overlay [data-layer="unresolved"]').click()
     expect(page.locator("#comparison-selection-name")).to_have_text("Ambiguous fixture")
     expect(page.locator("#comparison-selection-detail")).to_contain_text("Source region only")
     expect(page.locator("#evidence-overlay")).to_be_visible()
     assert page.locator("#evidence-overlay").evaluate("e=>e.style.left")=="70%"
-    page.locator("#comparison-inspect").click()
-    expect(page.locator("#element-geometry-note")).to_contain_text("Unresolved source item")
+    expect(page.locator("#chat-log .chat-inventory-row").filter(has_text="Ambiguous fixture").last).to_contain_text("unresolved, no mesh")
     original_id=scene["document_id"]
-    with page.expect_download() as download: page.locator("#download-ifc").click()
+    with page.expect_download() as download: action(page,{"type":"download_ifc"})
     target=tmp_path/"semantic.ifc"; download.value.save_as(target)
     page.locator("#file-input").set_input_files(str(target))
     page.wait_for_function("id=>window.blueprintViewer?.data.document_id && window.blueprintViewer.data.document_id!==id",arg=original_id)
     expect(page.locator("#inventory-counts")).to_contain_text("1 unresolved")
-    page.locator("#show-drawing").click(); page.locator("#show-comparison").check()
+    action(page,{"type":"set_comparison","enabled":True})
     assert page.locator('#comparison-overlay [data-layer="unresolved"]').count()==1
     assert page.locator('#comparison-overlay [data-layer="walls"]').count()>0
     page.screenshot(path="/tmp/junction-v3-comparison.png",full_page=True)
@@ -129,8 +131,10 @@ def test_all_unresolved_preserves_source_without_claiming_3d_success(semantic_se
     expect(page.locator("#model-canvas-container")).to_be_hidden()
     expect(page.locator("#inventory-counts")).to_have_text("0 reconstructed · 0 schematic · 1 unresolved.")
     assert snapshot(page)["mesh_count"]==0
-    page.locator(".unresolved-item").click()
+    control(page,"Inspect model inventory")
+    page.locator("#chat-log .chat-inventory-row").filter(has_text="Ambiguous fixture").last.get_by_role("button",name="Original evidence",exact=True).click()
     expect(page.locator("#page-image")).to_be_visible()
     expect(page.locator("#evidence-overlay")).to_be_visible()
+    action(page,{"type":"set_comparison","enabled":True})
     assert page.locator('#comparison-overlay [data-layer="unresolved"]').count()==1
     assert page.locator('#comparison-overlay [data-layer="spaces"]').count()==0
