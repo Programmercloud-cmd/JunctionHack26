@@ -84,5 +84,8 @@ def validate_candidate_review(review,context):
     if assessment.delta_support!='supported':failures.append('Requested change remains unsupported or unclear.')
     if assessment.source_conflicts:failures.append('Candidate review reports source conflicts.')
     if assessment.new_regressions:failures.append('Candidate review reports newly introduced regressions.')
-    if assessment.unresolved:failures.append('Candidate change attribution or causality remains unresolved.')
+    if assessment.unresolved_delta is None:
+        failures.append('Candidate review omitted explicit uncertainty assessment for the requested change.')
+    elif assessment.unresolved_delta:
+        failures.append('Candidate change attribution or causality remains unresolved.')
     return failures

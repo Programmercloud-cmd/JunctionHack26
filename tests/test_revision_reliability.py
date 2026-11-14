@@ -126,7 +126,7 @@ def height_candidate(document):
 
 
 def supported_review():
-    return ReconstructionReview(candidate_supported=True,summary='Only the supplied height changed',candidate_assessment=dict(delta_support='supported',source_conflicts=[],new_regressions=[],pre_existing_issue_ids=['old-omission'],unresolved=[]))
+    return ReconstructionReview(candidate_supported=True,summary='Only the supplied height changed',candidate_assessment=dict(delta_support='supported',source_conflicts=[],new_regressions=[],pre_existing_issue_ids=['old-omission'],unresolved_delta=[]))
 
 
 def test_34_attributed_height_delta_preserves_original_geometry(document):
@@ -233,3 +233,25 @@ def test_region_only_issue_cannot_bridge_unrelated_target_with_broad_request(doc
 def test_unknown_issue_identity_cannot_establish_floor_scope(document):
     request,_,review=request_and_patch(document);review.issues[0].object_ids.append('unknown')
     with pytest.raises(PatchRejection,match='unavailable object'):validate_target_requests(document,review,[request])
+
+
+
+def test_legacy_uncertainty_remains_readable_but_cannot_authorize_candidate():
+    legacy=ReconstructionReview(candidate_supported=True,summary='Historical global review',candidate_assessment=dict(
+        delta_support='supported',source_conflicts=[],new_regressions=[],pre_existing_issue_ids=['old-omission'],unresolved=['old-omission']))
+    assert legacy.candidate_assessment.unresolved==['old-omission']
+    assert legacy.candidate_assessment.unresolved_delta is None
+    assert validate_candidate_review(legacy,{'local_failures':[]})
+
+
+def test_explicit_delta_uncertainty_is_separate_from_prior_omissions():
+    review=supported_review();review.candidate_assessment.unresolved=['old-omission']
+    before=review.model_dump()
+    assert validate_candidate_review(review,{'local_failures':[]})==[]
+    assert review.model_dump()==before
+    review.candidate_assessment.unresolved_delta=['Whether the requested height conflicts with the section is unclear']
+    assert validate_candidate_review(review,{'local_failures':[]})
+    review.candidate_assessment.unresolved_delta=[];review.candidate_supported=False
+    assert validate_candidate_review(review,{'local_failures':[]})
+    review.candidate_supported=True
+    assert validate_candidate_review(review,{'local_failures':['Actual reopened geometry changed an unrelated footprint']})

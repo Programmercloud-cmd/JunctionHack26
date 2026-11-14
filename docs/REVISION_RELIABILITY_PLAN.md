@@ -113,3 +113,12 @@ Root keeps a stage ledger of original hashes, building/revision/job/attempt IDs,
 ## Definition of done
 
 The reviewed implementation preserves all strict guards, demonstrates the three requested live recoveries and correct rejections, passes 11397 plus unseen regression checks, and has independent direct-browser/source/IFC review. Required backend/browser checks and doctor pass, with focused commits and no push. Remaining fidelity/operational gaps are explicit in root's handoff. If a requested recovery remains blocked, report it as incomplete rather than declaring success from tests or an improved prompt.
+
+
+## Reviewed live clarification: unresolved change versus prior findings
+
+Fresh 34 and 11397 candidate reviews exposed an ambiguous field: `delta_support` was supported and conflict/regression lists were empty, but `CandidateAssessment.unresolved` listed already identified pre-existing issue IDs. Independent inspection confirmed this was the sole local blocker in those responses; neither historical response is retroactively accepted.
+
+Approved narrow contract clarification: canonical saved-review parsing keeps legacy `unresolved` (default empty) and adds nullable `unresolved_delta` (default null). A fresh candidate-assessment subtype omits legacy `unresolved` from both its provider schema and local accepted fields, and requires a non-null `unresolved_delta` list. Pydantic field exclusion through a `ClassVar` override was locally verified; both SDK serializers and strict parsing must have dedicated tests. `unresolved_delta` describes uncertainty about support for the requested change only. Prior omissions remain in issues/pre-existing findings, with explicit supported resolution required before removal.
+
+Local publication checks require the new explicit assessment: missing/null or nonempty `unresolved_delta` blocks; all existing support, false-decision, conflict, regression, source, provenance and actual-IFC checks remain. Reading an old review does not authorize a new candidate. Preserve unmodified parsed provider output privately before any local decision annotation. No value migration, reinterpretation of old ambiguous responses, extra model/budget or auto-acceptance is introduced. Provider owner updates fresh subtype/prompts and SDK tests; backend owner updates canonical parsing/guard tests; root owns live recovery and retained diagnostic history.

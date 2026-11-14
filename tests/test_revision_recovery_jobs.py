@@ -13,7 +13,7 @@ from test_ifc_generate import description,floor,boundary,opening,region
 
 
 def assessment(**changes):
-    return dict(delta_support='supported',source_conflicts=[],new_regressions=[],pre_existing_issue_ids=[],unresolved=[],issue_resolutions=[])|changes
+    return dict(delta_support='supported',source_conflicts=[],new_regressions=[],pre_existing_issue_ids=[],unresolved=[],unresolved_delta=[],issue_resolutions=[])|changes
 
 
 def finding(identity,id='floor'):
@@ -149,6 +149,10 @@ def test_height_delta_acceptance_carries_prior_findings_and_requires_supported_a
         assert (store.get(baseline.id).revision_id!=baseline.revision_id)==accepted
         assert any(issue['id']=='old-gap'for issue in result['issues'])
         assert result['submitted_values'][0]['provenance']=='user_provided'
+        import json
+        path=store.directory(baseline.id)/result['review_candidates'][-1]['candidate']
+        assert json.loads((path/'review-response.json').read_text())['candidate_supported'] is True
+        assert json.loads((path/'audit.json').read_text())['returned_candidate_supported'] is True
     finally:runner.close()
 
 
@@ -219,3 +223,19 @@ def test_region_only_candidate_findings_cannot_hide_changed_horizontal_geometry(
         prior=runner._baseline_review(current)
         assert prior is None or not prior.issues
     finally:runner.close()
+
+
+def test_carried_findings_dedupe_only_application_provenance_prefix():
+    from app.jobs import PRIOR_CANDIDATE_PREFIX
+    issue=finding('fixture-room');issue['uncertainty']='Width remains uncertain.'
+    first=dict(issue,uncertainty=PRIOR_CANDIDATE_PREFIX*2+issue['uncertainty'])
+    duplicate=dict(issue,id='retained:floor:duplicate',uncertainty=PRIOR_CANDIDATE_PREFIX+issue['uncertainty'])
+    distinct=dict(issue,id='different',uncertainty='Host association remains uncertain.')
+    current=ReconstructionReview(candidate_supported=False,summary='Private review',issues=[first,duplicate,distinct])
+    previous=ReconstructionReview(candidate_supported=False,summary='Earlier private review',issues=[issue])
+    original=current.model_dump()
+    result=JobRunner._carry_findings(current,previous)
+    assert len(result.issues)==2
+    assert {i.id for i in result.issues}=={'floor','different'}
+    assert current.model_dump()==original
+    assert len(JobRunner._carry_findings(current,None).issues)==2

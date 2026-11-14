@@ -76,7 +76,7 @@ def review():
 
 def assessment():
     return {'delta_support':'supported','source_conflicts':[],'new_regressions':[],
-            'pre_existing_issue_ids':['opening-gap'],'unresolved':[],'issue_resolutions':[]}
+            'pre_existing_issue_ids':['opening-gap'],'unresolved_delta':[],'issue_resolutions':[]}
 
 
 def test_patch_feedback_and_exact_grants_reach_both_adapters_without_mutating_review(sdk):
@@ -129,11 +129,12 @@ def test_delta_review_keeps_old_values_findings_both_ifcs_and_false_decision(sdk
     context={'base_revision_id':'previous','requested_input_ids':['current-height'],
              'actual_geometry_delta':{'xy_changed_ids':[],'z_changed_ids':['wall-1']}}
     result={'candidate_supported':False,'summary':'Review remains uncertain','issues':review().model_dump()['issues'],
-            'candidate_assessment':{**assessment(),'delta_support':'unclear','unresolved':['Unclear source conflict']}}
+            'candidate_assessment':{**assessment(),'delta_support':'unclear','unresolved_delta':['Unclear source conflict']}}
     calls=intercept(kind,provider,result)
     answer=provider.review_reconstruction(document,document.description,scene,previous_description=document.description,
         previous_scene=scene,previous_review=review(),change_context=context,previous_user_values=previous_values)
     assert answer.candidate_supported is False and answer.candidate_assessment.delta_support=='unclear'
+    assert answer.candidate_assessment.unresolved_delta==['Unclear source conflict']
     data=payload(kind,calls[0])
     assert data['previous_user_values']==previous_values and data['user_values']==document.user_values
     assert data['change_context']==context and data['previous_review']['issues'][0]['id']=='opening-gap'
@@ -142,6 +143,7 @@ def test_delta_review_keeps_old_values_findings_both_ifcs_and_false_decision(sdk
     assert 'Unchanged XY alone does not prove support' in text
     assert 'unrelated omissions already existed' in text and 'candidate_assessment' in text
     assert 'issue_resolutions' in text and 'cannot resolve an unrelated missing opening' in text
+    assert 'never unresolved_delta merely because they remain unfixed' in text
     assert answer.candidate_assessment.issue_resolutions==[]
     assert provider.provider_calls[-1]['max_output_tokens']==16384
 
@@ -154,6 +156,46 @@ def test_candidate_context_requires_nonnull_assessment(sdk,missing):
     intercept(kind,provider,output)
     with pytest.raises((ValidationError,ProviderError)):
         provider.review_reconstruction(document,document.description,scene,change_context={'requested_input_ids':['x']})
+
+
+@pytest.mark.parametrize('defect',['missing_delta','null_delta','legacy_field'])
+def test_fresh_candidate_rejects_ambiguous_legacy_or_missing_delta_field(sdk,defect):
+    kind,provider,document,scene=sdk
+    details=assessment()
+    if defect=='missing_delta':details.pop('unresolved_delta')
+    elif defect=='null_delta':details['unresolved_delta']=None
+    else:details['unresolved']=['opening-gap']
+    intercept(kind,provider,{'candidate_supported':True,'summary':'Fixture','issues':[],
+                             'candidate_assessment':details})
+    with pytest.raises((ValidationError,ProviderError)):
+        provider.review_reconstruction(document,document.description,scene,change_context={'requested_input_ids':['height']})
+
+
+def test_fresh_wire_requires_delta_field_and_omits_legacy_field(sdk):
+    kind,provider,document,scene=sdk
+    calls=intercept(kind,provider,{'candidate_supported':True,'summary':'Fixture','issues':review().model_dump()['issues'],
+                                  'candidate_assessment':assessment()})
+    result=provider.review_reconstruction(document,document.description,scene,change_context={'requested_input_ids':['height']})
+    wire=(calls[0]['generationConfig']['responseJsonSchema'] if kind=='gemini' else calls[0]['text']['format']['schema'])
+    reference=wire['properties']['candidate_assessment']['$ref'].split('/')[-1]
+    details=wire['$defs'][reference]
+    assert 'unresolved_delta' in details['required']
+    assert details['properties']['unresolved_delta']['type']=='array'
+    assert 'unresolved' not in details['properties']
+    assert result.candidate_assessment.unresolved_delta==[]
+    assert result.candidate_assessment.pre_existing_issue_ids==['opening-gap']
+    assert result.issues[0].id=='opening-gap'
+    assert 'unresolved' not in result.candidate_assessment.model_dump()
+
+
+def test_canonical_old_assessment_stays_readable_without_implying_delta_support():
+    legacy={'candidate_supported':False,'summary':'Legacy uncertainty','issues':[],
+            'candidate_assessment':{k:v for k,v in assessment().items() if k!='unresolved_delta'}}
+    legacy['candidate_assessment']['unresolved']=['opening-gap']
+    result=ReconstructionReview.model_validate(legacy)
+    assert result.candidate_assessment.unresolved_delta is None
+    assert result.candidate_assessment.unresolved==['opening-gap']
+    assert result.candidate_supported is False
 
 
 def test_initial_review_legacy_response_remains_compatible(sdk):

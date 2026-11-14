@@ -22,6 +22,8 @@ from .revision_delta import build_revision_delta,validate_candidate_review
 from .service import ask
 from .highlights import validated_highlights
 
+PRIOR_CANDIDATE_PREFIX="Previously reported on a separate candidate with unchanged source description and target representations; verify against originals. "
+
 TERMINAL={"complete","needs_attention","failed","budget_exhausted","stopped","interrupted"}
 
 
@@ -95,6 +97,10 @@ class JobRunner:
         self._update(identity,review_candidates=entries)
         try:
             review=ReconstructionReview.model_validate(provider.review_reconstruction(document,description,scene,**kwargs))
+            # Keep the returned assessment distinct from our publication decision.
+            # This is private response data, never a provider request or reasoning trace.
+            (folder/"review-response.json").write_text(review.model_dump_json())
+            audit["returned_candidate_supported"]=review.candidate_supported
             known_ids=set(before)|set(after)
             for issue in review.issues:
                 resolve_reference(document,issue.source.page,issue.source.source_id,issue.source.source_page)
@@ -125,13 +131,18 @@ class JobRunner:
     @staticmethod
     def _carry_findings(review,previous,resolved=()):
         """A limited refinement review cannot silently erase existing fidelity findings."""
-        if previous is None:return review
         def key(issue):
             value=issue.model_dump(mode="json");value.pop("id",None)
+            # Ignore only our repeated provenance annotation, never substantive
+            # reviewer uncertainty. Saved historical reviews remain untouched.
+            while value["uncertainty"].startswith(PRIOR_CANDIDATE_PREFIX):
+                value["uncertainty"]=value["uncertainty"][len(PRIOR_CANDIDATE_PREFIX):]
             return json.dumps(value,sort_keys=True)
-        issues=list(review.issues);seen={key(issue)for issue in issues};ids={issue.id for issue in issues}
-        for issue in previous.issues:
-            if issue.id in resolved:continue
+        issues=[];seen=set();ids=set()
+        candidates=[(issue,False)for issue in review.issues]
+        if previous:candidates.extend((issue,True)for issue in previous.issues)
+        for issue,is_previous in candidates:
+            if is_previous and issue.id in resolved:continue
             fingerprint=key(issue)
             if fingerprint in seen:continue
             retained=issue.model_copy(deep=True)
@@ -238,7 +249,8 @@ class JobRunner:
                             # changed plan geometry under the name of a baseline gap.
                             if any(horizontal_representation(elements[key])!=horizontal_representation(candidate_elements[key])for key in elements):continue
                         issue=issue.model_copy(deep=True)
-                        issue.uncertainty="Previously reported on a separate candidate with unchanged source description and target representations; verify against originals. "+issue.uncertainty
+                        if not issue.uncertainty.startswith(PRIOR_CANDIDATE_PREFIX):
+                            issue.uncertainty=PRIOR_CANDIDATE_PREFIX+issue.uncertainty
                     retained.append(issue)
                 saved=saved.model_copy(update={"issues":retained})
                 previous=self._carry_findings(previous or saved,saved)

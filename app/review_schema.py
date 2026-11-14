@@ -29,7 +29,9 @@ class CandidateAssessment(StrictModel):
     source_conflicts: list[str]
     new_regressions: list[str]
     pre_existing_issue_ids: list[str]
-    unresolved: list[str]
+    # Historical reviews mixed global omissions with uncertainty about the change.
+    unresolved: list[str] = Field(default_factory=list)
+    unresolved_delta: list[str] | None = None
     issue_resolutions: list[IssueResolution] = Field(default_factory=list)
 
 

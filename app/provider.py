@@ -8,6 +8,7 @@ import os
 import uuid
 from pathlib import Path
 from time import monotonic
+from typing import ClassVar
 
 from dotenv import load_dotenv
 from google import genai
@@ -97,8 +98,14 @@ def _reconstruction_review_schema(change_context):
         return ReconstructionReview
     from .review_schema import CandidateAssessment
 
+    class DeltaCandidateAssessment(CandidateAssessment):
+        # Legacy saved reviews remain readable through CandidateAssessment. A
+        # fresh response must name uncertainty about the requested change only.
+        unresolved: ClassVar[None] = None
+        unresolved_delta: list[str]
+
     class CandidateReconstructionReview(ReconstructionReview):
-        candidate_assessment: CandidateAssessment
+        candidate_assessment: DeltaCandidateAssessment
 
     return CandidateReconstructionReview
 
@@ -112,7 +119,9 @@ Metadata updates need their own contextual source evidence, reason and applicabl
 
 
 CANDIDATE_REVIEW_INSTRUCTIONS = """The supplied change_context pins the REQUESTED DELTA against the previous usable revision.
-Return candidate_assessment with delta_support, source_conflicts, new_regressions, pre_existing_issue_ids, unresolved and issue_resolutions.
+Return candidate_assessment with delta_support, source_conflicts, new_regressions, pre_existing_issue_ids, unresolved_delta and issue_resolutions.
+unresolved_delta lists ONLY uncertainty about support for the requested change; use [] when that change has no unresolved support question.
+Pre-existing omissions belong in issues and pre_existing_issue_ids, never unresolved_delta merely because they remain unfixed. Do not return the legacy unresolved field.
 Inspect the original source and BOTH actual reopened IFC overlays, deterministic geometry delta, submitted inputs, previous_user_values and current user_values.
 Separate unchanged pre-existing omissions from defects introduced by this change. Preserve unresolved prior findings in issues and link their existing IDs where applicable;
 do not invent a previously accepted review when baseline findings are missing or come from a rejected candidate. A newly noticed defect unchanged in both scenes is pre-existing, not a new regression.
