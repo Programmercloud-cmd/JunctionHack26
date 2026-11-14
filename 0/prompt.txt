@@ -1,0 +1,1 @@
+heres the eleven labs stuff:  run `npx -y @elevenlabs/cli@latest onboard init` and follow what it prints.
