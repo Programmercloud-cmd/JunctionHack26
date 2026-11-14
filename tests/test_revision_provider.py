@@ -89,6 +89,8 @@ def test_patch_feedback_and_exact_grants_reach_both_adapters_without_mutating_re
     data=payload(kind,calls[0])
     assert data['validation_feedback']==feedback and data['authorizations']==grants
     assert data['issue_target_scopes'][0]['explicit_target_ids']==['door-1']
+    assert data['issue_target_scopes'][0]['target_scope']=='listed_existing_ids_only'
+    assert 'existing_issue_target_scopes' not in data
     assert existing.model_dump()==before
     text=instruction(kind,calls[0])
     assert 'floor_metadata_updates' in text and 'SAME response' in text and 'request is not authorization' in text
@@ -99,24 +101,35 @@ def test_patch_feedback_and_exact_grants_reach_both_adapters_without_mutating_re
     assert 'authorizations' not in payload(kind,calls[0])
 
 
-def test_additional_target_review_keeps_originals_scope_and_existing_review_budget(sdk):
+@pytest.mark.parametrize('decision',['approved','denied','unclear'])
+def test_additional_target_review_keeps_originals_scope_and_existing_review_budget(sdk,decision):
     kind,provider,document,scene=sdk
     target=AdditionalTargetRequest(request_id='request-1',base_revision_id=document.revision_id,
         issue_id='opening-gap',target_id='wall-1',floor_id='floor-1',collection='boundaries',
         evidence=region(),reason='Inspect the depicted host, not nearest geometry')
     result={'base_revision_id':document.revision_id,'decisions':[{'request_id':'request-1',
-        'issue_id':'opening-gap','target_id':'wall-1','decision':'unclear','evidence':region(),
-        'reason':'Ambiguous source host'}]}
+        'issue_id':'opening-gap','target_id':'wall-1','decision':decision,'evidence':region(),
+        'reason':'Fixture original-source inspection outcome'}]}
     calls=intercept(kind,provider,result)
-    answer=provider.review_target_requests(document,document.description,scene,review(),[target])
-    assert answer.decisions[0].decision=='unclear'
+    current_review=review();before=current_review.model_dump()
+    answer=provider.review_target_requests(document,document.description,scene,current_review,[target])
+    assert answer.decisions[0].decision==decision
+    assert current_review.model_dump()==before # No provider result itself mutates authority.
     data=payload(kind,calls[0])
     assert data['additional_target_requests']==[target.model_dump(mode='json')]
     assert data['base_revision_id']==document.revision_id and 'actual_geometry_inventory' in data
     assert data['user_values']==document.user_values
+    assert data['existing_issue_target_scopes'][0]['currently_authorized_target_ids']==['door-1']
+    assert 'target_scope' not in data['existing_issue_target_scopes'][0]
+    assert 'issue_target_scopes' not in data
+    assert target.target_id not in data['existing_issue_target_scopes'][0]['currently_authorized_target_ids']
     assert images(kind,calls[0])==3
     text=instruction(kind,calls[0])
     assert 'exactly one decision' in text and 'unrequested target' in text and 'not acceptance' in text
+    assert 'not an eligibility ceiling' in text
+    assert 'Absence from the old authorized list is not itself a reason to deny' in text
+    assert 'explicitly requested host wall' in text and 'ORIGINAL evidence establishes why' in text
+    assert 'never grants automatic authority' in text
     call=provider.provider_calls[-1]
     assert call['schema']=='AuthorizationReview'
     assert call['timeout_ms']==120000 and call['max_output_tokens']==16384

@@ -82,6 +82,13 @@ def _patch_targets(review):
         "source": issue.source.model_dump(mode="json")} for issue in review.issues]
 
 
+def _authorization_review_scopes(review):
+    """Current grants are the baseline for reviewing exact requested additions."""
+    return [{"issue_id": issue.id, "category": issue.category, "actionable": issue.actionable,
+        "currently_authorized_target_ids": issue.object_ids,
+        "source": issue.source.model_dump(mode="json")} for issue in review.issues]
+
+
 def _json_data(value):
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
@@ -139,7 +146,10 @@ User-supplied height must not become an observed source height or calibrate XY. 
 TARGET_REVIEW_INSTRUCTIONS = """Inspect ORIGINAL source pages and actual reopened IFC before deciding each requested additional correction target.
 Return the exact supplied base_revision_id and exactly one decision for every request_id: approved, denied or unclear, with contextual positive-area original evidence and a specific reason.
 Only the exact requested existing target for its existing actionable extraction issue can be approved. Preserve request_id, issue_id and target_id exactly.
-Never grant an unrequested target, new issue, neighboring object, host/dependency wildcard or broad region authority. Proximity or an opening's host reference is not sufficient evidence.
+The existing_issue_target_scopes currently_authorized_target_ids are the CURRENT authorization baseline, not an eligibility ceiling for this review.
+Each additional_target_requests entry is an explicit request even when its target is absent from the old issue's object_ids. Absence from the old authorized list is not itself a reason to deny.
+An explicitly requested host wall, neighboring object or additional opening is eligible only when inspected ORIGINAL evidence establishes why changing that exact target is necessary to address the existing issue.
+Never grant an unrequested target, new issue, host/dependency wildcard or broad region authority. Proximity or an opening's host reference alone is not sufficient evidence and never grants automatic authority.
 Approve only when inspected original evidence supports changing that precise target to address the stated issue; ambiguous support is unclear.
 This is permission to propose a source-supported change, not acceptance of any patch or a claim of building accuracy. The complete held proposal remains subject to atomic local validation and candidate review.
 Do not repair coordinates or invent source evidence. Keep original-source facts, user inputs and derived geometry distinct.
@@ -625,7 +635,7 @@ class GeminiProvider:
         from .review_render import overlay_views,issue_crops
         data={"base_revision_id":document.revision_id,"description":description.model_dump(mode="json"),
               "user_values":document.user_values,"review":review.model_dump(mode="json"),
-              "issue_target_scopes":_patch_targets(review),"additional_target_requests":_json_data(requests),
+              "existing_issue_target_scopes":_authorization_review_scopes(review),"additional_target_requests":_json_data(requests),
               "actual_geometry_inventory":[{"id":e.id,"name":e.name,"representation":e.representation,"has_geometry":e.geometry is not None,"note":e.note}for e in scene.elements]}
         if validation_feedback is not None:data["validation_feedback"]=_json_data(validation_feedback)
         return self._generate(document,"Inspect original evidence for the exact requested additional targets.",TARGET_REVIEW_INSTRUCTIONS,AuthorizationReview,

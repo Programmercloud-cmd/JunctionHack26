@@ -15,7 +15,7 @@ from .provider import (
     views,
     remaining_timeout, configured_number, RECONSTRUCTION_REVIEW_INSTRUCTIONS,
     RECONSTRUCTION_PATCH_INSTRUCTIONS, ANSWER_REVIEW_INSTRUCTIONS, ANSWER_REPAIR_INSTRUCTIONS,
-    _begin_call, _finish_call, _source_catalog, _patch_targets,
+    _begin_call, _finish_call, _source_catalog, _patch_targets, _authorization_review_scopes,
     _json_data, _reconstruction_review_schema, CANDIDATE_REVIEW_INSTRUCTIONS, TARGET_REVIEW_INSTRUCTIONS,
 )
 from .schemas import CropRequest, DraftAnswer, GateResult, StrictModel, Usage, QuestionIntent
@@ -197,7 +197,7 @@ class OpenAIProvider:
         from .review_render import overlay_views,issue_crops
         data={"base_revision_id":document.revision_id,"description":description.model_dump(mode="json"),
               "user_values":document.user_values,"review":review.model_dump(mode="json"),
-              "issue_target_scopes":_patch_targets(review),"additional_target_requests":_json_data(requests),
+              "existing_issue_target_scopes":_authorization_review_scopes(review),"additional_target_requests":_json_data(requests),
               "actual_geometry_inventory":[{"id":e.id,"name":e.name,"representation":e.representation,"has_geometry":e.geometry is not None,"note":e.note}for e in scene.elements]}
         if validation_feedback is not None:data["validation_feedback"]=_json_data(validation_feedback)
         return self._parse(document,"Inspect original evidence for the exact requested additional targets.",TARGET_REVIEW_INSTRUCTIONS,AuthorizationReview,
