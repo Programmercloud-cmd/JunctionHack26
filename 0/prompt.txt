@@ -1,0 +1,3 @@
+[125] tool send_message call: {"target":"voice_frontend","message":"REDACTED"}
+
+[126] tool send_message call: {"target":"voice_reviewer","message":"REDACTED"}
