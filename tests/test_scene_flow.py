@@ -295,3 +295,30 @@ def test_exact_source_name_disambiguates_shared_region_but_not_duplicate_names(t
     edge.name="Open terrace edge"
     draft.evidence[0].label="Bedroom";draft.evidence[0].observation="Source room region"
     assert validated_highlights(draft,document)==[]
+
+
+@pytest.mark.parametrize("kind",["room","outdoor"])
+def test_unique_named_space_label_citation_maps_requested_space(tmp_path,kind):
+    document=image_document(tmp_path);document.scene.elements[0].kind=kind
+    draft=image_answer(bbox=[.2,.2,.24,.24])
+    assert validated_highlights(draft,document)==["room-a"]
+
+
+@pytest.mark.parametrize("failure",["outside","other_page","other_floor","duplicate","unrequested","wall","window","furniture","unresolved"])
+def test_tight_label_mapping_preserves_source_and_semantic_ambiguity(tmp_path,failure):
+    document=image_document(tmp_path);item=document.scene.elements[0]
+    draft=image_answer(bbox=[.2,.2,.24,.24])
+    if failure=="outside":draft.evidence[0].bbox=[.5,.5,.54,.54]
+    elif failure=="other_page":draft.evidence[0].page=2
+    elif failure=="other_floor":
+        item.source.bbox=[.6,.6,.9,.9]
+        document.scene.elements.append(item.model_copy(deep=True,update={"id":"other-floor"}))
+        document.scene.elements[-1].source.bbox=[.1,.1,.4,.4]
+    elif failure=="duplicate":
+        # Include a same-name non-space record not requested by the model.
+        document.scene.elements.append(item.model_copy(deep=True,update={"id":"edge","kind":"open_edge"}))
+    elif failure=="unrequested":draft.highlight_ids=[]
+    elif failure=="unresolved":item.representation="unresolved"
+    else:item.kind=failure
+    assert validated_highlights(draft,document)==[]
+    assert draft.evidence and draft.answer

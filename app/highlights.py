@@ -25,16 +25,23 @@ def validated_highlights(draft, document):
         matches = []
         for element in scene.elements:
             if (element.geometry is None or element.representation == "unresolved"
-                    or element.source.page != evidence.page or iou(element.source.bbox, box) < .5):
+                    or element.source.page != evidence.page):
                 continue
+            source=element.source.bbox
+            contained=(source[0]<=box[0] and source[1]<=box[1] and source[2]>=box[2] and source[3]>=box[3])
+            overlaps=iou(source,box)>=.5
+            if not (overlaps or contained):continue
             name = " ".join(re.findall(r"\w+", element.name.casefold()))
             if name and f" {name} " in f" {text} ":
-                matches.append(element)
+                matches.append((element,overlaps or (contained and element.kind in {"room","outdoor"})))
         # Different semantic records can share a source region (e.g. terrace and
         # open edge). Exact cited source names may distinguish them, but duplicate
         # named objects remain ambiguous even if the model requests only one ID.
-        if len(matches) == 1 and matches[0].id in draft.highlight_ids:
-            accepted.append(matches[0].id)
+        # A tight cited space label can establish its identity without pretending
+        # that an approximate polygon is measured evidence. Other named objects
+        # still participate in ambiguity checks, but cannot use this fallback.
+        if len(matches) == 1 and matches[0][1] and matches[0][0].id in draft.highlight_ids:
+            accepted.append(matches[0][0].id)
     return list(dict.fromkeys(accepted))
 
 
