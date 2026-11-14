@@ -4,7 +4,7 @@ from copy import deepcopy
 from fastapi.testclient import TestClient
 import pytest
 
-from app.chat_actions import ChatActionRequest, ChatIntent, interpret
+from app.chat_actions import ChatActionRequest, ChatIntent, WireChatIntent, interpret
 from app.main import create_app
 from app.scene import Scene
 from app.schemas import Usage
@@ -103,6 +103,9 @@ def test_focused_source_and_question_use_captured_old_geometry_revision(chat_cli
     action = response.json()["actions"][0]
     assert action["source_revision_id"] == old.revision_id
     assert action["source"]["bbox"] == [.1, .2, .4, .5]
+    context = provider.calls[-1][1]
+    assert context["current_message"] == body["message"]
+    assert context["captured_focus"] == {"object_id": "window-1", "source_revision_id": old.revision_id, "source_kind": "image"}
     response = post(client, provider, body, [{"type": "question", "question": "Invented factual paraphrase", "selector": {"target": "focused"}}])
     action = response.json()["actions"][0]
     assert action["question"] == body["message"]
@@ -288,3 +291,20 @@ def test_reuses_selected_provider_transport_with_text_only_navigation_document(m
     assert document.pages == [] and document.scene is None and document.description is None
     assert question == "Help" and kwargs["include_qa_context"] is False
     assert kwargs["extra_data"]["authority"] == "Navigation only"
+
+
+def test_wire_action_uses_one_type_enum_and_strict_canonical_conversion():
+    from pydantic import ValidationError
+    schema = WireChatIntent.model_json_schema()
+    items = schema["properties"]["actions"]["items"]
+    assert "$ref" in items and "anyOf" not in items and "oneOf" not in items
+    types = schema["$defs"]["WireAction"]["properties"]["type"]["enum"]
+    assert {"show_source", "show_model", "select", "question", "refine"} <= set(types)
+    result = WireChatIntent.model_validate({"actions": [
+        {"type": "show_source", "selector": {"target": "focused"}, "mode": None, "edits": None}]}).canonical()
+    assert result.actions[0].type == "show_source" and result.actions[0].selector.target == "focused"
+    # Flattening grammar must not allow a known but unrelated field through.
+    with pytest.raises(ValidationError):
+        WireChatIntent.model_validate({"actions": [{"type": "show_source", "mode": "model"}]}).canonical()
+    with pytest.raises(ValidationError):
+        WireChatIntent.model_validate({"actions": [{"type": "refine"}]}).canonical()

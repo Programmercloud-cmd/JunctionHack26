@@ -83,6 +83,7 @@ class Selector(StrictModel):
 
 
 class SimpleAction(StrictModel):
+    """Commands without arguments. show_model opens 3D, never original drawing evidence."""
     type: Literal["show_model", "close_workspace", "list_saved", "attach_sources", "new_upload",
                   "download_ifc", "retry_extraction", "refresh", "inspect_assumptions", "inspect_inventory", "help"]
 
@@ -93,6 +94,7 @@ class SelectAction(StrictModel):
 
 
 class SourceAction(StrictModel):
+    """Open original evidence. For this object, use selector target focused; do not open 3D."""
     type: Literal["show_source"]
     selector: Selector | None = None
     page: int | None = Field(default=None, ge=1)
@@ -206,7 +208,71 @@ class ChatIntent(StrictModel):
         return self
 
 
-INSTRUCTIONS = """Interpret the user's message as typed UI actions, not as a factual answer.
+class WireAction(StrictModel):
+    """Unambiguous provider grammar; canonical per-action contracts validate afterward.
+
+    Live Gemini repeatedly selected the broad SimpleAction branch of the combined
+    union for a focused original-source request. A single type enum avoids that
+    branch choice. Unused optional fields must be null; nonnull foreign fields
+    are retained and rejected by the canonical action schema, never ignored.
+    """
+    type: Literal["show_model", "close_workspace", "list_saved", "attach_sources", "new_upload",
+                  "download_ifc", "retry_extraction", "refresh", "inspect_assumptions", "inspect_inventory", "help",
+                  "select", "show_source", "set_camera", "tour", "set_visibility", "set_view", "set_floor",
+                  "set_separation", "set_cutaway", "set_theme", "question", "refine", "reconstruct",
+                  "open_saved", "download_source", "stop_job", "set_comparison"]
+    selector: Selector | None = None
+    page: int | None = Field(default=None, ge=1)
+    preset: Literal["top", "fit", "isometric"] | None = None
+    command: Literal["start", "pause", "resume", "next", "previous"] | None = None
+    target: Literal["answer_highlights", "navigation_highlights", "assumptions"] | None = None
+    enabled: bool | None = None
+    mode: Literal["model", "concept", "source", "refine", "reconstruct"] | None = None
+    floor_id: str | None = None
+    label: str | None = None
+    percent: float | None = Field(default=None, ge=0, le=100)
+    theme: Literal["light", "dark", "system"] | None = None
+    question: str | None = None
+    edits: list[UserEdit] | None = None
+    supporting_source_ids: list[str] | None = None
+    building_id: str | None = None
+    source_id: str | None = None
+    job_id: str | None = None
+    layer: Literal["spaces", "walls", "openings", "features", "unresolved"] | None = None
+    opacity: float | None = Field(default=None, ge=10, le=90)
+
+
+class WireChatIntent(StrictModel):
+    status: Literal["ready", "clarification"] = "ready"
+    actions: list[WireAction] = Field(default_factory=list)
+    clarification: IntentClarification | None = None
+
+    def canonical(self):
+        return ChatIntent.model_validate(self.model_dump(mode="json", exclude_none=True))
+
+
+INSTRUCTIONS = """Interpret ONLY the current user's message as typed UI actions, not as a factual answer.
+The current message is repeated as current_message at the end of the navigation catalog.
+Choose the requested destination before generating actions: MODEL means the 3D visualization;
+SOURCE means the original drawing/page or native IFC record. They are different destinations.
+show_model NEVER opens original evidence. show_source directly opens it and needs no show_model.
+The application already paused the tour and captured focus before this call. A source request
+must preserve that captured object, even if the current view is the model or a tour was running.
+
+Representative intent examples (IDs and evidence are always resolved by application code):
+User: "Show this window in the original blueprint."
+Output: {"status":"ready","actions":[{"type":"show_source","selector":{"target":"focused"}}],"clarification":null}
+User: "Where is this door on the original plan?"
+Output: {"status":"ready","actions":[{"type":"show_source","selector":{"target":"focused"}}],"clarification":null}
+User: "Return to 3D and go to the next selected item."
+Output: {"status":"ready","actions":[{"type":"show_model"},{"type":"tour","command":"next"}],"clarification":null}
+User: "What is the actual width of this window?"
+Output: {"status":"ready","actions":[{"type":"question","selector":{"target":"focused"}}],"clarification":null}
+These examples distinguish navigation from factual questions; use the user's actual requested
+operation and never substitute repeated show_model actions for missing operation parameters.
+WIRE FORMAT: Each action has one type from the enum and only that operation's relevant fields.
+Leave all unrelated optional fields null. For show_source use selector or page; do not set mode.
+
 The navigation catalog is a fallible saved interpretation, never factual evidence. Do not answer
 construction questions or rediscover objects from images. A factual question is question action;
 preserve the original message (application code supplies it). Use selector focused for 'this'
@@ -440,10 +506,12 @@ def interpret(provider, request, catalog):
     navigation = Document(id="navigation", filename="navigation", pages=[])
     kwargs = {"extra_data":catalog, "include_qa_context":False}
     if callable(getattr(provider, "_generate", None)):
-        return provider._generate(navigation, request.message, INSTRUCTIONS, ChatIntent, **kwargs)
-    if callable(getattr(provider, "_parse", None)):
-        return provider._parse(navigation, request.message, INSTRUCTIONS, ChatIntent, **kwargs)
-    raise ProviderError("The configured provider does not support chat intent interpretation.", 503)
+        wire = provider._generate(navigation, request.message, INSTRUCTIONS, WireChatIntent, **kwargs)
+    elif callable(getattr(provider, "_parse", None)):
+        wire = provider._parse(navigation, request.message, INSTRUCTIONS, WireChatIntent, **kwargs)
+    else:
+        raise ProviderError("The configured provider does not support chat intent interpretation.", 503)
+    return WireChatIntent.model_validate(wire).canonical()
 
 
 def resolve_actions(store, runner, request, intent, context=None):
@@ -587,7 +655,11 @@ def chat_actions(store, runner, provider_factory, request):
         "floors":list(floors.values()), "sources":[{"source_id":s["source_id"], "filename":s.get("filename")} for s in document.sources] if document else [],
         "pages":[page.number for page in document.pages] if document else [],
         "saved_buildings":[{"building_id":key, "filename":value.get("filename")} for key,value in saved.items()],
-        "jobs":[{key:job.get(key) for key in ("id", "kind", "status")} for job in jobs]}
+        "jobs":[{key:job.get(key) for key in ("id", "kind", "status")} for job in jobs],
+        "captured_focus":{"object_id":request.workspace.focused_id,
+            "source_revision_id":(geometry or document).revision_id if geometry or document else None,
+            "source_kind":(records.get(request.workspace.focused_id, {}).get("source") or {}).get("kind") if request.workspace.focused_id else None},
+        "current_message":request.message}
     provider = None
     try:
         provider = provider_factory()
