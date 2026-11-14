@@ -1,0 +1,1 @@
+create a new worktree and new branch, this is dedicated to setting up the elven labs voice egneration and the google live transcription pipeline which we will integrate with our blueprint tool for intuitive interation
