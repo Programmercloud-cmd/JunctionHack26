@@ -267,3 +267,24 @@ def test_visual_controls_reveal_model_and_reject_missing_model(static_server,sce
     for action in [{'type':'set_floor','floor_id':None},{'type':'set_separation','enabled':True},{'type':'set_cutaway','percent':60}]:
         outcome=page.evaluate('async action=>{try{await chatUI.execute(action);return "unexpected success"}catch(error){return error.message}}',action)
         assert 'needs a saved model' in outcome
+
+
+def test_concept_proposal_chat_attribution_and_host_source(static_server,scene_page):
+    from playwright.sync_api import expect
+    page=scene_page;doc,scene,_,_=chat_fixture(page,static_server)
+    page.evaluate("chatUI.execute({type:'set_view',mode:'concept'})")
+    count=page.evaluate('state.scene.elements.length')
+    proposal={'id':'proposal:fixture-plant','kind':'proposal','host_id':'window-1','source_id':None,'label':'Fixture decorative planting','note':'Fixture proposal; not depicted source evidence or an IFC export object.'}
+    page.evaluate('record=>{blueprintViewer.concept.records.set(record.id,record);inspectProposal(record)}',proposal)
+    card=page.locator('[data-entry="selected-proposal"]')
+    expect(card).to_contain_text('decorative proposal, not factual source evidence')
+    expect(card).to_contain_text('Fixture decorative planting')
+    assert page.evaluate('chatUI.snapshot().focused_id') is None
+    card.get_by_text('Supporting source area · host object',exact=True).click()
+    expect(page.locator('#page-image')).to_have_attribute('src',f'{static_server}/api/buildings/{doc["building_id"]}/revisions/{doc["revision_id"]}/pages/1')
+    assert page.evaluate('state.sourceSelection.bbox')==scene['elements'][0]['source']['bbox']
+    page.evaluate("chatUI.execute({type:'inspect_inventory'})")
+    expect(page.locator('.chat-proposals')).to_contain_text('separate from the source-object inventory')
+    page.locator('.chat-proposals').get_by_role('button',name='Inspect proposal',exact=True).last.click()
+    expect(card).to_contain_text('Fixture decorative planting')
+    assert page.evaluate('state.scene.elements.length')==count

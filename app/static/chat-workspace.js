@@ -65,6 +65,16 @@
     if(record.note)node.append(element("p",record.note,"chat-status"));
     if(record.geometry_origin==="inferred")node.append(element("p","Generated geometry is an interpretation, not measured source evidence.","chat-status"));
   }
+  function onProposal(record,options={}){
+    if(!record||record.kind!=="proposal")return;
+    if(!options.automatic)invalidate();
+    ui.focused_id=null;
+    const node=note(`${record.label} · decorative proposal, not factual source evidence.`,"selected-proposal");
+    node.querySelectorAll(".proposal-note,.proposal-source").forEach(item=>item.remove());
+    node.append(element("p",record.note||"Styling, placement and dimensions are display choices; excluded from QA and IFC export.","proposal-note"));
+    const host=state.scene?.elements.find(item=>item.id===record.host_id);
+    if(host?.source){const source=sourceButton(host.source,"Supporting source area · host object",state.scene.revision_id);source.classList.add("proposal-source");node.append(source);}
+  }
   function onScene(scene){
     const prior=ui.geometry_revision_id;ui.geometry_revision_id=scene.revision_id||null;
     const ids=new Set(scene.elements.filter(e=>e.geometry&&e.representation!=="unresolved").map(e=>e.id));
@@ -270,7 +280,11 @@
       case "refresh":await refreshBuilding();await refreshConversation();return;
       case "refresh_health":return checkHealth();
       case "inspect_assumptions":await refreshAssumptions();{const node=note("Observed information, interpretations, display assumptions and user-provided values remain distinct. Tell me a value and its floor to submit a reviewed refinement.");for(const row of state.assumptionRows){const part=element("div",null,"chat-assumption-row");part.append(element("strong",row.label||row.property),element("p",`${row.provenance}: ${row.value===null?"unknown":typeof row.value==="object"?JSON.stringify(row.value):row.value} ${row.unit||""}`),element("p",row.reason));if(row.source)part.append(sourceButton(row.source,"Original evidence",state.document.revision_id));node.append(part);}return;}
-      case "inspect_inventory":{const node=note("Saved interpretation inventory. This does not establish complete extraction of the original drawings.");for(const object of state.scene?.elements||[]){const part=element("div",null,"chat-inventory-row");part.append(element("strong",object.name||object.id),element("p",`${object.kind} · ${object.geometry?object.representation:"unresolved, no mesh"}`));if(object.source)part.append(sourceButton(object.source,"Original evidence",state.scene.revision_id));if(object.geometry)part.append(button("Focus",()=>local({type:"focus_id",id:object.id})));node.append(part);}return;}
+      case "inspect_inventory":{const node=note("Saved interpretation inventory. This does not establish complete extraction of the original drawings.");for(const object of state.scene?.elements||[]){const part=element("div",null,"chat-inventory-row");part.append(element("strong",object.name||object.id),element("p",`${object.kind} · ${object.geometry?object.representation:"unresolved, no mesh"}`));if(object.source)part.append(sourceButton(object.source,"Original evidence",state.scene.revision_id));if(object.geometry)part.append(button("Focus",()=>local({type:"focus_id",id:object.id})));node.append(part);}
+        const proposals=[...(state.viewer?.concept?.records.values()||[])].filter(record=>record.kind==="proposal");
+        if(proposals.length){const section=element("section",null,"chat-proposals");section.append(element("strong","Decorative proposals · not factual source evidence"),element("p","These display proposals are separate from the source-object inventory and excluded from factual counts, QA and IFC exports."));
+          for(const proposal of proposals){const row=element("div",null,"chat-inventory-row");row.append(element("p",proposal.label),button("Inspect proposal",()=>inspectProposal(proposal)));section.append(row);}node.append(section);}
+        return;}
       case "focus_id":openWorkspace("model");ui.updatingSelection=true;try{state.viewer?.focusObject(action.id);}finally{ui.updatingSelection=false;}ui.focused_id=action.id;return;
       case "set_comparison":$("show-comparison").checked=action.enabled;if(action.opacity!=null)$("comparison-opacity").value=action.opacity;if(action.layer){const input=document.querySelector(`[data-comparison-layer="${action.layer}"]`);if(input)input.checked=action.enabled;}openWorkspace("source");renderComparison();note("Showing actual saved IFC geometry projected onto the original page; this does not establish source accuracy.");return;
       case "help":return note("Ask a source question, show the modeled windows, view from above, tour objects, open original evidence, switch theme, inspect assumptions, set a supplied height, choose a floor, adjust cutaway, compare geometry, add sources, export, or stop an active operation.","help",[["Saved buildings",{type:"list_saved"}],["Attach drawings",{type:"new_upload"}],["Light theme",{type:"set_theme",theme:"light"}],["Dark theme",{type:"set_theme",theme:"dark"}]]);
@@ -308,7 +322,7 @@
   $("chat-shell").addEventListener("dragleave",event=>{if(!$("chat-shell").contains(event.relatedTarget))document.body.classList.remove("dragging-files");});
   $("chat-shell").addEventListener("drop",event=>{event.preventDefault();document.body.classList.remove("dragging-files");uploadFile(event.dataTransfer.files,Boolean(state.document));});
   $("viewer").addEventListener("wheel",event=>{if(event.ctrlKey||event.metaKey){event.preventDefault();const width=parseFloat($("image-stage").style.width)||100;$("image-stage").style.width=Math.max(100,width*(event.deltaY>0?.9:1.1))+"%";}},{passive:false});
-  window.chatUI={snapshot,submit,execute:local,syncControls,syncHighlights,onUpload,onDocument,onScene,onSelection,onJobs,onError,mergeConversation,openWorkspace};
+  window.chatUI={snapshot,submit,execute:local,syncControls,syncHighlights,onUpload,onDocument,onScene,onSelection,onProposal,onJobs,onError,mergeConversation,openWorkspace};
   let stored="system";try{stored=localStorage.getItem("blueprint-theme")||"system";}catch{}applyTheme(["light","dark","system"].includes(stored)?stored:"system");
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{if(ui.theme==="system")applyTheme("system");});
   syncControls();closeWorkspace();

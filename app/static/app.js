@@ -542,12 +542,13 @@ function syncViewerControls(snapshot) {
   for(const record of snapshot.concept_records || [])if(record.kind==="proposal")$("concept-proposal-select").append(new Option(`Proposal · ${record.label}`,record.id));
   $("concept-proposal-select").value=selected;
 }
-function inspectProposal(record) {
+function inspectProposal(record, options = {}) {
   state.selectedProposal=record;$("element-inspector").hidden=true;
   $("concept-selection").hidden=false;$("concept-selection-name").textContent=`Proposal · ${record.label}`;
   $("concept-selection-note").textContent=record.note;
   $("concept-support-source").hidden=!state.scene?.elements.some(e=>e.id===record.host_id&&e.source.kind==="image");
   $("concept-proposal-select").value=record.id;announce(`Selected decorative proposal: ${record.label}. This is not source evidence.`);
+  window.chatUI?.onProposal(record, options);
 }
 function setView(view) {
   if(view==="concept"&&!state.viewer)return;
@@ -608,7 +609,7 @@ async function loadScene(scene) {
       $("revision-notice").hidden=false;
       $("revision-notice").textContent=changes.removed_selection||changes.unresolved_selection?"Model updated. The selected object was removed or is now unresolved; its previous source evidence remains available below.":"Model updated. Your view is preserved; use Fit updated model if you want new framing.";
       if(oldSelected){const current=scene.elements.find(e=>e.id===oldSelected.id);inspectElement(current || oldSelected,{automatic:true,source_revision_id:current?scene.revision_id:oldSceneRevision});if(!current)$("element-geometry-note").textContent="Removed in the current revision. Original source evidence retained; no replacement object was selected.";}
-      if(oldProposal){const record=state.viewer.concept?.records.get(oldProposal.id);if(record)inspectProposal(record);else{$("concept-selection").hidden=true;state.selectedProposal=null;}}
+      if(oldProposal){const record=state.viewer.concept?.records.get(oldProposal.id);if(record)inspectProposal(record,{automatic:true});else{$("concept-selection").hidden=true;state.selectedProposal=null;}}
       setView(oldView);
     }
     if(updating&&state.result){state.result=answerForDisplayedRevision(state.result);$("answer-review-note").textContent=state.result.review_note || "";$("answer-review-note").hidden=!state.result.review_note;}
