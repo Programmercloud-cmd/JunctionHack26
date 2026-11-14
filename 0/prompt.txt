@@ -1,0 +1,30 @@
+[111] tool exec call: text(await tools.apply_patch("*** Begin Patch\n*** Add File: /home/jcb/dev/github/JunctionHack26/tests/test_openai_provider.py\n+\"\"\"Offline tests exercise the actual OpenAI SDK request serializer and parser.\"\"\"\n+from io import BytesIO\n+import json\n+\n+import httpx2\n+from openai import OpenAI\n+from PIL import Image\n+import pytest\n+\n+from app.documents import DocumentStore\n+from app.openai_provider import OpenAIProvider\n+from app.provider import ProviderError\n+from app.schemas import GateResult\n+\n+\n+def response(output=None, *, status=\"completed\", refusal=None):\n+    content = []\n+    if output is not None:\n+        content = [{\"type\": \"output_text\", \"text\": json.dumps(output), \"annotations\": []}]\n+    if refusal is not None:\n+        content = [{\"type\": \"refusal\", \"refusal\": refusal}]\n+    return {\n+        \"id\": \"resp_test\", \"object\": \"response\", \"created_at\": 0, \"status\": status,\n+        \"model\": \"gpt-6.1-sol\", \"error\": None,\n+        \"incomplete_details\": {\"reason\": \"max_output_tokens\"} if status == \"incomplete\" else None,\n+        \"output\": [{\"id\": \"msg_test\", \"type\": \"message\", \"role\": \"assistant\", \"status\": \"completed\",\n+                    \"content\": content}] if content else [],\n+        \"parallel_tool_calls\": True, \"tools\": [], \"tool_choice\": \"auto\",\n+        \"usage\": {\"input_tokens\": 20, \"output_tokens\": 10, \"total_tokens\": 30,\n+                  \"input_tokens_details\": {\"cached_tokens\": 0}, \"output_tokens_details\": {\"reasoning_tokens\": 0}},\n+    }\n+\n+\n+@pytest.fixture\n+def document(tmp_path):\n+    store = DocumentStore(tmp_path)\n+    buffer = BytesIO()\n+    Image.new(\"RGB\", (200, 100), \"white\").save(buffer, format=\"PNG\")\n+    yield store.add(buffer.getvalue(), \"plan.png\")\n+    store.close()\n+\n+\n+@pytest.fixture\n+def provider(monkeypatch):\n+    monkeypatch.setenv(\"OPENAI_API_KEY\", \"offline-te<truncated omitted_approx_tokens="763" />il\"),\n+                                 response(status=\"incomplete\"), response(),\n+                                 response({\"decision\": \"made-up-label\"}),\n+                                 response({\"decision\": \"sufficient\", \"confidence\": .99})])\n+def test_refusal_incomplete_missing_or_invalid_output_is_operational(provider, document, body):\n+    intercept(provider, lambda request: httpx2.Response(200, json=body))\n+    with pytest.raises(ProviderError) as error:\n+        provider.gate(document, \"How many windows?\")\n+    assert error.value.status == 502\n+    assert \"private refusal detail\" not in error.value.message\n+    assert \"No evidence conclusion\" in error.value.message or \"no evidence conclusion\" in error.value.message\n+\n+\n+def test_api_failure_sanitized_and_not_retried(provider, document):\n+    calls = []\n+    def handler(request):\n+        calls.append(request)\n+        return httpx2.Response(429, json={\"error\": {\"message\": \"sensitive quota body\", \"type\": \"rate_limit_error\", \"code\": \"rate_limit\"}})\n+    intercept(provider, handler)\n+    with pytest.raises(ProviderError) as error:\n+        provider.gate(document, \"How many windows?\")\n+    assert len(calls) == 1\n+    assert error.value.status == 502\n+    assert \"sensitive\" not in error.value.message\n+\n+\n+def test_missing_key_fails_before_network(monkeypatch):\n+    monkeypatch.delenv(\"OPENAI_API_KEY\", raising=False)\n+    with pytest.raises(ProviderError) as error:\n+        OpenAIProvider()\n+    assert error.value.status == 503\n+    assert \"OPENAI_API_KEY\" in error.value.message\n*** End Patch"));
+text(await tools.exec_command({cmd:".venv/bin/python -m pytest tests/test_openai_provider.py -q","sandbox_permissions":"require_escalated","justification":"May I run offline OpenAI transport tests for structured gates, source-image payloads, refusals and incomplete outputs?","max_output_tokens":3000,"yield_time_ms":1000}));
+
+[112] tool exec result: Script completed
+Wall time 8.2 seconds
+Output:
+
+{}
+{"chunk_id":"7114dc","wall_time_seconds":1.001588814,"session_id":27474,"original_token_count":0,"output":""}
+
+[113] tool exec call: text(await tools.write_stdin({session_id:27474,chars:"","yield_time_ms":1000,"max_output_tokens":3000}));
+
+[114] tool exec result: Script completed
+Wall time 0.3 seconds
+Output:
+
+{"chunk_id":"47373a","wall_time_seconds":0.262509791,"exit_code":0,"original_token_count":25,"output":"..........                                                               [100%]\n10 passed in 2.51s\n"}
+
+[115] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[116] assistant: Implemented the temporary OpenAI adapter and 10 passing offline tests.
+
+- Uses Responses structured parsing with original source images.
+- One sufficiency classification; confidence remains `null`.
+- Supports targeted crop inspection and structured answers.
+- Disables storage and retries; sets a 45-second timeout.
+- Treats refusals, incomplete responses, malformed output and API failures as sanitized operational errors.
+- Tests exercise actual SDK serialization and response parsing through mocked HTTP.
+
+Only `app/openai_provider.py` and `tests/test_openai_provider.py` changed. Live inference remains for the orchestrator’s smoke test.
