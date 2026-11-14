@@ -1,0 +1,27 @@
+[242] assistant: I’ll allow cited regions to extend beyond a floor’s bounds while keeping every geometry point inside both the floor and its cited region. Empty feature polygons will use the source box only when that entire box lies inside the floor.
+
+[243] tool exec call: text(await tools.apply_patch("*** Begin Patch\n*** Update File: /home/jcb/dev/github/JunctionHack26/app/ifc_generate.py\n@@\n def _item_source(region, points, floor, page):\n@@\n     if region is not None:\n-        if region.page==page.number and _inside(region.bbox[:2],floor.source.bbox) and _inside(region.bbox[2:],floor.source.bbox):\n+        cited=region.bbox\n+        panel=floor.source.bbox\n+        if (region.page==page.number and max(cited[0],panel[0])<min(cited[2],panel[2])\n+                and max(cited[1],panel[1])<min(cited[3],panel[3])):\n@@\n-        valid=(localized and len(boundary.segment)==2 and all(_point(p) and _inside(p,source.bbox) for p in boundary.segment)\n+        valid=(localized and len(boundary.segment)==2 and all(_point(p) and _inside(p,source.bbox) and _inside(p,floor.source.bbox) for p in boundary.segment)\n@@\n-            if len(width_segment)==2 and all(_point(p) and _inside(p,source.bbox) for p in width_segment):\n+            if len(width_segment)==2 and all(_point(p) and _inside(p,source.bbox) and _inside(p,floor.source.bbox) for p in width_segment):\n@@\n-        elif len(opening.segment)!=2 or not all(_point(p) and _inside(p,source.bbox) for p in opening.segment):\n+        elif len(opening.segment)!=2 or not all(_point(p) and _inside(p,source.bbox) and _inside(p,floor.source.bbox) for p in opening.segment):\n@@\n                 if (not 0<=t<=1 or math.dist(p,nearest)>width/2\n-                    or not (source.bbox[0]-1e-9<=original[0]<=source.bbox[2]+1e-9 and source.bbox[1]-1e-9<=original[1]<=source.bbox[3]+1e-9)):\n+                    or not (source.bbox[0]-1e-9<=original[0]<=source.bbox[2]+1e-9 and source.bbox[1]-1e-9<=original[1]<=source.bbox[3]+1e-9)\n+                    or not _inside(original,floor.source.bbox)):\n@@\n-        fallback=localized and not feature.polygon\n+        fallback=(localized and not feature.polygon and _inside(source.bbox[:2],floor.source.bbox)\n+                  and<truncated omitted_approx_tokens="504" />\"feature\":\"furniture\",\"opening\":\"door\"}[category]\n+    entry=next(e for e in manifest(model).scene.elements if e.kind==kind)\n+    assert entry.representation==\"unresolved\" and entry.source.bbox==cited[\"bbox\"]\n+\n+\n+def test_feature_with_valid_polygon_preserves_overhanging_source_region_but_empty_shape_does_not_invent_it(document):\n+    panel=region(bbox=[.1,.1,.8,.9]);cited=region(bbox=[.1,.1,.95,.9])\n+    supplied=feature(source=cited)\n+    model=build(document,floor(source=panel,features=[supplied]))\n+    entry=next(e for e in manifest(model).scene.elements if e.kind==\"furniture\")\n+    assert entry.representation==\"schematic\" and entry.source.bbox==cited[\"bbox\"]\n+    model=build(document,floor(source=panel,features=[supplied|{\"polygon\":[]}]))\n+    entry=next(e for e in manifest(model).scene.elements if e.kind==\"furniture\")\n+    assert entry.representation==\"unresolved\" and model.by_guid(entry.id).Representation is None\n+    assert not any(a.property==\"footprint\" for a in entry.assumptions)\n+\n+\n+@pytest.mark.parametrize(\"cited\",[region(page=2),region(bbox=[.81,.1,.99,.9]),region(bbox=[.8,.1,.99,.9])])\n+def test_wrong_page_disjoint_or_only_touching_source_is_explicitly_unlocalized(document,cited):\n+    panel=region(bbox=[.1,.1,.8,.9])\n+    model=build(document,floor(source=panel,features=[feature(source=cited)]))\n+    entry=next(e for e in manifest(model).scene.elements if e.kind==\"furniture\")\n+    assert entry.representation==\"unresolved\" and entry.source.bbox==panel[\"bbox\"]\n+    assert \"Unlocalized\" in entry.note\n*** End Patch"));
+text(await tools.exec_command({cmd:".venv/bin/python -m pytest tests/test_ifc_generate.py tests/test_ifc_artifact.py -q --tb=short",sandbox_permissions:"require_escalated",justification:"Verify reviewed source-region overlap support while retaining strict floor/source geometry containment and portable provenance.",yield_time_ms:1000,max_output_tokens:3500}));
+
+[244] tool exec result: Script completed
+Wall time 6.7 seconds
+Output:
+
+{}
+{"chunk_id":"17b86b","wall_time_seconds":1.000971082,"session_id":1928,"original_token_count":0,"output":""}
+
+[245] tool exec call: text(await tools.write_stdin({session_id:1928,chars:"",yield_time_ms:1000,max_output_tokens:3500}));
+
+[246] tool exec result: Script completed
+Wall time 0.0 seconds
+Output:
+
+{"chunk_id":"17f39d","wall_time_seconds":0.000018461,"exit_code":0,"original_token_count":25,"output":".......................................................................  [100%]\n71 passed in 5.66s\n"}
+
+[247] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[248] assistant: Implemented the reviewed relaxation while preserving geometry containment and original evidence boxes.
+
+The entry-door regression now succeeds with its cited region extending beyond the floor. Wrong-page/disjoint regions and unsafe empty-footprint fallbacks remain unresolved.
+
+**71 generator/artifact tests pass.**
