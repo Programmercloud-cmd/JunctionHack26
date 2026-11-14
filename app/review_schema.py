@@ -9,7 +9,7 @@ from .building import (PageRegion, RoomDescription, BoundaryDescription, Opening
 class ReconstructionIssue(StrictModel):
     id: str
     object_ids: list[str] = Field(default_factory=list)
-    source: PageRegion
+    source: PageRegion = Field(description="Contextual original-page AREA with normalized 0..1 coordinates, left < right and top < bottom. Even a line-shaped boundary/opening issue must cite an inspected positive-width AND positive-height area, never a zero-area line.")
     category: Literal["extraction", "generation", "display"]
     discrepancy: str
     evidence: str

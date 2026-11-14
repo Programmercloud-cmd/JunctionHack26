@@ -236,7 +236,7 @@ def test_missing_requests_do_not_retrace_valid_walls_or_request_reference_regist
     assert all(request['target_id']=='1' for request in requests)
 
 
-def test_normalized_coordinate_wire_bounds_preserve_dimensional_measurements(sdk_document):
+def test_gemini_omits_rejected_numeric_wire_bounds_but_keeps_canonical_bounds(sdk_document):
     provider,document=sdk_document
     requests=intercept(provider,FLOOR)
     provider.extract_interpretation(document)
@@ -245,6 +245,11 @@ def test_normalized_coordinate_wire_bounds_preserve_dimensional_measurements(sdk
     points=wire['$defs']['RoomDescription']['properties']['polygon']['items']['properties']
     assert set(boxes)=={'left','top','right','bottom'} and set(points)=={'x','y'}
     for value in [*boxes.values(),*points.values()]:
+        assert 'minimum' not in value and 'maximum' not in value
+    canonical=BuildingDescription.model_json_schema()
+    canonical_boxes=canonical['$defs']['PageRegion']['properties']['bbox']['properties']
+    canonical_points=canonical['$defs']['RoomDescription']['properties']['polygon']['items']['properties']
+    for value in [*canonical_boxes.values(),*canonical_points.values()]:
         assert value['minimum']==0 and value['maximum']==1
     assert 'maximum' not in wire['$defs']['Calibration']['properties']['length_m']
     assert all('maximum' not in node for node in wire['$defs']['Measurement']['properties']['value']['anyOf'])
@@ -258,3 +263,21 @@ def test_missing_decimal_coordinate_still_rejects_without_rescaling(sdk_document
     with pytest.raises(ValidationError) as error:provider.extract_interpretation(document)
     assert ('floors',0,'source') in [entry['loc']for entry in error.value.errors()]
     assert provider.last_structured_output['floors'][0]['source']['bbox']==bbox
+
+
+def test_numeric_bound_adaptation_only_visits_schema_nodes():
+    literal={'type':'number','minimum':123,'maximum':456}
+    numeric={'type':'number','minimum':0,'maximum':1,'exclusiveMinimum':-1}
+    original={'type':'object','properties':{
+        'minimum':deepcopy(numeric),'maximum':{'type':['integer','null'],'minimum':1,'maximum':7},
+        'nested':{'anyOf':[deepcopy(numeric),{'type':'null'}]}},
+        '$defs':{'Number':deepcopy(numeric)},
+        'default':literal,'enum':[literal],'const':literal,'examples':[literal]}
+    before=deepcopy(original);wire=gemini_wire_schema(original)
+    assert original==before
+    assert set(wire['properties'])=={'minimum','maximum','nested'}
+    for node in [wire['properties']['minimum'],wire['properties']['maximum'],
+                 wire['properties']['nested']['anyOf'][0],wire['$defs']['Number']]:
+        assert 'minimum' not in node and 'maximum' not in node
+    assert wire['properties']['minimum']['exclusiveMinimum']==-1
+    assert wire['default']==literal and wire['enum']==[literal] and wire['const']==literal and wire['examples']==[literal]

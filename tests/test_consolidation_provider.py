@@ -222,3 +222,20 @@ def test_explicit_null_reviewed_removal_remains_compatible(tmp_path):
         assert wall.persistent_id not in [item.persistent_id for item in candidate.description.floors[0].boundaries]
         assert wall.persistent_id in [item.persistent_id for item in current.description.floors[0].boundaries]
     finally:store.close()
+
+
+@pytest.mark.parametrize('bbox', [[.138,.69,.5,.69],[.138,.69,.138,.9]])
+def test_zero_area_review_issue_rejects_without_padding(sdk_document,bbox):
+    from app.provider import RECONSTRUCTION_REVIEW_INSTRUCTIONS
+    provider,document=sdk_document
+    issue={'id':'fixture-issue','object_ids':[],'source':region(bbox=bbox),'category':'extraction',
+        'discrepancy':'Fixture source finding','evidence':'Fixture line','proposed_action':'Inspect source','actionable':False}
+    output={'candidate_supported':True,'summary':'Fixture review','issues':[issue]}
+    requests=intercept(provider,output)
+    with pytest.raises(ValidationError) as error:
+        provider._generate(document,'Fixture',RECONSTRUCTION_REVIEW_INSTRUCTIONS,ReconstructionReview)
+    assert [entry['loc']for entry in error.value.errors()]==[('issues',0,'source')]
+    assert provider.last_structured_output==output
+    assert 'positive width AND height' in RECONSTRUCTION_REVIEW_INSTRUCTIONS
+    wire=requests[0]['generationConfig']['responseJsonSchema']
+    assert 'positive-width AND positive-height' in wire['$defs']['ReconstructionIssue']['properties']['source']['description']

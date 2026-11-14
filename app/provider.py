@@ -100,6 +100,8 @@ Check for conflicts with original dimensions/relationships, including facts miss
 Preserve the difference between observed dimensions, user-provided inputs and display conventions; a supplied height never establishes horizontal scale.
 Use original-page coordinates and existing persistent IDs. Do not invent measurements, code, raw IFC or hidden floors.
 Return concise concrete issues and a short summary; do not repeat the full inventory or narrate the inspection process.
+Each issues[*].source must cite a contextual ORIGINAL-page AREA: 0 <= left < right <= 1 and 0 <= top < bottom <= 1.
+Even for a line-shaped wall/opening, inspect and cite a real surrounding area with positive width AND height; do not copy a zero-area record.source line into the issue source.
 Use actual_geometry_inventory notes as deterministic generator diagnostics. Verify their cause against source coordinates before proposing extraction changes.
 List the exact existing object IDs a correction would need to change; an issue listing only openings does not authorize changes to their host walls.
 Do not classify a valid implicitly closed polygon as broken merely because its final coordinate does not repeat its first."""
@@ -131,8 +133,9 @@ def gemini_wire_schema(schema: dict) -> dict:
     """Adapt Gemini wire grammar while keeping exact local response validation.
 
     The current endpoint rejects these bounds for our reconstruction schema. Walk
-    schema locations, not arbitrary JSON values: a property named ``maxItems``
-    or an object inside a default/enum remains ordinary data.
+    schema locations, not arbitrary JSON values: keyword-named properties and
+    objects inside default/enum remain ordinary data. Numeric bounds rejected by
+    the live Gemini endpoint remain enforced by local validation and other wires.
     """
     result = deepcopy(schema)
 
@@ -142,6 +145,9 @@ def gemini_wire_schema(schema: dict) -> dict:
         kind = node.get("type")
         if kind == "array" or isinstance(kind, list) and "array" in kind:
             node.pop("maxItems", None)
+        if kind in ("number", "integer") or isinstance(kind,list) and any(value in ("number","integer") for value in kind):
+            node.pop("minimum", None)
+            node.pop("maximum", None)
         for keyword in ("$defs", "definitions", "properties", "patternProperties", "dependentSchemas"):
             for child in node.get(keyword, {}).values():
                 visit(child)
