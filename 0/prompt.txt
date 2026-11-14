@@ -1,0 +1,28 @@
+[70] assistant: Agent message from /root/voice_reviewer:
+Message Type: FINAL_ANSWER
+Task name: /root
+Sender: /root/voice_reviewer
+Payload:
+Revised plan accepted; no remaining planning blockers.
+
+Resolved requirements:
+- Receive across multiple speech turns; finish only after provider completion, with explicit timeout/error handling and cleanup.
+- Resolve native IFC floor names from `Storey.Name`; reject ambiguous alias targets and preview canonical replacements before submission.
+- Never truncate speech text silently; preserve the visible answer if synthesis exceeds its supported bound.
+
+Ready for independent implementation review.
+
+[71] assistant: Agent message from /root/voice_planner:
+Message Type: FINAL_ANSWER
+Task name: /root
+Sender: /root/voice_planner
+Payload:
+Plan revision accepted by independent reviewer; no remaining planning blockers.
+
+- Google reception spans multiple VAD turns. Stop waits for terminal completion with a configurable 15-second deadline; timeout preserves finalized text and reports incomplete transcription.
+- Test a pause-completion already in flight at Stop. Local event timing alone must not be presented as guaranteed finality.
+- Native room floors come from `Storey.Name`; aliases expand visibly to floor-qualified names. Duplicate canonical targets are rejected.
+- Speech accepts up to 6,000 characters with explicit text fallback, never truncation.
+- Backend owns new voice modules/config/tests; root owns main integration, environment, dependencies, and documentation; frontend owns UI and browser checks.
+
+[72] tool spawn_agent call: {"task_name":"voice_frontend","message":"REDACTED<truncated omitted_approx_tokens="38" />REDACTED"}
