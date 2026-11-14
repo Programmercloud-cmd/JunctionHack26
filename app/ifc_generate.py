@@ -111,9 +111,13 @@ class _Builder:
         pset = self.model.create_entity("IfcPropertySet",GlobalId=self.guid("pset:"+key),Name=name,HasProperties=props)
         self.model.create_entity("IfcRelDefinesByProperties",GlobalId=self.guid("property:"+key),RelatedObjects=[entity],RelatingPropertyDefinition=pset)
 
-    def solid_item(self, points, z, height):
+    def solid_item(self, points, z, height, holes=None):
         curve = self.model.create_entity("IfcPolyline",Points=[self.point(p) for p in points+[points[0]]])
-        profile = self.model.create_entity("IfcArbitraryClosedProfileDef",ProfileType="AREA",OuterCurve=curve)
+        if holes:
+            inner=[self.model.create_entity("IfcPolyline",Points=[self.point(p) for p in ring+[ring[0]]]) for ring in holes]
+            profile=self.model.create_entity("IfcArbitraryProfileDefWithVoids",ProfileType="AREA",OuterCurve=curve,InnerCurves=inner)
+        else:
+            profile = self.model.create_entity("IfcArbitraryClosedProfileDef",ProfileType="AREA",OuterCurve=curve)
         position = self.model.create_entity("IfcAxis2Placement3D",Location=self.point([0,0,z]))
         return self.model.create_entity("IfcExtrudedAreaSolid",SweptArea=profile,Position=position,
             ExtrudedDirection=self.model.create_entity("IfcDirection",DirectionRatios=[0.,0.,1.]),Depth=float(height))
@@ -142,6 +146,38 @@ class _Builder:
                 if piece.geom_type=="Polygon" and piece.area>0:
                     items.append(self.solid_item(list(map(list,list(piece.exterior.coords)[:-1])),z,thickness))
         entity.Representation.Representations[0].Items=items
+
+    def feature_symbol(self, entity, points, kind, z, height):
+        """Display motifs clipped to the supplied footprint; never inferred construction."""
+        footprint=Polygon(points)
+        left,bottom,right,top=footprint.bounds
+        items=[]
+
+        def append(shape,base,depth):
+            pieces=[shape] if shape.geom_type=="Polygon" else list(getattr(shape,"geoms",[]))
+            for piece in pieces:
+                if piece.geom_type=="Polygon" and piece.area>0:
+                    exterior=[list(p) for p in list(piece.exterior.coords)[:-1]]
+                    holes=[[list(p) for p in list(ring.coords)[:-1]] for ring in piece.interiors]
+                    items.append(self.solid_item(exterior,base,depth,holes))
+
+        if kind in {"table","chair"}:
+            append(footprint,z+height*.85,height*.15)
+            width=(right-left)*.12
+            # Symmetric display supports, without chair-facing or source leg-count claims.
+            for strip in (box(left,bottom,left+width,top),box(right-width,bottom,right,top)):
+                append(footprint.intersection(strip),z,height*.85)
+        elif kind in {"sink","toilet","shower","bath"}:
+            append(footprint,z,height*.35)
+            inset=footprint.buffer(-min(right-left,top-bottom)*.12,join_style=2)
+            append(footprint.difference(inset),z+height*.35,height*.65)
+        elif kind=="stairs":
+            append(footprint,z,height*.9)
+        else:
+            append(footprint,z,height)
+        entity.Representation.Representations[0].Items=items
+        if kind=="stairs":
+            self.stair_symbol(entity,points,z+height*.9,height*.1)
 
     def product(self, ifc_type, key, name, polygon, z, height, storey, source, assumptions, basis="observed", note="", kind=None,
                 representation="reconstructed", semantic_type="", environment="unknown"):
@@ -459,16 +495,24 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
         if not localized:reason+=" Unlocalized: coarse floor source region only."
         world=[_transform(matrix,p) for p in list(shape.exterior.coords)[:-1]] if shape is not None else None
         ifc_type,kind=_feature_type(feature.kind)
-        assumptions=[_assumption("schematic_thickness",plate,unit,"Flat feature symbol; vertical dimensions, stair rise and step counts are not established.")]
+        ratios={"table":.30,"chair":.20,"bed":.20,"sofa":.25,"cabinet":.50,"appliance":.40,
+                "sink":.25,"toilet":.25,"shower":.10,"bath":.10,"stairs":.10,"other":.10}
+        ratio=ratios[feature.kind]
+        height=wall_height*ratio
+        motif=("Raised top with symmetric clipped supports" if feature.kind in {"table","chair"} else
+               "Low body with inset rim/basin symbol" if feature.kind in {"sink","toilet","shower","bath"} else
+               "Raised level footprint with parallel marks" if feature.kind=="stairs" else "Raised footprint block")
+        assumptions=[_assumption("height",height,unit,f"Display height is {ratio:g} times the assumed wall height; not a source measurement or actual object height."),
+            _assumption("schematic_motif",motif,None,"Display template stays inside the supplied footprint; body shape, support glyphs and basin/rim are not source construction details. Supports do not establish real leg counts; no chair facing is inferred.")]
         if fallback:
             assumptions.append(_assumption("footprint","Source bounding box",None,"No feature polygon was supplied; the original evidence box is an approximate display footprint, not a traced object boundary."))
         if feature.kind=="stairs" and world:
             assumptions.append(_assumption("stair_symbol","Level parallel marks",None,"Symbol marks, not a source step count or rise. No stair travel direction is inferred; mark orientation follows the display footprint only."))
-            assumptions.append(_assumption("symbol_mark_thickness",plate/4,unit,"Display relief for level schematic marks; not a riser dimension."))
-        entity=add(ifc_type,f"{prefix}:feature:{i}",feature.label,kind,feature.kind,source,world,plate,plate,assumptions,
+            assumptions.append(_assumption("symbol_mark_thickness",height*.1,unit,"Display relief for level schematic marks; not a riser dimension."))
+        entity=add(ifc_type,f"{prefix}:feature:{i}",feature.label,kind,feature.kind,source,world,plate,height,assumptions,
             feature.basis,feature.note,reason,schematic=True)
-        if feature.kind=="stairs" and world:
-            builder.stair_symbol(entity,world,plate*2,plate/4)
+        if world:
+            builder.feature_symbol(entity,world,feature.kind,plate,height)
     for i,item in enumerate(floor.unresolved,start=1):
         source,localized=_item_source(item.source,[],floor,page)
         reason=item.reason or "Source feature unresolved."
