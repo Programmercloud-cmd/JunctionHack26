@@ -1,0 +1,7 @@
+[287] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[288] assistant: No remaining reviewed code blockers. Functional behavior and portable provenance are verified.
+
+Full visual fidelity is **not accepted**. The latest 11397 artifact still has unresolved door openings, incomplete glazing and source lines incorrectly represented as full-height walls. 1794 also retains extraction errors.
+
+The intermittent invalid-description failure remains undiagnosed; a successful repeat does not establish that it is fixed.
