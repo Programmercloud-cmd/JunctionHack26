@@ -3,6 +3,7 @@ import base64
 from copy import deepcopy
 from io import BytesIO
 import json
+import math
 import os
 from pathlib import Path
 from time import monotonic
@@ -27,7 +28,7 @@ class ProviderError(Exception):
 def configured_number(name, default, *, integer=False):
     try:
         value=(int if integer else float)(os.getenv(name,str(default)))
-        if value<=0:raise ValueError()
+        if value<=0 or not math.isfinite(value):raise ValueError()
         return value
     except ValueError:
         raise ProviderError(f"Invalid {name}; configure a positive execution budget.",503) from None

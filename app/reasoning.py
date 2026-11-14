@@ -34,12 +34,12 @@ def retrieve_context(document, question=""):
         return {"source_kind":"drawing","building_id":document.building_id or document.id,"revision_id":document.revision_id,
           "evidence_rule":reasoning["source_note"],"coverage":reasoning["coverage"],"interpretation":reasoning.get("interpretation"),"objects":reasoning["objects"],
           "floors":[{"id":f.id,"label":f.label,"page":f.source.page,"bbox":f.source.bbox}for f in document.scene.floors]if document.scene else[]}
-    tokens=set(re.findall(r"[\w]+",question.casefold()))-{"what","which","the","this","are","is","of","in","a","an","and","model","building","please","how","many"}
+    tokens=set(re.findall(r"[\w]+",question.casefold()))-{"what","which","the","this","that","these","those","are","is","was","were","be","been","being","of","in","on","at","to","for","from","by","with","as","a","an","and","or","it","its","their","there","does","do","did","have","has","had","model","building","please","how","many"}
     types=[]
     for word,kind in (("wall","IfcWall"),("door","IfcDoor"),("window","IfcWindow"),("room","IfcSpace"),("space","IfcSpace"),("storey","IfcBuildingStorey"),("floor","IfcBuildingStorey"),("slab","IfcSlab"),("stair","IfcStair")):
         if word in tokens or word+"s"in tokens:types.append(kind)
     objects=reasoning["objects"]
-    selected=[r for r in objects if not types or any(t in r.get("type_groups",[])for t in types)or r["id"]in question or any(t in r["name"].casefold()for t in tokens)]
+    selected=[r for r in objects if not types or any(t in r.get("type_groups",[])for t in types)or r["id"]in question]
     records=[]
     for r in selected:
         values={k:v for k,v in r["values"].items()if not tokens or any(t in k.casefold()for t in tokens)or k in {"Name","Description","PredefinedType","OverallHeight","OverallWidth"}}

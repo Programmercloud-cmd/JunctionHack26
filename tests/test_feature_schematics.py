@@ -128,8 +128,11 @@ def test_fresh_store_reopen_preserves_assumptions_but_excludes_them_from_origina
         # Even an incorrectly tagged document cannot promote the derived artifact to factual IFC.
         reopened.kind="ifc"
         context=json.loads(source_context(reopened))
-        assert set(context)=={"association_index_only","floors","objects"}
-        assert set(context["objects"][0])=={"id","kind","name","page","bbox","floor_id"}
+        assert context["source_kind"]=="drawing"
+        assert "Original pages are authoritative" in context["evidence_rule"]
+        assert context["objects"][0]["provenance"]=="interpretation"
+        assert context["objects"][0]["source"]["kind"]=="image"
+        assert all("geometry" not in item and "properties" not in item and "assumptions" not in item for item in context["objects"])
         for assumption in scene.elements[0].assumptions:
             assert assumption.reason not in json.dumps(context)
         assert "counts_by_kind" not in context

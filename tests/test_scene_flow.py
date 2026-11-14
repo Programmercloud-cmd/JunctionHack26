@@ -281,3 +281,17 @@ def test_scene_absence_and_nonexistent_document(client):
     Image.new("RGB", (20, 20), "white").save(buffer, format="PNG")
     uploaded = http.post("/api/documents", files={"file": ("plan.png", buffer.getvalue())}).json()
     assert http.get(f"/api/documents/{uploaded['document_id']}/scene").status_code == 404
+
+
+def test_exact_source_name_disambiguates_shared_region_but_not_duplicate_names(tmp_path):
+    document=image_document(tmp_path)
+    room=document.scene.elements[0]
+    edge=room.model_copy(deep=True,update={"id":"edge-a","kind":"open_edge","name":"Open terrace edge"})
+    document.scene.elements.append(edge)
+    draft=image_answer();draft.highlight_ids=[room.id,edge.id]
+    assert validated_highlights(draft,document)==[room.id]
+    edge.name=room.name
+    assert validated_highlights(draft,document)==[]
+    edge.name="Open terrace edge"
+    draft.evidence[0].label="Bedroom";draft.evidence[0].observation="Source room region"
+    assert validated_highlights(draft,document)==[]

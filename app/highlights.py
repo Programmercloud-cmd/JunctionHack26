@@ -21,16 +21,20 @@ def validated_highlights(draft, document):
         box = evidence.bbox
         if (box[2]-box[0])*(box[3]-box[1]) >= .8:
             continue
-        matches = [e for e in scene.elements if e.geometry is not None and e.representation != "unresolved" and e.source.page == evidence.page
-                   and iou(e.source.bbox, box) >= .5]
-        if len(matches) != 1:
-            continue
-        match = matches[0]
         text = " ".join(re.findall(r"\w+", (evidence.label + " " + evidence.observation).casefold()))
-        name = " ".join(re.findall(r"\w+", match.name.casefold()))
-        named = bool(name) and f" {name} " in f" {text} "
-        if named and match.id in draft.highlight_ids:
-            accepted.append(match.id)
+        matches = []
+        for element in scene.elements:
+            if (element.geometry is None or element.representation == "unresolved"
+                    or element.source.page != evidence.page or iou(element.source.bbox, box) < .5):
+                continue
+            name = " ".join(re.findall(r"\w+", element.name.casefold()))
+            if name and f" {name} " in f" {text} ":
+                matches.append(element)
+        # Different semantic records can share a source region (e.g. terrace and
+        # open edge). Exact cited source names may distinguish them, but duplicate
+        # named objects remain ambiguous even if the model requests only one ID.
+        if len(matches) == 1 and matches[0].id in draft.highlight_ids:
+            accepted.append(matches[0].id)
     return list(dict.fromkeys(accepted))
 
 

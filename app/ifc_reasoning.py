@@ -98,11 +98,36 @@ def extract_native_reasoning(data, scene):
         typ=ifcopenshell.util.element.get_type(entity)
         if typ:definitions.extend(("Type::",p)for p in getattr(typ,"HasPropertySets",())or())
         for prefix,definition in definitions:
-            members=getattr(definition,"HasProperties",None)or getattr(definition,"Quantities",None)
+            members=getattr(definition,"HasProperties",None)
+            if members is None:members=getattr(definition,"Quantities",None)
+            base=f"{prefix}{definition.Name or definition.is_a()}"
             if members is None:
-                record["missing"].append(f"Unsupported property definition #{definition.id()}.");continue
-            for prop in members:
-                name=f"{prefix}{definition.Name or definition.is_a()}.{prop.Name}"
+                # Predefined property sets (e.g. window linings) encode values as
+                # original entity attributes rather than IfcProperty leaf records.
+                attributes=schema.declaration_by_name(definition.is_a()).all_attributes()
+                for index,attribute in enumerate(attributes):
+                    value=definition[index]
+                    if value is None or attribute.name() in {"GlobalId","OwnerHistory","Name","Description"}:continue
+                    declared=str(attribute.type_of_attribute());unit=None
+                    for measure,unit_type in (("LengthMeasure","LENGTHUNIT"),("AreaMeasure","AREAUNIT"),("VolumeMeasure","VOLUMEUNIT")):
+                        if measure in declared:unit=_unit_symbol(ifcopenshell.util.unit.get_project_unit(model,unit_type));break
+                    if "RatioMeasure"in declared:unit="1"
+                    name=f"{base}.{attribute.name()}"
+                    if name in record["values"]:
+                        record["missing"].append(f"Ambiguous duplicate property path {name}; preserved under STEP suffix.")
+                        name+=f" [#{definition.id()}]"
+                    record["values"][name]={"value":_value(value),"unit":unit,"provenance":"supplied","source":_ref(definition),"owner":_ref(entity),"property_path":name}
+                continue
+            pending=[(base,prop,set())for prop in members]
+            while pending:
+                path,prop,visited=pending.pop(0)
+                name=f"{path}.{prop.Name}"
+                if prop.id() in visited:
+                    record["missing"].append(f"Cyclic complex property reference #{prop.id()}.");continue
+                nested=getattr(prop,"HasProperties",None)
+                if nested is None:nested=getattr(prop,"HasQuantities",None)
+                if nested is not None:
+                    pending.extend((name,child,visited|{prop.id()})for child in nested)
                 try:
                     unit=_unit_symbol(ifcopenshell.util.unit.get_property_unit(prop,model))
                     if prop.is_a("IfcPropertySingleValue"):value=_value(prop.NominalValue)

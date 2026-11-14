@@ -103,3 +103,37 @@ def test_calculated_volume_does_not_cancel_disconnected_opposite_shells(tmp_path
         assert 'geometry.surface_area'in values and 'geometry.volume'not in values
         assert any('shell'in message for message in missing)
     finally:store.close()
+
+
+def test_predefined_type_properties_and_complex_scalar_leaves_keep_original_units(tmp_path):
+    model,_,window,_=fixture_model()
+    lining=model.create_entity('IfcWindowLiningProperties',GlobalId=ifcopenshell.guid.new(),Name='Lining',LiningDepth=125.,FirstTransomOffset=.4)
+    window_type=model.create_entity('IfcWindowType',GlobalId=ifcopenshell.guid.new(),Name='Typed window',PredefinedType='WINDOW',PartitioningType='SINGLE_PANEL',HasPropertySets=[lining])
+    model.create_entity('IfcRelDefinesByType',GlobalId=ifcopenshell.guid.new(),RelatedObjects=[window],RelatingType=window_type)
+    child=model.create_entity('IfcPropertySingleValue',Name='Depth',NominalValue=model.create_entity('IfcLengthMeasure',200.))
+    parent=model.create_entity('IfcComplexProperty',Name='Nested',UsageName='Source group',HasProperties=[child])
+    pset=model.create_entity('IfcPropertySet',GlobalId=ifcopenshell.guid.new(),Name='Source',HasProperties=[parent])
+    model.create_entity('IfcRelDefinesByProperties',GlobalId=ifcopenshell.guid.new(),RelatedObjects=[window],RelatingPropertyDefinition=pset)
+    store,doc=document_for(tmp_path,model)
+    try:
+        r=build_reasoning(doc);record=next(x for x in r['objects']if x['id']==window.GlobalId)
+        assert record['values']['Type::Lining.LiningDepth']['value']==125
+        assert record['values']['Type::Lining.LiningDepth']['unit']=='mm'
+        assert record['values']['Type::Lining.LiningDepth']['source']['step_id']==lining.id()
+        assert record['values']['Type::Lining.FirstTransomOffset']['unit']=='1'
+        leaf=record['values']['Source.Nested.Depth']
+        assert leaf['value']==200 and leaf['unit']=='mm' and leaf['source']['step_id']==child.id()
+        assert leaf['owner']['global_id']==window.GlobalId
+    finally:store.close()
+
+
+def test_entity_type_retrieval_does_not_expand_for_grammatical_substrings(tmp_path):
+    model,wall,window,space=fixture_model()
+    wall.Name='As built wall on site';space.Name='Installation area'
+    store,doc=document_for(tmp_path,model)
+    try:
+        context=retrieve_context(doc,'What was the date of the last on-site inspection confirming that the windows were installed as built?')
+        assert {r['id']for r in context['objects']}=={window.GlobalId}
+        assert {wall.GlobalId,space.GlobalId}<={r['id']for r in context['catalog']}
+        assert context['retrieval']['selected_records']==1 and not context['retrieval']['all_records_selected']
+    finally:store.close()
