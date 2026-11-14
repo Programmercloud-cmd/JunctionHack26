@@ -1,0 +1,1 @@
+Alright lets create the first lean impleemntation without 3d rendering,
