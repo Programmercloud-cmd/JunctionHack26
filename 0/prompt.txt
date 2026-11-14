@@ -1,0 +1,3 @@
+[67] tool spawn_agent call: {"task_name":"voice_backend","message":"REDACTED"}
+
+[68] tool spawn_agent result: {"task_name":"/root/voice_backend"}
