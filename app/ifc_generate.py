@@ -162,10 +162,37 @@ class _Builder:
 
 
 def _rectangle(start, end, thickness):
+    return _band(start,end,-thickness/2,thickness/2)
+
+
+def _band(start,end,low,high):
     dx,dy = end[0]-start[0],end[1]-start[1]
     length = math.hypot(dx,dy)
-    nx,ny = -dy/length*thickness/2,dx/length*thickness/2
-    return [[start[0]+nx,start[1]+ny],[end[0]+nx,end[1]+ny],[end[0]-nx,end[1]-ny],[start[0]-nx,start[1]-ny]]
+    nx,ny = -dy/length,dx/length
+    return [[start[0]+nx*high,start[1]+ny*high],[end[0]+nx*high,end[1]+ny*high],
+            [end[0]+nx*low,end[1]+ny*low],[start[0]+nx*low,start[1]+ny*low]]
+
+
+def _depicted_band(boundary,floor,page,matrix):
+    """Signed source-face offsets, tested before rotation/translation can lose a contact."""
+    width_segment=boundary.thickness_segment
+    if (len(width_segment)!=2 or not all(_point(p) and _inside(p,boundary.source.bbox)
+            and _inside(p,floor.source.bbox) for p in width_segment)):
+        return None
+    aspect=page.width/page.height
+    plane=lambda p:[aspect*p[0],-p[1]]
+    a,b=[plane(p) for p in boundary.segment[:2]]
+    p,q=[plane(p) for p in width_segment]
+    axis=[b[i]-a[i] for i in (0,1)]
+    cross=[q[i]-p[i] for i in (0,1)]
+    if (math.dist(p,q)==0 or not math.isclose(sum(x*y for x,y in zip(axis,cross)),0,abs_tol=1e-8)
+            or not LineString(width_segment).intersects(LineString(boundary.segment[:2]))):
+        return None
+    length=math.hypot(*axis)
+    normal=[-axis[1]/length,axis[0]/length]
+    factor=math.hypot(matrix[0][1],matrix[1][1])
+    offsets=sorted(sum((point[i]-a[i])*normal[i] for i in (0,1))*factor for point in (p,q))
+    return offsets if offsets[1]>offsets[0] else None
 
 
 def _assumption(prop, value, unit, reason):
@@ -296,28 +323,31 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
             reason="Exact duplicate boundary; one shared mesh is represented by boundary "+boundary_records[alias]["description"].key+"."
         world=None
         width=default_width
+        low,high=-width/2,width/2
         assumptions=[]
         if not reason:
             segment_points=[_transform(matrix,p) for p in boundary.segment]
             a,b=segment_points[:2]
-            width_segment=boundary.thickness_segment
-            observed_width=False
-            if len(width_segment)==2 and all(_point(p) and _inside(p,boundary.source.bbox) and _inside(p,floor.source.bbox) for p in width_segment):
-                p,q=[_transform(matrix,v) for v in width_segment]
-                axis=[b[0]-a[0],b[1]-a[1]]
-                cross=[q[0]-p[0],q[1]-p[1]]
-                if (math.isclose(sum(x*y for x,y in zip(axis,cross)),0,abs_tol=1e-8) and math.dist(p,q)>0
-                        and LineString([p,q]).intersects(LineString([a,b]))):
-                    width=math.dist(p,q)
-                    observed_width=True
+            observed_band=_depicted_band(boundary,floor,page,matrix)
+            observed_width=observed_band is not None
+            if observed_width:
+                low,high=observed_band
+                width=high-low
+                if boundary.kind!="wall":
+                    low,high=-width/2,width/2
             if not observed_width:
                 assumptions.append(_assumption("thickness",width,unit,"Display boundary width; no usable depicted thickness segment."))
+            if boundary.kind=="wall":
+                assumptions.append(_assumption("normal_offsets",f"{low:.12g}, {high:.12g}",unit,
+                    "Wall band follows the supplied cross-wall face positions; its reference line is not assumed to be a centerline. This is image-derived placement, not a field measurement."
+                    if observed_width else "Wall band is centered on the supplied reference line using the explicitly assumed display width."))
             height=wall_height if boundary.kind=="wall" else (.9 if known else .35) if boundary.kind=="railing" else plate
             if boundary.kind=="open_edge":
                 width=plate
+                low,high=-width/2,width/2
                 assumptions=[_assumption("marker_width",width,unit,"Flat display marker for an open edge; not a physical wall.")]
             assumptions.append(_assumption("height",height,unit,"Display extrusion only; no source height established."))
-            world=_rectangle(a,b,width)
+            world=_band(a,b,low,high)
         else:
             height=0
         ifc_type={"wall":"IfcWall","railing":"IfcRailing","open_edge":"IfcBuildingElementProxy"}[boundary.kind]
@@ -327,9 +357,9 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
             shape=entity.Representation.Representations[0]
             shape.Items=list(shape.Items)+[builder.solid_item(_rectangle(a,b,width),0,height)
                 for a,b in zip(segment_points[1:],segment_points[2:])]
-        generated[i]=(entity,width)
+        generated[i]=(entity,low,high)
         if boundary.kind=="wall" and not reason:
-            hosts[boundary.key]=(entity,boundary.segment,width)
+            hosts[boundary.key]=(entity,boundary.segment,low,high)
     for i,record in boundary_records.items():
         if record["alias"] and not record["reason"]:
             primary=record["alias"]
@@ -338,8 +368,8 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
                 seen.add(primary);primary=boundary_records[primary]["alias"]
             target=boundary_records[primary]
             if not target["reason"] and target["description"].kind=="wall":
-                entity,width=generated[primary]
-                hosts[record["description"].key]=(entity,target["description"].segment,width)
+                entity,low,high=generated[primary]
+                hosts[record["description"].key]=(entity,target["description"].segment,low,high)
 
     # Check all opening intervals before cutting any wall; conflicts have no arbitrary winner.
     opening_records={}
@@ -353,16 +383,23 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
             reason="Opening segment is outside its original source region or invalid."
         projected=[];interval=[]
         if not reason:
-            wall,segment,width=host
-            a,b=[_transform(matrix,p) for p in segment]
+            wall,segment,low,high=host
+            aspect=page.width/page.height
+            plane=lambda p:[aspect*p[0],-p[1]]
+            a,b=[plane(p) for p in segment]
             dx,dy=b[0]-a[0],b[1]-a[1]
             length2=dx*dx+dy*dy
+            length=math.sqrt(length2)
+            factor=math.hypot(matrix[0][1],matrix[1][1])
             for point in opening.segment:
-                p=_transform(matrix,point)
+                p=plane(point)
                 t=((p[0]-a[0])*dx+(p[1]-a[1])*dy)/length2
                 original=[segment[0][k]+t*(segment[1][k]-segment[0][k]) for k in (0,1)]
-                nearest=[a[0]+t*dx,a[1]+t*dy]
-                if (not 0<=t<=1 or math.dist(p,nearest)>width/2
+                nearest=_transform(matrix,original)
+                offset=((p[0]-a[0])*(-dy)+(p[1]-a[1])*dx)/length*factor
+                # Numeric tolerance only: source-line contacts must survive display rotation.
+                tolerance=1e-12*max(1,abs(low),abs(high),length*factor)
+                if (not 0<=t<=1 or not low-tolerance<=offset<=high+tolerance
                     or not (source.bbox[0]-1e-9<=original[0]<=source.bbox[2]+1e-9 and source.bbox[1]-1e-9<=original[1]<=source.bbox[3]+1e-9)
                     or not _inside(original,floor.source.bbox)):
                     break
@@ -382,8 +419,18 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
         key=f"{prefix}:opening:{i}"
         assumptions=[];world=None;sill=height=0
         if not reason:
-            wall,_,width=record["host"]
+            wall,_,low,high=record["host"]
+            width=high-low
             a,b=record["points"]
+            length=math.dist(a,b)
+            normal=[-(b[1]-a[1])/length,(b[0]-a[0])/length]
+            # Gap endpoints may be listed in either order; band signs use the host's direction.
+            host_segment=record["host"][1]
+            host_a,host_b=[_transform(matrix,p) for p in host_segment]
+            if sum((b[i]-a[i])*(host_b[i]-host_a[i]) for i in (0,1))<0:
+                normal=[-value for value in normal]
+            center=(low+high)/2
+            a,b=[[point[i]+normal[i]*center for i in (0,1)] for point in (a,b)]
             sill,height=((0,2.1) if opening.kind=="door" else (1,1.2)) if known else ((0,.8) if opening.kind=="door" else (.4,.45))
             void=builder.model.create_entity("IfcOpeningElement",GlobalId=builder.guid(key+":void"),Name="Display opening",
                 ObjectPlacement=builder.placement,Representation=builder.solid(_rectangle(a,b,width*1.4),sill,height),PredefinedType="OPENING")
@@ -392,6 +439,7 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings):
             assumptions=[_assumption("height",height,unit,"Display opening height, not a measured source value."),
                 _assumption("sill_height",sill,unit,"Display sill height, not a measured source value."),
                 _assumption("thickness",min(.03,width/2),unit,"Display fill thickness."),
+                _assumption("cross_wall_center",center,unit,"Void and fill are centered between the host's supplied face positions or explicitly assumed display faces; longitudinal source-gap endpoints are unchanged."),
                 _assumption("host_projection","Within rendered host wall band",None,"Source segment projected only onto its explicitly named wall; original source region unchanged.")]
         entity=add("IfcDoor" if opening.kind=="door" else "IfcWindow",key,opening.label,opening.kind,opening.kind,record["source"],world,sill,height,
                    assumptions,opening.basis,opening.note,reason)
