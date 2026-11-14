@@ -1,0 +1,5 @@
+[55] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[56] tool wait_agent call: {"timeout_ms":300000}
+
+[57] tool wait_agent result: {"message":"Wait completed.","timed_out":false}
