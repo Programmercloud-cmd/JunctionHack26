@@ -1,0 +1,1 @@
+can you adjust what transcribe understands, e.g. some room names are pretty hard to pronounce or are unlikely to be understood wihtout the transcription model knowing that its valid, so is there basically a straight forward path to increase the words the transcription model understands
