@@ -1,0 +1,8 @@
+[185] assistant: Agent message from /root/backend:
+Message Type: FINAL_ANSWER
+Task name: /root
+Sender: /root/backend
+Payload:
+Implemented the V3 generator and tests: explicit walls, independent opening hosts, outdoor footprints, schematic features, and persistent unresolved items. Every entry keeps source provenance and stable identity.
+
+Validation: **67 passed, 1 optional sample test skipped** across generation, artifact reopening/corruption, and native IFC import. Ready for independent review and live visual checks.
