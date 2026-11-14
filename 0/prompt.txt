@@ -1,0 +1,11 @@
+[111] assistant: Implemented backend voice routes and adapters in the voice worktree.
+
+- Gemini Live transcription with building vocabulary, manual recording boundaries, interim/final text, and confirmed completion.
+- ElevenLabs exact-answer speech generation with safe errors and cancellation.
+- Native/derived room vocabulary, including geometry-less rooms and floor labels.
+- Server-only configuration; no credentials exposed.
+- **35 deterministic tests passed**.
+
+Files: `app/voice.py`, `app/voice_config.py`, `app/voice_providers.py`, `tests/test_voice.py`, `tests/test_voice_providers.py`.
+
+Independent reviewer reports no backend blockers so far. Live ElevenLabs remains unverified without credentials.
