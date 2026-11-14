@@ -12,7 +12,9 @@ from typing import ClassVar
 
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types
+from google.genai import errors as genai_errors, types
+from google.genai import _interactions as decision_errors
+import httpx2
 from pydantic import ValidationError
 
 from .documents import Document
@@ -55,7 +57,8 @@ def _begin_call(provider, schema, model, max_tokens, timeout_ms, thinking_level=
         "schema": schema if isinstance(schema, str) else schema.__name__, "model": model,
         "max_output_tokens": max_tokens, "timeout_ms": timeout_ms, "thinking_level": thinking_level,
         "elapsed_ms": None, "finish_reason": None, "prompt_tokens": None,
-        "candidate_tokens": None, "thought_tokens": None, "outcome": "request_started"}
+        "candidate_tokens": None, "thought_tokens": None, "outcome": "request_started",
+        "exception_type": None, "http_status": None}
     if not hasattr(provider, "provider_calls"): provider.provider_calls = []
     provider.provider_calls.append(record)
     return record, monotonic()
@@ -65,6 +68,52 @@ def _finish_call(provider, record, started):
     record["elapsed_ms"] = round((monotonic()-started)*1000)
     callback = getattr(provider, "diagnostic_callback", None)
     if callback: callback()
+
+
+def _record_exception(record, error):
+    """Record fixed class labels and upstream status, never exception/source text."""
+    known = (
+        (genai_errors.ClientError, "ClientError"),
+        (genai_errors.ServerError, "ServerError"),
+        (genai_errors.APIError, "APIError"),
+        (decision_errors.APITimeoutError, "APITimeoutError"),
+        (decision_errors.APIConnectionError, "APIConnectionError"),
+        (decision_errors.BadRequestError, "BadRequestError"),
+        (decision_errors.AuthenticationError, "AuthenticationError"),
+        (decision_errors.PermissionDeniedError, "PermissionDeniedError"),
+        (decision_errors.NotFoundError, "NotFoundError"),
+        (decision_errors.ConflictError, "ConflictError"),
+        (decision_errors.UnprocessableEntityError, "UnprocessableEntityError"),
+        (decision_errors.RateLimitError, "RateLimitError"),
+        (decision_errors.InternalServerError, "InternalServerError"),
+        (decision_errors.APIStatusError, "APIStatusError"),
+        (decision_errors.APIResponseValidationError, "APIResponseValidationError"),
+        (decision_errors.APIError, "APIError"),
+        (httpx2.ReadTimeout, "ReadTimeout"),
+        (httpx2.ConnectTimeout, "ConnectTimeout"),
+        (httpx2.WriteTimeout, "WriteTimeout"),
+        (httpx2.PoolTimeout, "PoolTimeout"),
+        (httpx2.TimeoutException, "TimeoutException"),
+        (httpx2.ConnectError, "ConnectError"),
+        (httpx2.ReadError, "ReadError"),
+        (httpx2.WriteError, "WriteError"),
+        (httpx2.CloseError, "CloseError"),
+        (httpx2.ProxyError, "ProxyError"),
+        (httpx2.RemoteProtocolError, "RemoteProtocolError"),
+        (httpx2.LocalProtocolError, "LocalProtocolError"),
+        (httpx2.TransportError, "TransportError"),
+        (httpx2.HTTPStatusError, "HTTPStatusError"),
+        (httpx2.HTTPError, "HTTPError"),
+        (ValidationError, "ValidationError"),
+        (json.JSONDecodeError, "JSONDecodeError"),
+        (ProviderError, "ProviderError"),
+    )
+    record["exception_type"] = next((label for kind, label in known if isinstance(error, kind)), "UnexpectedError")
+    status = (error.code if isinstance(error, genai_errors.APIError) else
+        error.status_code if isinstance(error, decision_errors.APIStatusError) else
+        error.response.status_code if isinstance(error, httpx2.HTTPStatusError) else None)
+    # Valid HTTP status metadata only; local ProviderError.status is not upstream.
+    record["http_status"] = status if type(status) is int and 100 <= status <= 599 else None
 
 
 def _source_catalog(document):
@@ -480,8 +529,9 @@ class GeminiProvider:
             self.usage.output_tokens += record["reported_output_tokens"] or 0
             record["outcome"] = "validated_response"
             return response
-        except Exception:
+        except Exception as error:
             record["outcome"] = "provider_error"
+            _record_exception(record, error)
             raise
         finally: _finish_call(self,record,started)
 
@@ -556,6 +606,7 @@ class GeminiProvider:
             record["outcome"] = "validated_response"
             return result
         except Exception as error:
+            _record_exception(record, error)
             if record["outcome"] == "request_started":
                 record["outcome"] = ("response_json_rejected" if isinstance(error,json.JSONDecodeError) or isinstance(error,ValidationError) and any(e["type"]=="json_invalid" for e in error.errors(include_input=False)) else
                     "response_schema_rejected" if isinstance(error,ValidationError) else "provider_error")
