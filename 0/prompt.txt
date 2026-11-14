@@ -1,0 +1,44 @@
+[279] assistant: Changed the voice worktree’s default port to **8001** in both launchers and updated the docs.
+
+Run `bash scripts/dev.sh`, then open http://127.0.0.1:8001. Shell validation and independent review passed.
+
+[280] Retained source order: 114
+user: Notably Update spoken answers to omit coordinate lists, bounding boxes, object IDs, and citation metadata unless explicitly requested. Keep useful measurements and all uncertainty or missing-information qualifiers. Preserve the full written answer and visual evidence. Verify that the spoken version remains faithful to the grounded answer and that window-related answers sound natural aloud.
+
+[281] assistant: I’ll add a spoken version of each answer that removes technical evidence details while preserving measurements, uncertainty, and missing-information qualifiers. The written answer and visual evidence will stay intact. I’ll include window-related examples in the tests and independent review.
+
+[282] tool exec call: text(await tools.exec_command({cmd:"cat docs/PLAN.md docs/CONTRACT.md docs/HANDOFF.md docs/VOICE_CONTRACT.md && sed -n '1,260p' app/voice.py && sed -n '305,405p' app/static/voice.js && cat app/schemas.py","workdir":"/home/jcb/dev/github/JunctionHack26-voice","max_output_tokens":10500,"sandbox_permissions":"require_escalated","justification":"May I inspect the voice contract, grounded-answer schema and current speech path before adding faithful spoken-answer formatting?"}));
+
+>>> TRANSCRIPT DELTA END
+
+Reviewed Codex session id: 01a1d7b1-b6b6-7850-9986-5b70356cf77f
+
+>>> PARENT TURN PERMISSION CONTEXT START
+
+The active permission profile for environment "local" has no explicit denied-read paths/globs.
+
+>>> PARENT TURN PERMISSION CONTEXT END
+
+The Codex agent has requested the following next action:
+
+>>> APPROVAL REQUEST START
+
+Assess the exact planned action below. Use read-only tool checks when local state matters.
+
+Planned action JSON:
+
+{
+  "command": [
+    "/bin/bash",
+    "-lc",
+    "cat docs/PLAN.md docs/CONTRACT.md docs/HANDOFF.md docs/VOICE_CONTRACT.md && sed -n '1,260p' app/voice.py && sed -n '305,405p' app/static/voice.js && cat app/schemas.py"
+  ],
+  "cwd": "/home/jcb/dev/github/JunctionHack26-voice",
+  "environment_id": "local",
+  "justification": "May I inspect the voice contract, grounded-answer schema and current speech path before adding faithful spoken-answer formatting?",
+  "sandbox_permissions": "require_escalated",
+  "tool": "exec_command",
+  "tty": false
+}
+
+>>> APPROVAL REQUEST END
