@@ -1,0 +1,16 @@
+[354] assistant: Agent message from /root/voice_frontend:
+Message Type: FINAL_ANSWER
+Task name: /root
+Sender: /root/voice_frontend
+Payload:
+Implemented the spoken-answer UI followup:
+
+- Prepared speech plays by default.
+- “Read technical details” explicitly selects detailed speech.
+- Changing the preference stops pending or active audio without starting another request.
+- Explicit preparation failures disable speech; written answers and evidence remain available.
+- Legacy responses without speech fields still work.
+
+Verification: all 14 Chromium tests passed; the final cancellation-synchronization rerun also passed.
+
+[355] tool send_message call: {"target":"voice_backend","message":"REDACTED"}
