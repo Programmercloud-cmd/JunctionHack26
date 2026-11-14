@@ -59,3 +59,69 @@ Source QA was independently reviewed through Chromium, including every1794 and n
 34's rejected input remains durable but the exact submitted value is not displayed in current assumptions/job details. This is an unresolved UI visibility limitation, not data loss or an accepted update.11397's accepted user value is visible in the assumptions panel with correct provenance.
 
 Independent browser review of non-residential preview `7d0b68d3ff024feba03810195d2f6eed` verified orbit, floor control, actual canvas picking, pinned evidence links and actual-IFC source overlays without JavaScript errors. The preview has3 room areas,16 rendered walls,12 schematic piers and3 schematic stairs;26 records are unresolved (19 windows,6 doors and entrance steps). Openings lack usable wall hosts. The upper-left spiral stair is absent from extraction; the three captured spiral symbols use generic straight tread schematics. No residential furnishings were proposed. This is a source-linked partial visualization, not faithful complete church geometry.
+
+Non-residential geometry enrichment and first review both completed, but correction was rejected atomically (`de914c918618436fa647d6a1e0d118ff`): a floor-metadata replacement changed nested identity order/length. The original preview remained current. Provider calls took183.55s/42.09s/235.87s (enrichment/review/correction); all completedSTOP. Correction output was structurally parsed but failed application validation, so it was not accepted. Post-model source QA still answered from the original plan.
+
+
+## Final acceptance status
+
+| Case | Fresh interpretation and source-only QA | Optional geometry/review | Attributed input | Portability and restart |
+|---|---|---|---|---|
+| 34 | Interpretation saved; supported answer, follow-up and refusal checked. Initial compass embellishments remain in historical messages; post-fix answer uses image-relative positions. | Partial preview retained after zero-area review rejection; source-linked browser inspection passed, substantial omissions remain. | Input saved privately; conservative review rejected publication, previous geometry unchanged. Exact rejected value is not shown in current assumptions. | Actual IFC export/reimport/restart and original reupload passed with no inference. |
+| 11397 | First response rejected for malformed coordinate; explicitly documented second extraction saved interpretation. Supported answers/follow-up/refusals passed. | Sparse preview retained after no-material-change correction; source-linked browser inspection passed. | Relative display height accepted after live review; original-only actual height still refuses. XY/IDs/source/scale unchanged. | Actual IFC export/reimport/restart and original reupload passed with no inference. |
+| 1794 | Schema400 corrected; subsequent extraction timed out without response. Original-only supported answer/follow-up/refusal passed despite pending interpretation. | Unavailable: no fresh interpretation/model. No blind retry or older artifact substituted. | Unavailable: no interpreted floor scope. | Original bundle/chat/reupload/restart preserved with no new extraction job. No IFC export available. |
+| Non-residential22921604 | Initial schema400; corrected request saved interpretation. Supported answer/follow-up/refusal passed. | Partial preview retained after invalid floor-metadata correction. Browser orbit/source/overlay check passed; all openings unresolved and a spiral stair omitted. | Relative display height accepted after live review; XY/IDs/source/units unchanged and source-only refusal preserved. | Actual IFC export/reimport/restart and original reupload passed with no inference. |
+
+The non-residential correction's first operation attempted a supported floor-bbox expansion but explicitly emptied16 boundaries,25 openings,3 rooms and16 features. Local replay reproduced the exact rejection with the original document unchanged. Existing floor-metadata membership/order/identity regression tests cover this class. It is patch-contract noncompliance, not a new provider-schema or generator failure.
+
+Final accepted non-residential revision is `8cb0f5019c9d4e77829f4752704f1244`;11397 is `ba99c0701fb54727bf63608cb6c349ec`;34 retains `5245972351244fe2bb79fc23b036372a`. All are derived visualization, never authoritative IFC evidence. The church's final export preserved60 IDs and its attributed value with exact original bytes and zero source-transform round-trip error.34/11397 export results remain as described above.
+
+The real verification server was stopped and restarted after all jobs finished. Identical original reuploads for all four cases preserved revision IDs, chat counts, existing IFC hashes and job-file lists, and returned no new extraction jobs. Rejected34 input remains in its job and private candidate after restart. No failed extraction was automatically retried by reupload. Independent per-artifact import tests used a forbidden provider factory and made zero calls.
+
+Validation:536 backend tests passed,25 optional skipped;24 opt-in browser tests passed; doctor passed. Independent code/schema tests passed44/44; independent reviewers directly used Chromium for QA citations, orbit, floor controls, mesh picking, source overlays and assumption attribution. No raw requests, credentials, uploaded originals or reference answers are committed. Live-call/private-browser artifacts remain under `/tmp/junction-consolidation/` and `/tmp/reviewer-consolidation-browser/`; durable application bundles are in `.runtime/consolidation-verification`.
+
+Final non-residential browser verification after restart confirmed the accepted user value, unchanged60 IDs/XY/topology/source associations, actual pier-to-original clicking and source-only refusal. Saved supported answers did not return highlight IDs, so live answer-driven fading was **not demonstrated** in this fresh case. Existing browser regressions exercise highlighting/fading; those are not a substitute for a live mapping claim. No matches or highlights were synthesized to manufacture acceptance.
+
+**Full four-case acceptance is not met:**1794 lacks a fresh interpretation and downstream geometry/input/export. The other models remain substantially incomplete, and34's refinement review was conservatively wrong. The completed work improves diagnostics, API compatibility, provenance safety and recoverability; it does not establish reconstruction accuracy. No further retry, limit increase, new model, prompt repair loop or infrastructure was added to manufacture passing results.
+
+## Live stage metrics
+
+Times below sum completed provider-call elapsed time, excluding queue wait. Input/output counts use SDK-reported aggregates. A dash means no elapsed-call metadata was available; missing token metadata and zeros from timeout aggregates are shown as unknown. Failed/cached/controlled runs are not merged into a successful fresh run.
+
+| Case | Stage | Outcome | Active calls (s) | Input tokens | Output tokens |
+|---|---|---|---:|---:|---:|
+| 34 | extraction-0 | complete | 36.72 | 1902 | 5896 |
+| 34 | geometry-retry1 | failed | 300.11 | 27909 | 55873 |
+| 34 | geometry | failed | 143.91 | 12686 | 26762 |
+| 34 | qa-followup-before3d | complete / answered | 18.54 | 55414 | 1227 |
+| 34 | qa-refusal-after-input | complete / insufficient | 14.47 | 101654 | 696 |
+| 34 | qa-refusal-before3d | complete / insufficient | 17.86 | 60182 | 804 |
+| 34 | qa-supported-before3d | complete / answered | 20.44 | 50749 | 1270 |
+| 34 | qa-supported-with3d | complete / answered | 26.81 | 96848 | 2043 |
+| 34 | refinement | needs_attention | 56.96 | 25808 | 8460 |
+| 11397 | extraction-0 | failed | 11.24 | 1909 | 1057 |
+| 11397 | geometry-retry1 | failed | 198.77 | 41063 | 34180 |
+| 11397 | geometry | stopped | 28.38 | unknown | unknown |
+| 11397 | qa-actual-height-after-input | complete / insufficient | 14.23 | 79516 | 991 |
+| 11397 | qa-followup-before3d | complete / answered | 16.47 | 16056 | 1031 |
+| 11397 | qa-refusal-after-input | complete / insufficient | 14.96 | 75521 | 909 |
+| 11397 | qa-refusal-before3d | complete / insufficient | 13.51 | 20246 | 829 |
+| 11397 | qa-supported-before3d | complete / answered | 23.69 | 11049 | 1733 |
+| 11397 | qa-supported-with3d | complete / answered | 21.08 | 70431 | 1451 |
+| 11397 | refinement | complete | 79.80 | 17789 | 12523 |
+| 1794 | extraction-0 | failed | 2.96 | unknown | unknown |
+| 1794 | extraction-retry1-0 | failed | 304.98 | unknown | unknown |
+| 1794 | qa-followup-before3d | complete / answered | 20.46 | 15219 | 1300 |
+| 1794 | qa-refusal-before3d | complete / insufficient | 19.52 | 19955 | 885 |
+| 1794 | qa-supported-before3d | complete / answered | 15.80 | 11131 | 833 |
+| nonresidential | extraction-0 | failed | 7.17 | unknown | unknown |
+| nonresidential | extraction-retry1-0 | complete | 15.50 | 1909 | 711 |
+| nonresidential | geometry | failed | 461.51 | 56776 | 93787 |
+| nonresidential | qa-followup-before3d | complete / answered | 36.47 | 20008 | 2392 |
+| nonresidential | qa-refusal-after-input | complete / insufficient | 22.61 | 138723 | 982 |
+| nonresidential | qa-refusal-before3d | complete / insufficient | 16.73 | 25222 | 834 |
+| nonresidential | qa-supported-before3d | complete / answered | 31.19 | 14915 | 1489 |
+| nonresidential | qa-supported-with3d | complete / answered | 29.11 | 133866 | 1509 |
+| nonresidential | refinement | complete | 47.77 | 35914 | 7357 |
+| unseen-17451275 | extraction-0 | complete | 31.39 | 1922 | 4851 |
+| unseen-17451275 | qa-supported | complete / answered | 22.85 | 47317 | 1020 |
