@@ -1,0 +1,39 @@
+[163] tool exec call: text(await tools.apply_patch("*** Begin Patch\n*** Update File: /home/jcb/dev/github/JunctionHack26/app/ifc_generate.py\n@@\n                 if edge_key not in edges:\n                     a,b = _transform(matrix,start),_transform(matrix,end)\n-                    edge_source = SourceRef(kind=\"image\",page=page.number,bbox=_bounds([start,end],page))\n+                    box = _bounds([start,end],page)\n+                    floor_box = floor.source.bbox\n+                    box = [max(box[0],floor_box[0]),max(box[1],floor_box[1]),min(box[2],floor_box[2]),min(box[3],floor_box[3])]\n+                    edge_source = SourceRef(kind=\"image\",page=page.number,bbox=box)\n*** Update File: /home/jcb/dev/github/JunctionHack26/tests/test_ifc_generate.py\n@@\n def test_valid_opening_preserves_full_source_region_without_shrinking(document):\n@@\n     assert len(model.by_type(\"IfcOpeningElement\"))==1\n+\n+\n+def test_boundary_source_padding_stays_inside_its_original_floor_region(document):\n+    bbox=[.1,.2,.7,.8]\n+    model=ifcopenshell.file.from_string(generate_ifc(description(floor(source=region(bbox=bbox))),document).decode())\n+    for element in manifest(model).scene.elements:\n+        l,t,r,b=element.source.bbox\n+        assert bbox[0]<=l<r<=bbox[2] and bbox[1]<=t<b<=bbox[3]\n*** Update File: /home/jcb/dev/github/JunctionHack26/tests/test_ifc_artifact.py\n@@\n         elif kind==\"bad_source_region\":\n             values[\"scene\"][\"elements\"][0][\"source\"][\"bbox\"]=[-1,0,1,1]\n+        elif kind==\"manifest_type\":\n+            values[\"scene\"][\"elements\"][0][\"ifc_type\"]=\"IfcDoor\"\n+            values[\"scene\"][\"elements\"][0][\"kind\"]=\"door\"\n@@\n-    \"wrong_unit\",\"changed_identity\",\"launder_classification\",\"bad_source_region\",\n+    \"wrong_unit\",\"changed_identity\",\"launder_classification\",\"bad_source_region\",\"manifest_type\",\n@@\n def test_same_room_label_highlights_only_matching_original_floor_region(tmp_path,artifact_bundle,same_page):\n@@\n     finally:\n         store.close()\n+\n+\n+@pytest.mark.parametrize(\"path\",[\"store\",\"direct\"])\n+def test_actual_same_page_storey_membership_must_match_manifest(tmp_path,path):\n+    store=DocumentStore(tmp_path)\n+    try:\n+        original=store.add(pdf(1),\"two-panels.pdf\")\n+        first=floor(\"Ground\",source=region(bbox=[0,0,.49,1]),rooms=[room(\"Bedroom\",[[.1,.2],[.4,.2],[.4,.8],[.1,.8]])])\n+        second=floor(\"Upper\",source=region(bbox=[.51,0,1,1]),rooms=[room(\"Bedroom\",[[.6,.2],[.9,.2],[.9,.8],[.6,.8]])])\n+        model=ifcopenshell.file.from_string(generate_ifc(description(first,second),original).decode())\n+        space=model.by_type(\"IfcSpace\")[0]\n+        space.Decomposes[0].RelatingObject=model.by_type(\"IfcBuildingStorey\")[1]\n+        data=model.to_string().encode()\n+        with pytest.raises(DocumentError) as error:\n+            if path==\"store\":\n+                store.add(data,\"wrong-floor.ifc\")\n+            else:\n+                import_ifc(data,\"direct\")\n+        assert error.value.status==422\n+    finally:\n+        store.close()\n*** End Patch"));
+text(await tools.write_stdin({session_id:71546,chars:"",yield_time_ms:1000,max_output_tokens:1000}));
+text(await tools.exec_command({cmd:".venv/bin/python -m pytest tests/test_ifc_generate.py tests/test_ifc_artifact.py -q",sandbox_permissions:"require_escalated",justification:"Verify bounded wall source regions and actual IFC type/storey provenance consistency alongside the generator and artifact regressions.",yield_time_ms:1000,max_output_tokens:3000}));
+
+>>> TRANSCRIPT DELTA END
+
+Reviewed Codex session id: 01a1d712-4dbd-7872-aab6-f6f7a424a3fd
+
+>>> PARENT TURN PERMISSION CONTEXT START
+
+The active permission profile for environment "local" has no explicit denied-read paths/globs.
+
+>>> PARENT TURN PERMISSION CONTEXT END
+
+The Codex agent has requested the following next action:
+
+>>> APPROVAL REQUEST START
+
+Retry reason:
+
+command failed; retry without sandbox?
+
+Assess the exact planned action below. Use read-only tool checks when local state matters.
+
+Planned action JSON:
+
+{
+  "cwd": "/home/jcb/dev/github/JunctionHack26",
+  "environment_id": "local",
+  "files": [
+    "/home/jcb/dev/github/JunctionHack26/tests/test_ifc_generate.py",
+    "/home/jcb/dev/github/JunctionHack26/tests/test_ifc_artifact.py",
+    "/home/jcb/dev/github/JunctionHack26/app/ifc_generate.py"
+  ],
+  "patch": "*** Begin Patch\n*** Update File: /home/jcb/dev/github/JunctionHack26/app/ifc_generate.py\n@@\n                 if edge_key not in edges:\n                     a,b = _transform(matrix,start),_transform(matrix,end)\n-                    edge_source = SourceRef(kind=\"image\",page=page.number,bbox=_bounds([start,end],page))\n+                    box = _bounds([start,end],page)\n+                    floor_box = floor.source.bbox\n+                    box = [max(box[0],floor_box[0]),max(box[1],floor_box[1]),min(box[2],floor_box[2]),min(box[3],floor_box[3])]\n+                    edge_source = SourceRef(kind=\"image\",page=page.number,bbox=box)\n*** Update File: /home/jcb/dev/github/JunctionHack26/tests/test_ifc_generate.py\n@@\n def test_valid_opening_preserves_full_source_region_without_shrinking(document):\n@@\n     assert len(model.by_type(\"IfcOpeningElement\"))==1\n+\n+\n+def test_boundary_source_padding_stays_inside_its_original_floor_region(document):\n+    bbox=[.1,.2,.7,.8]\n+    model=ifcopenshell.file.from_string(generate_ifc(description(floor(source=region(bbox=bbox))),document).decode())\n+    for element in manifest(model).scene.elements:\n+        l,t,r,b=element.source.bbox\n+        assert bbox[0]<=l<r<=bbox[2] and bbox[1]<=t<b<=bbox[3]\n*** Update File: /home/jcb/dev/github/JunctionHack26/tests/test_ifc_artifact.py\n@@\n         elif kind==\"bad_source_region\":\n             values[\"scene\"][\"elements\"][0][\"source\"][\"bbox\"]=[-1,0,1,1]\n+        elif kind==\"manifest_type\":\n+            values[\"scene\"][\"elements\"][0][\"ifc_type\"]=\"IfcDoor\"\n+            values[\"scene\"][\"elements\"][0][\"kind\"]=\"door\"\n@@\n-    \"wrong_unit\",\"changed_identity\",\"launder_classification\",\"bad_source_region\",\n+    \"wrong_unit\",\"changed_identity\",\"launder_classification\",\"bad_source_region\",\"manifest_type\",\n@@\n def test_same_room_label_highlights_only_matching_original_floor_region(tmp_path,artifact_bundle,same_page):\n@@\n     finally:\n         store.close()\n+\n+\n+@pytest.mark.parametrize(\"path\",[\"store\",\"direct\"])\n+def test_actual_same_page_storey_membership_must_match_manifest(tmp_path,path):\n+    store=DocumentStore(tmp_path)\n+    try:\n+        original=store.add(pdf(1),\"two-panels.pdf\")\n+        first=floor(\"Ground\",source=region(bbox=[0,0,.49,1]),rooms=[room(\"Bedroom\",[[.1,.2],[.4,.2],[.4,.8],[.1,.8]])])\n+        second=floor(\"Upper\",source=region(bbox=[.51,0,1,1]),rooms=[room(\"Bedroom\",[[.6,.2],[.9,.2],[.9,.8],[.6,.8]])])\n+        model=ifcopenshell.file.from_string(generate_ifc(description(first,second),original).decode())\n+        space=model.by_type(\"IfcSpace\")[0]\n+        space.Decomposes[0].RelatingObject=model.by_type(\"IfcBuildingStorey\")[1]\n+        data=model.to_string().encode()\n+        with pytest.raises(DocumentError) as error:\n+            if path==\"store\":\n+                store.add(data,\"wrong-floor.ifc\")\n+            else:\n+                import_ifc(data,\"direct\")\n+        assert error.value.status==422\n+    finally:\n+        store.close()\n*** End Patch",
+  "tool": "apply_patch"
+}
+
+>>> APPROVAL REQUEST END
