@@ -1,16 +1,23 @@
 """Intent-only chat adapter. Saved sources and existing operation routes retain authority."""
 from copy import deepcopy
+from contextvars import ContextVar
+import logging
 import math
 import re
 from time import monotonic
 from typing import Literal, Union
+from uuid import uuid4
 
-from pydantic import Field, StrictBool, model_validator
+from pydantic import Field, StrictBool, ValidationError, model_validator
 
 from .documents import Document, DocumentError, resolve_reference
 from .provider import ProviderError
 from .schemas import StrictModel
 from .user_inputs import UserEdit, RefinementRequest, prepare_inputs
+
+
+logger = logging.getLogger(__name__)
+_intent_diagnostic = ContextVar("chat_intent_diagnostic", default=None)
 
 
 class Camera(StrictModel):
@@ -94,7 +101,7 @@ class SelectAction(StrictModel):
 
 
 class SourceAction(StrictModel):
-    """Open original evidence. For this object, use selector target focused; do not open 3D."""
+    """Open a whole original page by default; an explicit selector opens object evidence."""
     type: Literal["show_source"]
     selector: Selector | None = None
     page: int | None = Field(default=None, ge=1)
@@ -268,6 +275,10 @@ User: "Return to 3D and go to the next selected item."
 Output: {"status":"ready","actions":[{"type":"show_model"},{"type":"tour","command":"next"}],"clarification":null}
 User: "What is the actual width of this window?"
 Output: {"status":"ready","actions":[{"type":"question","selector":{"target":"focused"}}],"clarification":null}
+User: "How many windows does this building have?"
+Output: {"status":"ready","actions":[{"type":"question"}],"clarification":null}
+User: "Show the original blueprint."
+Output: {"status":"ready","actions":[{"type":"show_source"}],"clarification":null}
 These examples distinguish navigation from factual questions; use the user's actual requested
 operation and never substitute repeated show_model actions for missing operation parameters.
 WIRE FORMAT: Each action has one type from the enum and only that operation's relevant fields.
@@ -276,13 +287,19 @@ Leave all unrelated optional fields null. For show_source use selector or page; 
 The navigation catalog is a fallible saved interpretation, never factual evidence. Do not answer
 construction questions or rediscover objects from images. A factual question is question action;
 preserve the original message (application code supplies it). Use selector focused for 'this'
-when it refers to the captured focused object. 'Show windows' is select kind window, not a count.
+when it refers to the captured focused object, not 'this building'. Building-wide counts and
+questions about a kind of object are factual question actions without a singular selector.
+The QA pipeline inspects originals; never answer a source count from modeled objects.
+'Show windows' is select kind window, not a count.
 For 'show all windows in 3D' emit show_model then select kind window target all. If no scene yet,
 still emit those actions; code will resolve the semantic selector after existing reconstruction.
 Above/top-down is set_camera top. Individually/one by one is tour start. Original blueprint of
 this window is show_source selector focused. Back to model; next window is show_model then tour
 next. Preserve action order. Never invent IDs, source boxes or page references. Copy only exact
 catalog IDs or use selectors. Duplicate names/ambiguous scope require a short clarification.
+Opening the original blueprint without an object means show_source with no selector. Code opens
+the first supplied page and the UI offers every supplied page/source. An explicit page uses its
+saved page number from page_sources. Do not ask which object for whole-document navigation.
 Never turn an actual quantity/height question into refinement. Only explicit user corrections or
 supplied values request refine, using existing typed edits and exact supplied values/units. Ask
 for missing dimensions/scope; don't infer them from rendered geometry or generic buildings.
@@ -502,16 +519,56 @@ def _context(store, runner, request):
 def interpret(provider, request, catalog):
     # Reuse transport, schema conversion, selected model, usage and timeout; no source pages.
     if callable(getattr(provider, "interpret_chat_actions", None)):
-        return ChatIntent.model_validate(provider.interpret_chat_actions(request.message, catalog))
+        return _intent_stage("adapter_response", lambda: ChatIntent.model_validate(
+            provider.interpret_chat_actions(request.message, catalog)))
     navigation = Document(id="navigation", filename="navigation", pages=[])
     kwargs = {"extra_data":catalog, "include_qa_context":False}
     if callable(getattr(provider, "_generate", None)):
-        wire = provider._generate(navigation, request.message, INSTRUCTIONS, WireChatIntent, **kwargs)
+        wire = _intent_stage("provider_response", lambda: provider._generate(
+            navigation, request.message, INSTRUCTIONS, WireChatIntent, **kwargs))
     elif callable(getattr(provider, "_parse", None)):
-        wire = provider._parse(navigation, request.message, INSTRUCTIONS, WireChatIntent, **kwargs)
+        wire = _intent_stage("provider_response", lambda: provider._parse(
+            navigation, request.message, INSTRUCTIONS, WireChatIntent, **kwargs))
     else:
         raise ProviderError("The configured provider does not support chat intent interpretation.", 503)
-    return WireChatIntent.model_validate(wire).canonical()
+    wire = _intent_stage("wire_validation", lambda: WireChatIntent.model_validate(wire))
+    return _intent_stage("action_validation", wire.canonical)
+
+
+def _intent_stage(stage, operation):
+    try:
+        return operation()
+    except Exception as error:
+        # Stage is application-owned; neither messages nor provider response values are logged.
+        _log_intent_failure(stage, error)
+        raise
+
+
+def _log_intent_failure(stage, error):
+    diagnostic = _intent_diagnostic.get()
+    if diagnostic and diagnostic["logged"]:
+        return
+    safe = {"reference":diagnostic["reference"] if diagnostic else uuid4().hex,
+        "stage":stage, "exception_type":type(error).__name__}
+    for attribute in ("status_code", "code", "status"):
+        status = getattr(error, attribute, None)
+        if type(status) is int and 100 <= status <= 599:
+            safe["http_status"] = status
+            break
+    if isinstance(error, ValidationError):
+        schema = WireChatIntent.model_json_schema()
+        definitions = schema.get("$defs", {})
+        known = set(schema.get("properties", {})) | set(definitions)
+        for definition in definitions.values():
+            known.update(definition.get("properties", {}))
+        # Union validation paths may contain canonical class names. Unknown keys are
+        # redacted: an attacker can put secrets in JSON property names as well as values.
+        known.update(action.__name__ for action in Action.__args__)
+        safe["validation"] = [{"type":item["type"], "path":[part if isinstance(part,int) or part in known else "<field>"
+            for part in item["loc"]]} for item in error.errors(include_input=False, include_context=False)]
+    logger.warning("Chat intent failed: %s", safe)
+    if diagnostic:
+        diagnostic["logged"] = True
 
 
 def resolve_actions(store, runner, request, intent, context=None):
@@ -560,8 +617,9 @@ def resolve_actions(store, runner, request, intent, context=None):
                     selected = result["ids"]
             elif kind == "show_source":
                 source_document = geometry or document
-                if action.page is not None:
-                    page = next((page for page in document.pages if page.number == action.page), None)
+                if action.page is not None or action.selector is None and document.pages:
+                    page_number = action.page if action.page is not None else document.pages[0].number
+                    page = next((page for page in document.pages if page.number == page_number), None)
                     if page is None:
                         raise DocumentError("That original page is not in the captured revision.", 422)
                     result.update(object_id=None, source={"kind":"image", "page":page.number, "bbox":None,
@@ -578,7 +636,13 @@ def resolve_actions(store, runner, request, intent, context=None):
                 result.pop("label", None)
             elif kind == "question":
                 result = {"type":"question", "question":request.message, "revision_id":request.revision_id, "navigation_reference":None}
-                if action.selector:
+                general_scope = action.selector and action.selector.target == "all" and not action.selector.ids and not action.selector.label
+                if general_scope:
+                    # A category/floor count is not a singular object reference. Saved
+                    # geometry neither establishes its answer nor limits source inspection.
+                    if action.selector.floor:
+                        _named(action.selector.floor, floors, "id", "label", "floor")
+                elif action.selector:
                     matches = _select(action.selector, records, floors, request.workspace)
                     if len(matches) != 1:
                         raise Clarify("Which object does your question refer to?", [r["name"] for r in matches])
@@ -654,6 +718,8 @@ def chat_actions(store, runner, provider_factory, request):
         "objects":[{key:value for key,value in row.items() if key != "source"} for row in records.values()],
         "floors":list(floors.values()), "sources":[{"source_id":s["source_id"], "filename":s.get("filename")} for s in document.sources] if document else [],
         "pages":[page.number for page in document.pages] if document else [],
+        "page_sources":[{"page":page.number, "source_id":page.source_id, "source_page":page.source_page,
+            "filename":page.source_filename} for page in document.pages] if document else [],
         "saved_buildings":[{"building_id":key, "filename":value.get("filename")} for key,value in saved.items()],
         "jobs":[{key:job.get(key) for key in ("id", "kind", "status")} for job in jobs],
         "captured_focus":{"object_id":request.workspace.focused_id,
@@ -661,18 +727,23 @@ def chat_actions(store, runner, provider_factory, request):
             "source_kind":(records.get(request.workspace.focused_id, {}).get("source") or {}).get("kind") if request.workspace.focused_id else None},
         "current_message":request.message}
     provider = None
+    diagnostic = {"reference":uuid4().hex, "logged":False}
+    diagnostic_token = _intent_diagnostic.set(diagnostic)
     try:
         provider = provider_factory()
         intent = ChatIntent.model_validate(interpret(provider, request, catalog))
-        result = resolve_actions(store, runner, request, intent, context)
+        result = _intent_stage("action_resolution", lambda: resolve_actions(store, runner, request, intent, context))
         usage = getattr(provider, "usage", None)
         result["usage"] = usage.model_dump(mode="json") if hasattr(usage, "model_dump") else {}
         result["usage"]["latency_ms"] = round((monotonic() - started) * 1000)
         return result
     except (DocumentError, ProviderError):
         raise
-    except Exception:
-        raise ProviderError("Chat interpretation failed operationally. No action was executed; your saved sources and usable model remain available.") from None
+    except Exception as error:
+        # A failed inner stage already emitted this invocation's one safe diagnostic.
+        _log_intent_failure("provider_setup" if provider is None else "action_boundary", error)
+        raise ProviderError("Chat interpretation failed operationally. No action was executed; your saved sources and usable model remain available. "
+            f"Diagnostic reference: {diagnostic['reference']}.") from None
     finally:
         if provider is not None:
             try:
@@ -680,3 +751,4 @@ def chat_actions(store, runner, provider_factory, request):
             except Exception:
                 # Cleanup cannot replace a validated response with a raw provider exception.
                 pass
+        _intent_diagnostic.reset(diagnostic_token)
