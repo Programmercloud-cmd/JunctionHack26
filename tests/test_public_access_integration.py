@@ -127,3 +127,40 @@ def test_pinned_question_cannot_reuse_job_id_from_another_revision(prepared):
         runner._update(identity,status='complete',phase='complete')
         result=client.post('/api/questions',json={'document_id':doc.id,'revision_id':doc.revision_id,'request_id':'same-request','question':'Fixture question?'})
         assert result.status_code==409
+
+
+def test_chat_actions_require_code_exact_example_revisions_and_readonly_outputs(prepared):
+    from test_chat_actions import IntentFixture
+    root,doc,private=prepared;provider=IntentFixture()
+    with TestClient(create_app(storage_root=root,provider_factory=lambda:provider),base_url='https://demo.test')as client:
+        body={'message':'Show the model','request_id':'fixture-intent','document_id':doc.id,'revision_id':doc.revision_id,
+              'workspace':{'geometry_revision_id':doc.revision_id}}
+        assert client.post('/api/chat/actions',json=body).status_code==401
+        assert not provider.calls
+        unlock(client);store=client.app.state.documents
+        newer=store.commit(store.prepare(store.get(doc.id)),doc.revision_id,status='preview_reviewing')
+        assert client.post('/api/chat/actions',json=body|{'workspace':{'geometry_revision_id':newer.revision_id}}).status_code==404
+        assert not provider.calls
+        provider.actions=[{'type':'question'}]
+        result=client.post('/api/chat/actions',json=body)
+        assert result.status_code==200,result.text
+        assert result.json()['actions'][0]['revision_id']==doc.revision_id
+        provider.actions=[{'type':'attach_sources'}]
+        # CURRENT consistency can independently reject before the readonly check.
+        assert client.post('/api/chat/actions',json=body).status_code==409
+
+
+def test_chat_readonly_guard_runs_with_current_equal_to_manifest(prepared):
+    from test_chat_actions import IntentFixture
+    root,doc,private=prepared;provider=IntentFixture()
+    with TestClient(create_app(storage_root=root,provider_factory=lambda:provider),base_url='https://demo.test')as client:
+        unlock(client)
+        body={'message':'Change this example','request_id':'readonly-fixture','document_id':doc.id,
+              'revision_id':doc.revision_id,'workspace':{'geometry_revision_id':doc.revision_id}}
+        for action in [{'type':'attach_sources'},{'type':'reconstruct','mode':'refine'},{'type':'retry_extraction'}]:
+            provider.actions=[action]
+            result=client.post('/api/chat/actions',json=body)
+            assert result.status_code==409,result.text
+            assert 'read-only'in result.json()['detail']
+        assert len(provider.calls)==3
+        assert client.app.state.documents.get(doc.id).revision_id==doc.revision_id

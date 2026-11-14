@@ -107,10 +107,18 @@ def create_app(*, provider_factory=create_provider, storage_root=None):
                 "decision_model": config["decision_model"], "limits": {"max_upload_mb": 10, "max_ifc_mb": 25, "max_pages": 5}}
 
     @application.post("/api/chat/actions")
-    def resolve_chat_actions(request: ChatActionRequest):
+    def resolve_chat_actions(request: ChatActionRequest,http_request:Request):
         try:
-            return chat_actions(application.state.documents, application.state.jobs,
+            if access.enabled and request.document_id in access.examples:
+                selected_document(http_request,request.document_id,request.revision_id)
+                if request.workspace.geometry_revision_id:
+                    selected_document(http_request,request.document_id,request.workspace.geometry_revision_id)
+            result=chat_actions(application.state.documents, application.state.jobs,
                 application.state.provider_factory, request)
+            if request.document_id and any(action["type"] in {"refine","reconstruct","retry_extraction","attach_sources"}
+                                           for action in result.get("actions",[])):
+                access.require_editable(http_request,request.document_id)
+            return result
         except (DocumentError, ProviderError) as error:
             raise HTTPException(error.status, error.message) from None
 
