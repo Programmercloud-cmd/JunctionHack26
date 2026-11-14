@@ -97,3 +97,7 @@ Use the same document/question pairs for ordinary Gemini and the gated pipeline.
 API references: [Decisions](https://aistudio.google.com/docs/decisions-api), [models](https://aistudio.google.com/docs/models). The Decisions SDK requires google-genai 3.2 or later; this environment pins the installed version. Model names are configurable because account access can differ.
 
 OpenAI references: [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs), [model catalog](https://developers.openai.com/api/docs/models), [native Decisions (not used by this temporary adapter)](https://developers.openai.com/api/docs/guides/decisions).
+
+## Separate VQA experiment
+
+The upstream VQA experiment is preserved in `VQA/`. Its [original upstream documentation](VQA/README.md) is retained verbatim and includes historical `backend/` paths; use the instructions above for this application. The experiment is not wired into the application provider pipeline.
