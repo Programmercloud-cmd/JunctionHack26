@@ -1,0 +1,1 @@
+I don’t own a domain. Use a free sslip.io or nip.io hostname based on the Verda server’s public IP, with Caddy for HTTPS. Verify certificate issuance and external access before sharing the URL.
