@@ -1,0 +1,3 @@
+[56] tool send_message call: {"target":"/root/voice_planner","message":"REDACTED"}
+
+[57] tool send_message call: {"target":"/root","message":"REDACTED"}
