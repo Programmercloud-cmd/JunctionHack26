@@ -1,0 +1,7 @@
+<environment_context>
+  <cwd>/home/jcb/dev/github/JunctionHack26</cwd>
+  <shell>bash</shell>
+  <current_date>2026-11-13</current_date>
+  <timezone>Europe/Helsinki</timezone>
+  <filesystem><workspace_roots><root>/home/jcb/dev/github/JunctionHack26</root></workspace_roots><permission_profile type="managed"><file_system type="restricted"><entry access="read"><special>:root</special></entry><entry access="read"><path>/home/jcb/dev/github/JunctionHack26</path></entry><entry access="read"><special>:slash_tmp</special></entry><entry access="read"><special>:tmpdir</special></entry><entry access="read"><path>/home/jcb/dev/github/JunctionHack26/.git</path></entry><entry access="read"><path>/home/jcb/dev/github/JunctionHack26/.agents</path></entry><entry access="read"><path>/home/jcb/dev/github/JunctionHack26/.codex</path></entry><entry access="read"><path>/home/jcb/dev/github/JunctionHack26/.aws</path></entry></file_system></permission_profile></filesystem>
+</environment_context>
