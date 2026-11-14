@@ -156,10 +156,15 @@ def gemini_wire_schema(schema: dict) -> dict:
     # Gemini rejects the combined typed-record union; an unconstrained object
     # accepts requests but generated empty objects in actual source runs. Encode
     # this one record as JSON text on the wire, then validate its exact type locally.
-    record=result.get("$defs",{}).get("RecordPatch",{}).get("properties",{}).get("record")
+    patch=result.get("$defs",{}).get("RecordPatch",{})
+    record=patch.get("properties",{}).get("record")
     if isinstance(record,dict) and "anyOf" in record:
         record.clear()
         record["anyOf"]=[{"type":"string","description":"JSON-encoded complete typed record matching the operation collection and supplied record schemas. Serialize the record object as a JSON string; never an empty object. Local validation enforces every original field and type."},{"type":"null"}]
+        # The local default supports old artifacts, but wire omission makes every
+        # add/replace unusable. Require the key; removal explicitly supplies null.
+        required=patch.setdefault("required",[])
+        if "record" not in required:required.append("record")
     return result
 
 
@@ -325,9 +330,16 @@ If an association is uncertain leave highlight_ids empty and provide normal sour
 """
 
 
-GATE_INSTRUCTIONS += PROVENANCE_QA_INSTRUCTIONS
-ANSWER_INSTRUCTIONS += PROVENANCE_QA_INSTRUCTIONS
-ANSWER_REVIEW_INSTRUCTIONS += PROVENANCE_QA_INSTRUCTIONS
+IMAGE_DIRECTION_INSTRUCTIONS = """For drawing spatial descriptions, use image-relative left/right/top/bottom unless the supplied source explicitly establishes compass orientation.
+Image-up is not automatically north: do not turn a page position into north/south/east/west, northwest or another geographic bearing without source evidence such as a north arrow.
+A readable text orientation or viewer rotation does not establish compass direction. If geographic orientation is requested but not established, state that limitation while describing supported image-relative position.
+Preserve original labels such as 'North Wing' verbatim; a label alone does not establish compass orientation for other spaces or features.
+During answer review, treat unsupported geographic bearings as unsupported factual additions, even when the underlying image-relative relationship is visible.
+"""
+
+GATE_INSTRUCTIONS += PROVENANCE_QA_INSTRUCTIONS + IMAGE_DIRECTION_INSTRUCTIONS
+ANSWER_INSTRUCTIONS += PROVENANCE_QA_INSTRUCTIONS + IMAGE_DIRECTION_INSTRUCTIONS
+ANSWER_REVIEW_INSTRUCTIONS += PROVENANCE_QA_INSTRUCTIONS + IMAGE_DIRECTION_INSTRUCTIONS
 
 CROP_INSTRUCTIONS = (
     "Select ONE small source region most useful to inspect more closely to resolve the user's question. "

@@ -234,3 +234,27 @@ def test_missing_requests_do_not_retrace_valid_walls_or_request_reference_regist
     assert requests and needs_geometry(d)
     assert all(request['fields']==['registration'] for request in requests)
     assert all(request['target_id']=='1' for request in requests)
+
+
+def test_normalized_coordinate_wire_bounds_preserve_dimensional_measurements(sdk_document):
+    provider,document=sdk_document
+    requests=intercept(provider,FLOOR)
+    provider.extract_interpretation(document)
+    wire=requests[0]['generationConfig']['responseJsonSchema']
+    boxes=wire['$defs']['PageRegion']['properties']['bbox']['properties']
+    points=wire['$defs']['RoomDescription']['properties']['polygon']['items']['properties']
+    assert set(boxes)=={'left','top','right','bottom'} and set(points)=={'x','y'}
+    for value in [*boxes.values(),*points.values()]:
+        assert value['minimum']==0 and value['maximum']==1
+    assert 'maximum' not in wire['$defs']['Calibration']['properties']['length_m']
+    assert all('maximum' not in node for node in wire['$defs']['Measurement']['properties']['value']['anyOf'])
+
+
+@pytest.mark.parametrize('bbox', [[.1,.1,4989473684210526,.9],{'left':.1,'top':.1,'right':4989473684210526,'bottom':.9}])
+def test_missing_decimal_coordinate_still_rejects_without_rescaling(sdk_document,bbox):
+    provider,document=sdk_document
+    value=deepcopy(FLOOR);value['floors'][0]['source']['bbox']=bbox
+    intercept(provider,value)
+    with pytest.raises(ValidationError) as error:provider.extract_interpretation(document)
+    assert ('floors',0,'source') in [entry['loc']for entry in error.value.errors()]
+    assert provider.last_structured_output['floors'][0]['source']['bbox']==bbox

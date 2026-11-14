@@ -173,3 +173,52 @@ def test_reconstruction_catalog_keeps_source_format_and_normalization_warnings(s
     assert not catalog['coverage']['catalog_complete']
     assert 'DUPLICATE_QA_CONTEXT' not in ''.join(texts)
     assert 'DO_NOT_SEND_LOCAL_PATH' not in ''.join(texts)
+
+
+def test_serialized_gemini_patch_requires_record_key_idempotently(sdk_document):
+    from app.provider import gemini_wire_schema
+    provider,document=sdk_document
+    output={'base_revision_id':'fixture','operations':[]}
+    requests=intercept(provider,output)
+    provider._generate(document,'Fixture','Fixture',DescriptionPatch)
+    wire=requests[0]['generationConfig']['responseJsonSchema']
+    patch=wire['$defs']['RecordPatch']
+    assert patch['required'].count('record')==1
+    assert {item['type']for item in patch['properties']['record']['anyOf']}=={'string','null'}
+    assert gemini_wire_schema(wire)['$defs']['RecordPatch']['required'].count('record')==1
+    assert 'record' not in DescriptionPatch.model_json_schema()['$defs']['RecordPatch']['required']
+
+
+@pytest.mark.parametrize('record_fields',[{}, {'record':None}])
+def test_missing_or_null_add_record_still_rejects_without_mutation(tmp_path,record_fields):
+    from app.documents import DocumentError
+    from app.revisions import apply_enrichment
+    store=BuildingStore(tmp_path)
+    try:
+        current=build(store,store.add(png(),'fixture.png'),description())
+        f=current.description.floors[0];before=current.description.model_dump()
+        patch=DescriptionPatch(base_revision_id=current.revision_id,operations=[{
+            'action':'add','collection':'boundaries','floor_id':f.persistent_id,
+            'evidence':region(),'reason':'Fixture proposed boundary',**record_fields}])
+        with pytest.raises(DocumentError,match='missing its typed description record'):apply_enrichment(current,patch)
+        assert current.description.model_dump()==before
+        assert store.get(current.id).revision_id==current.revision_id
+    finally:store.close()
+
+
+def test_explicit_null_reviewed_removal_remains_compatible(tmp_path):
+    store=BuildingStore(tmp_path)
+    try:
+        current=build(store,store.add(png(),'fixture.png'),description())
+        f=current.description.floors[0];wall=f.boundaries[0]
+        review=ReconstructionReview(candidate_supported=True,summary='Fixture explicit removal issue',issues=[{
+            'id':'remove-wall','object_ids':[wall.persistent_id],'source':region(),'category':'extraction',
+            'discrepancy':'Fixture unsupported wall','evidence':'Original region','proposed_action':'Remove wall','actionable':True}])
+        patch=DescriptionPatch(base_revision_id=current.revision_id,operations=[{
+            'action':'remove','collection':'boundaries','floor_id':f.persistent_id,'target_id':wall.persistent_id,
+            'record':None,'evidence':region(),'reason':'Explicitly reviewed removal','issue_ids':['remove-wall']}])
+        candidate,changes=apply_patch(current,patch,review)
+        assert wall.persistent_id in changes['removed_ids']
+        assert wall.persistent_id not in [item.persistent_id for item in candidate.description.floors[0].boundaries]
+        assert wall.persistent_id in [item.persistent_id for item in current.description.floors[0].boundaries]
+    finally:store.close()
