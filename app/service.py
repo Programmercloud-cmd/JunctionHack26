@@ -6,8 +6,9 @@ from time import monotonic
 
 from .providers.gemini import ProviderError, configured_number
 from .schemas import Answer, DraftAnswer, Usage, AnswerClaim, NativeCalculation, QuestionIntent
-from .highlights import validated_highlights, whole_model_count_kind
-from .reasoning import ensure_reasoning, retrieve_context, execute_native_calculation, source_only_question
+from .highlights import validated_highlights
+from .reasoning import (NATIVE_COUNT_TYPES, ensure_reasoning, retrieve_context, execute_native_calculation,
+                        native_model_count_kind, source_only_question)
 from .review_schema import AnswerReview
 
 
@@ -149,10 +150,10 @@ def _meaningful_repair(old,new,*,new_evidence,old_validation,new_validation):
 
 def _native_calculation(draft,document,question):
     if document.kind!="ifc"or not document.scene or document.scene.derived:return []
-    kind=whole_model_count_kind(question)
+    kind=native_model_count_kind(document, question)
     if kind and draft.status=="answered":
         # Full-model counts are always computed from the complete semantic catalog.
-        draft.native_calculation=NativeCalculation(operation="count",scope="model",entity_type={"wall":"IfcWall","door":"IfcDoor","window":"IfcWindow","room":"IfcSpace"}[kind])
+        draft.native_calculation=NativeCalculation(operation="count",scope="model",entity_type=NATIVE_COUNT_TYPES[kind])
     if not draft.native_calculation:return []
     if draft.status!="answered":raise ProviderError("A refusal must not publish a native calculation.")
     result=execute_native_calculation(ensure_reasoning(document),draft.native_calculation)
@@ -249,7 +250,7 @@ def ask(document, question, provider, progress=None):
                 passes = 2
             else:
                 crop = None
-        kind = whole_model_count_kind(question) if native_ifc else None
+        kind = native_model_count_kind(document, question) if native_ifc else None
         server_catalog_count = bool(kind and gate.decision == "sufficient" and document.scene.catalog_complete)
         stage("Drafting answer")
         if server_catalog_count and legacy_fixture:

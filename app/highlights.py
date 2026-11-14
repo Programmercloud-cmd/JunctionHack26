@@ -45,7 +45,15 @@ def validated_highlights(draft, document):
     return list(dict.fromkeys(accepted))
 
 
-def whole_model_count_kind(question):
+def whole_model_count_kind(question, *, single_building=False):
     """Only unqualified, explicitly scoped counts. No fuzzy qualifier stripping."""
-    match = re.fullmatch(r"how many (windows|doors|walls|rooms|spaces) (?:are |are there )?(?:in|does) (?:this|the|the uploaded) (?:ifc )?model(?: have)?\??", question.strip().lower())
-    return {"windows": "window", "doors": "door", "walls": "wall", "rooms": "room", "spaces": "room"}.get(match[1]) if match else None
+    scope = r"(?:this|the|the uploaded) (?:ifc )?model"
+    if single_building:
+        scope = rf"(?:{scope}|(?:this|the) building)"
+    match = re.fullmatch(
+        rf"how many (windows|doors|walls|rooms|spaces) (?:are |are there )?in {scope}\??"
+        rf"|how many (windows|doors|walls|rooms|spaces) does {scope} have\??",
+        question.strip().lower(),
+    )
+    kinds = {"windows": "window", "doors": "door", "walls": "wall", "rooms": "room", "spaces": "room"}
+    return kinds[match[1] or match[2]] if match else None

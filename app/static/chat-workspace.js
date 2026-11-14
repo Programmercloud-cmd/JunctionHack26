@@ -89,11 +89,38 @@
     }
     return openBuilding(id, "source");
   }
+  let lastRemovedFile = null;
+  let changingLibrary = false;
+  const removeStatus = $("home-remove-status");
+  const undoRemove = $("home-undo-remove");
+
+  async function changeLibraryVisibility(doc, visible) {
+    if (changingLibrary || state.busy) return;
+    const id = doc.building_id || doc.document_id;
+    changingLibrary = true;
+    syncLibrary();
+    try {
+      await request(`/api/buildings/${encodeURIComponent(id)}/library?visible=${visible}`, {method: "PUT"});
+      lastRemovedFile = visible ? null : doc;
+      removeStatus.textContent = visible ? `${doc.filename} restored.` : `${doc.filename} removed from the list.`;
+      await refreshSavedBuildings();
+    } catch (error) {
+      removeStatus.textContent = error.message;
+    } finally {
+      changingLibrary = false;
+      syncLibrary();
+    }
+  }
+
+  undoRemove.addEventListener("click", () => {
+    if (lastRemovedFile) changeLibraryVisibility(lastRemovedFile, true);
+  });
+
   function syncLibrary() {
     const list = $("home-library-list");
     const items = state.savedBuildings;
     const signature = JSON.stringify(items.map(doc => [
-      doc.building_id || doc.document_id, doc.example_title || doc.filename, doc.kind, doc.interpretation_status, doc.has_scene, doc.sources?.length,
+      doc.building_id || doc.document_id, doc.example_title || doc.filename, doc.kind, doc.interpretation_status, doc.has_scene, doc.sources?.length, doc.local_file_path, doc.read_only_model,
     ]));
     if (list.dataset.catalog !== signature) {
       list.replaceChildren();
@@ -103,7 +130,28 @@
         file.scope = "row";
         const open = button(doc.example_title || doc.filename, () => openLibraryFile(doc.building_id || doc.document_id), "home-file");
         if ((doc.sources?.length || 0) > 1) open.append(element("span", "File group · View only", "home-file-note"));
-        file.append(open);
+        const actions = element("div", null, "home-file-actions");
+        actions.append(open);
+        if (doc.local_file_path) {
+          const feedback = $("home-copy-status");
+          const copy = button("Copy path", async () => {
+            feedback.textContent = "";
+            try {
+              await navigator.clipboard.writeText(doc.local_file_path);
+              feedback.textContent = "File path copied.";
+            } catch {
+              feedback.textContent = "Could not copy the file path. Check clipboard access in your browser.";
+            }
+          }, "home-copy-path secondary-button");
+          copy.setAttribute("aria-label", `Copy path for ${doc.filename}`);
+          actions.append(copy);
+        }
+        if (!doc.read_only_model && !doc.public_example) {
+          const remove = button("Remove", () => changeLibraryVisibility(doc, false), "home-remove-file secondary-button");
+          remove.setAttribute("aria-label", `Remove ${doc.filename} from the list`);
+          actions.append(remove);
+        }
+        file.append(actions);
         row.append(file);
         const interpretationReady = doc.kind !== "ifc" && doc.interpretation_status === "complete";
         for (const available of [interpretationReady, doc.has_scene]) {
@@ -120,8 +168,10 @@
       list.dataset.catalog = signature;
     }
     list.closest("table").hidden = items.length === 0;
-    list.querySelectorAll("button").forEach(open => { open.disabled = Boolean(state.busy); });
-    $("home-upload").disabled = $("file-input").disabled || Boolean(state.busy);
+    list.querySelectorAll("button").forEach(open => { open.disabled = Boolean(state.busy) || changingLibrary; });
+    undoRemove.hidden = !lastRemovedFile;
+    undoRemove.disabled = Boolean(state.busy) || changingLibrary;
+    $("home-upload").disabled = !state.health || $("file-input").disabled || Boolean(state.busy);
     const status = $("home-library-status");
     status.textContent = state.busy === "upload" ? "Opening file…" : state.savedBuildingsError
       ? "Saved files could not be loaded."
@@ -616,14 +666,21 @@
     });
   }
   $("home-upload").addEventListener("click", () => {
-    if (!state.busy && ui.activeTab === "home") $("file-input").click();
+    if (!state.health || state.busy || ui.activeTab !== "home") return;
+    if (state.health.native_file_picker) uploadFromNativePicker();
+    else $("file-input").click();
   });
   for (const type of ["dragover", "drop"]) {
     $("chat-shell").addEventListener(type, (event) => {
       if (event.dataTransfer.types.includes("Files")) event.preventDefault();
     });
   }
-  $("viewer").addEventListener("wheel",event=>{if(event.ctrlKey||event.metaKey){event.preventDefault();const width=parseFloat($("image-stage").style.width)||100;$("image-stage").style.width=Math.max(100,width*(event.deltaY>0?.9:1.1))+"%";}},{passive:false});
+  $("viewer").addEventListener("wheel", event => {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    const width = $("image-stage").getBoundingClientRect().width;
+    setDrawingZoom(`${Math.max(40, width * (event.deltaY > 0 ? 0.9 : 1.1))}px`);
+  }, {passive: false});
   function isLatestSubmission(requestId) { return ui.latestSubmissionId === requestId; }
   window.chatUI={chatAvailable,isHome:()=>ui.activeTab==="home",isLatestSubmission,snapshot,inspection,sourceView,submit,execute:local,syncControls,syncHighlights,onUpload,onDocument,onScene,onSelection,onProposal,onJobs,onError,mergeConversation,openWorkspace};
   let stored="system";try{stored=localStorage.getItem("blueprint-theme")||"system";}catch{}applyTheme(["light","dark","system"].includes(stored)?stored:"system");

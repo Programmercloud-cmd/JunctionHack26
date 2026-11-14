@@ -31,10 +31,15 @@
     <section id="home-library" class="home-library" role="tabpanel" aria-labelledby="home-tab">
       <div class="home-library-heading">
         <h1>Files</h1>
-        <button id="home-upload" type="button" class="secondary-button">Upload file</button>
+        <button id="home-upload" type="button" class="secondary-button" disabled>Upload file</button>
         <input id="file-input" type="file" accept="image/jpeg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf,.ifc,.svg,.dxf,.dwg" class="file-input" aria-label="Upload a blueprint file">
       </div>
       <p id="home-library-status" role="status">Loading files…</p>
+      <div class="home-remove-feedback">
+        <p id="home-remove-status" role="status"></p>
+        <button id="home-undo-remove" type="button" class="secondary-button" hidden>Undo</button>
+      </div>
+      <p id="home-copy-status" role="status"></p>
       <p id="home-library-error" role="alert" hidden></p>
       <table class="home-files" aria-label="Saved files" hidden>
         <thead><tr><th scope="col">File</th><th scope="col">AI interpretation ready</th><th scope="col">3D model available</th></tr></thead>

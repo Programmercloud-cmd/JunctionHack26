@@ -30,6 +30,28 @@ class ProviderError(Exception):
         self.message, self.status = message, status
 
 
+class _DraftResponseError(Exception):
+    def __init__(self, issues):
+        self.issues = issues
+
+
+def _draft_validation_issues(error):
+    schema = DraftAnswer.model_json_schema()
+    fields = {
+        name
+        for definition in (schema, *schema.get("$defs", {}).values())
+        for name in definition.get("properties", {})
+    }
+    return [
+        {
+            "field": [part if type(part) is int or part in fields else "<unrecognized field>"
+                      for part in issue["loc"]],
+            "type": issue["type"],
+        }
+        for issue in error.errors(include_input=False, include_context=False, include_url=False)
+    ]
+
+
 def configured_number(name, default, *, integer=False):
     try:
         value=(int if integer else float)(os.getenv(name,str(default)))
@@ -533,7 +555,13 @@ class GeminiProvider:
 
     def _decision_input(self, document, question, crop):
         contents = [{"type": "text", "text": json.dumps({"question": question, "inspected_pages": [p.number for p in document.pages]})}]
-        if context := source_context(document, question):
+        from ..reasoning import native_count_decision_context
+        count_context = native_count_decision_context(document, question)
+        context = (
+            json.dumps(count_context, ensure_ascii=False, separators=(",", ":"))
+            if count_context is not None else source_context(document, question)
+        )
+        if context:
             contents.append({"type": "text", "text": context})
         for label, png in views(document, crop):
             contents.extend([{"type": "text", "text": label},
@@ -603,10 +631,6 @@ class GeminiProvider:
             self.last_response_text = "".join(part.text for part in getattr(content,"parts",[]) or []
                 if getattr(part,"text",None) is not None and not getattr(part,"thought",False))
             self.last_response_call_id = record["call_id"]
-            if schema is DraftAnswer and record["model"] == "gemini-4-hydrogen":
-                capture = getattr(self, "debug_answer_callback", None)
-                if capture is not None and self.last_response_text:
-                    capture(self.last_response_text)
             try: self.last_structured_output = json.loads(self.last_response_text)
             except (ValueError,TypeError): self.last_structured_output = None
             if any(candidate.finish_reason == types.FinishReason.MAX_TOKENS for candidate in candidates):
@@ -629,9 +653,28 @@ class GeminiProvider:
                         if not isinstance(update["changes"],list):
                             raise ProviderError("Floor metadata changes must decode to a typed array. No change was applied.")
                 result = schema.model_validate(decoded)
-            else: result = schema.model_validate_json(self.last_response_text)
+            else:
+                try:
+                    result = schema.model_validate_json(self.last_response_text)
+                except ValidationError as error:
+                    if schema is not DraftAnswer:
+                        raise
+                    issues = _draft_validation_issues(error)
+                    record["validation_errors"] = issues
+                    record["outcome"] = (
+                        "response_json_rejected" if any(issue["type"] == "json_invalid" for issue in issues)
+                        else "response_schema_rejected"
+                    )
+                    _record_exception(record, error)
+                    raise _DraftResponseError(issues) from None
+            if schema is DraftAnswer and record["model"] == "gemini-4-hydrogen":
+                capture = getattr(self, "debug_answer_callback", None)
+                if capture is not None and self.last_response_text:
+                    capture(self.last_response_text)
             record["outcome"] = "validated_response"
             return result
+        except _DraftResponseError:
+            raise
         except Exception as error:
             _record_exception(record, error)
             if record["outcome"] == "request_started":
@@ -649,12 +692,33 @@ class GeminiProvider:
     def choose_crop(self, document, question):
         return self._generate(document, question, CROP_INSTRUCTIONS, CropRequest)
 
+    def _generate_draft(self, document, question, instruction, crop, *, extra_data=None):
+        options = {
+            "thinking_level": "low" if self.model == "gemini-3.8-flash" else None,
+            "timeout_ms": round(configured_number("GEMINI_DRAFT_SECONDS", 90)*1000),
+            "extra_data": extra_data,
+        }
+        try:
+            return self._generate(document, question, instruction, DraftAnswer, crop, **options)
+        except _DraftResponseError as error:
+            repair = (
+                "\nThe previous response did not match the required JSON format. Return a complete "
+                "replacement answer using the same source evidence and required schema. "
+                "Correct these validation issues (field paths and error types): "
+                + json.dumps(error.issues)
+            )
+        try:
+            return self._generate(document, question, instruction + repair, DraftAnswer, crop, **options)
+        except _DraftResponseError:
+            raise ProviderError(
+                "Gemini returned an answer in an invalid format after one retry. "
+                "Please try again. No evidence conclusion was made."
+            ) from None
+
     def answer(self, document, question, gate, crop=None):
-        return self._generate(document, question, ANSWER_INSTRUCTIONS +
+        return self._generate_draft(document, question, ANSWER_INSTRUCTIONS +
                               "\nNative IFC numeric calculations must use native_calculation with original object/property references and {result}; code resolves all numeric inputs. Claims may split factual assertions for targeted removal; their IDs are assigned server-side. " +
-                              f"\nOverall evidence decision: {gate.decision}.", DraftAnswer, crop,
-                              thinking_level="low" if self.model == "gemini-3.8-flash" else None,
-                              timeout_ms=round(configured_number("GEMINI_DRAFT_SECONDS", 90)*1000))
+                              f"\nOverall evidence decision: {gate.decision}.", crop)
 
     def resolve_intent(self, document, question):
         return self._generate(document, question, INTENT_INSTRUCTIONS, QuestionIntent, model=self.clarification_model)
@@ -740,7 +804,5 @@ class GeminiProvider:
         return AnswerReview(decision=result.choice,confidence=result.confidence)
 
     def revise_answer(self, document, question, draft, gate, review, crop=None, *, validation=None):
-        return self._generate(document,question,ANSWER_INSTRUCTIONS+"\n"+ANSWER_REPAIR_INSTRUCTIONS+f"\nOverall sufficiency decision: {gate.decision}.",DraftAnswer,crop,
-          thinking_level="low" if self.model == "gemini-3.8-flash" else None,
-          timeout_ms=round(configured_number("GEMINI_DRAFT_SECONDS", 90)*1000),
+        return self._generate_draft(document,question,ANSWER_INSTRUCTIONS+"\n"+ANSWER_REPAIR_INSTRUCTIONS+f"\nOverall sufficiency decision: {gate.decision}.",crop,
           extra_data={"previous_draft":draft.model_dump(mode="json"),"review":review.model_dump(mode="json"),"validation":validation or{}})

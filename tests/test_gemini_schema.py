@@ -55,13 +55,14 @@ def sdk_document(tmp_path, monkeypatch):
         store.close()
 
 
-def intercept(provider, output, finish_reason="STOP"):
+def intercept(provider, output, finish_reason="STOP", *, following=()):
     requests = []
+    responses = iter((output, *following))
 
     def handler(request):
         requests.append(json.loads(request.content))
         return httpx2.Response(200, json={"candidates": [{"content": {"role": "model", "parts": [
-            {"text": json.dumps(output)}]}, "finishReason": finish_reason}],
+            {"text": json.dumps(next(responses, output))}]}, "finishReason": finish_reason}],
             "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5}})
 
     provider.client._api_client._httpx_client = httpx2.Client(transport=httpx2.MockTransport(handler))
@@ -116,9 +117,54 @@ def test_actual_sdk_serializes_only_relaxed_array_bounds(sdk_document, mode, sch
 def test_invalid_or_overlimit_sdk_outputs_still_fail_local_validation(sdk_document, mode, output):
     provider, document = sdk_document
     requests = intercept(provider, output)
-    with pytest.raises(ValidationError):
-        generate(provider, document, mode)
-    assert len(requests) == 1
+    if mode == "answer":
+        with pytest.raises(ProviderError, match="invalid format after one retry") as error:
+            generate(provider, document, mode)
+        assert error.value.status == 502
+        assert len(requests) == 2
+        assert [call["outcome"] for call in provider.provider_calls] == ["response_schema_rejected"] * 2
+    else:
+        with pytest.raises(ValidationError):
+            generate(provider, document, mode)
+        assert len(requests) == 1
+
+
+@pytest.mark.parametrize("revised", [False, True])
+def test_draft_schema_retry_reuses_evidence_and_only_sends_safe_hints(sdk_document, revised):
+    provider, document = sdk_document
+    provider.model = "gemini-4-hydrogen"
+    debug_outputs = []
+    provider.debug_answer_callback = debug_outputs.append
+    invalid = deepcopy(ANSWER)
+    invalid["evidence"][0]["bbox"] = [0.2, 0.4, 0.2, 0.8]
+    invalid["PRIVATE-FIXTURE-KEY"] = "PRIVATE-FIXTURE-VALUE"
+    requests = intercept(provider, invalid, following=(ANSWER,))
+    gate = GateResult(decision="sufficient")
+    if revised:
+        result = provider.revise_answer(document, "How many rooms?", DraftAnswer.model_validate(ANSWER),
+                                        gate, AnswerReview(decision="unsupported"))
+    else:
+        result = provider.answer(document, "How many rooms?", gate)
+
+    assert result == DraftAnswer.model_validate(ANSWER)
+    assert [json.loads(output) for output in debug_outputs] == [ANSWER]
+    assert len(requests) == 2
+    assert requests[0]["contents"] == requests[1]["contents"]
+    first, retry = (request["systemInstruction"] for request in requests)
+    assert "Correct these validation issues" not in json.dumps(first)
+    retry_text = json.dumps(retry)
+    assert "Correct these validation issues" in retry_text
+    assert "bbox" in retry_text and "value_error" in retry_text
+    assert "PRIVATE-FIXTURE" not in retry_text
+    first_call, retry_call = provider.provider_calls
+    assert first_call["outcome"] == "response_schema_rejected"
+    assert first_call["exception_type"] == "ValidationError"
+    assert first_call["validation_errors"] == [
+        {"field": ["evidence", 0, "bbox"], "type": "value_error"},
+        {"field": ["<unrecognized field>"], "type": "extra_forbidden"},
+    ]
+    assert retry_call["outcome"] == "validated_response"
+    assert "validation_errors" not in retry_call
 
 
 @pytest.mark.parametrize("polygon", [
@@ -138,11 +184,12 @@ def test_wire_relaxation_keeps_reconstruction_geometry_checks(sdk_document, poly
 @pytest.mark.parametrize("mode,output", [("reconstruct", FLOOR), ("crop", CROP), ("answer", ANSWER)])
 def test_token_limit_rejects_even_locally_valid_json(sdk_document, mode, output):
     provider, document = sdk_document
-    intercept(provider, output, finish_reason="MAX_TOKENS")
+    requests = intercept(provider, output, finish_reason="MAX_TOKENS")
     with pytest.raises(ProviderError, match="output token limit") as error:
         generate(provider, document, mode)
     assert error.value.status == 502
     assert "clearer" not in error.value.message and "insufficient" not in error.value.message
+    assert len(requests) == 1
     assert document.scene is None
 
 

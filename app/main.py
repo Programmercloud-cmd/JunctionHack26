@@ -5,7 +5,7 @@ import hashlib
 import os
 from typing import Literal
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, Request
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
 from fastapi.responses import FileResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
@@ -18,6 +18,7 @@ from .providers.gemini import create_provider, ProviderError, settings
 from .schemas import Answer, AskRequest
 from .vlm import VLM
 from .bundles import BuildingStore
+from . import native_picker
 from .jobs import JobRunner
 from .public_access import PublicAccess
 from .user_inputs import RefinementRequest, assumptions
@@ -104,9 +105,9 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
         return FileResponse(ROOT / "app" / "static" / "index.html")
 
     @application.get("/api/health")
-    def health():
+    def health(http_request: Request):
         config = settings()
-        return {"status": "ok", "provider_ready": bool(config["api_key"]), "model": config["model"],
+        return {"status": "ok", "native_file_picker": native_picker_allowed(http_request) and native_picker.available(), "provider_ready": bool(config["api_key"]), "model": config["model"],
                 "interpretation_model": config["interpretation_model"], "clarification_model": config["clarification_model"],
                 "reconstruction_model": config["reconstruction_model"],
                 "provider": config["name"], "provider_label": config["label"],
@@ -130,33 +131,83 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
         except (DocumentError, ProviderError) as error:
             raise HTTPException(error.status, error.message) from None
 
-    async def save_uploads(http_request,uploads):
-        if not uploads:raise HTTPException(422,"Choose at least one source file.")
+    def local_paths_enabled(request):
+        return not access.enabled and request.url.hostname in {"127.0.0.1", "localhost", "::1", "testserver"}
+
+    picker_lock = threading.Lock()
+
+    def native_picker_allowed(request):
+        return local_paths_enabled(request) and request.client is not None and request.client.host in {
+            "127.0.0.1", "::1", "testclient",
+        }
+
+    def save_file(http_request, payload, filename, original_path=None, *, require_path=False):
+        access.require_uploadable(http_request, [(payload, filename)])
+        store = application.state.documents
+        identity = hashlib.sha256(payload).hexdigest()
+        path_error = False
+        with store.lock:
+            existed = (store.directory(identity) / "CURRENT.json").exists()
+            previous = store.get(identity) if existed else None
+            previous_sources = {source["source_id"] for source in previous.sources} if previous else set()
+            document = store.add(payload, filename)
+            if original_path and local_paths_enabled(http_request):
+                try:
+                    store.link_original_path(document.id, original_path)
+                except (DocumentError, OSError):
+                    path_error = True
+            new_ids = [source["source_id"] for source in document.sources if source["source_id"] not in previous_sources]
+        jobs = application.state.jobs.extract(document.id, new_ids, retry=False) if new_ids and document.interpretation_status != "complete" else []
+        if require_path and path_error:
+            raise DocumentError("The file was saved, but its original path could not be verified.", 422)
+        return {**document.public(), "is_new_upload": not existed, "added_source_ids": new_ids, "extraction_jobs": jobs}
+
+    @application.post("/api/documents/native-picker")
+    def upload_from_native_picker(http_request: Request):
+        if not native_picker_allowed(http_request) or not native_picker.available():
+            raise HTTPException(404, "Desktop file picker unavailable.")
+        if http_request.headers.get("origin") != str(http_request.base_url).rstrip("/"):
+            raise HTTPException(403, "Open the file picker from Blueprint.")
+        if not picker_lock.acquire(blocking=False):
+            raise HTTPException(409, "The desktop file picker is already open.")
         try:
-            payloads=[(await upload.read(MAX_IFC_UPLOAD+1),upload.filename or "Untitled source") for upload in uploads]
-            access.require_uploadable(http_request,payloads)
-            if len(payloads) > 1:
-                raise HTTPException(422, "Upload one file at a time from Home.")
-            def save():
-                store=application.state.documents
-                initial_id=hashlib.sha256(payloads[0][0]).hexdigest()
-                with store.lock:
-                    existed=(store.directory(initial_id)/"CURRENT.json").exists()
-                    previous=store.get(initial_id) if existed else None
-                    previous_sources={source["source_id"] for source in previous.sources} if previous else set()
-                    document=store.add(*payloads[0])
-                    new_ids=[source["source_id"] for source in document.sources if source["source_id"] not in previous_sources]
-                extraction_jobs=application.state.jobs.extract(document.id,new_ids,retry=False) if new_ids and document.interpretation_status!="complete" else []
-                return {**document.public(),"is_new_upload":not existed,"added_source_ids":new_ids,"extraction_jobs":extraction_jobs}
-            return await run_in_threadpool(save)
-        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+            path = native_picker.pick_file()
+            if path is None:
+                return {"cancelled": True}
+            path = path.resolve(strict=True)
+            with path.open("rb") as stream:
+                payload = stream.read(MAX_IFC_UPLOAD + 1)
+            return save_file(http_request, payload, path.name, str(path), require_path=True)
+        except DocumentError as error:
+            raise HTTPException(error.status, error.message) from None
+        except OSError:
+            raise HTTPException(422, "The selected file could not be read.") from None
         finally:
-            for upload in uploads:await upload.close()
+            picker_lock.release()
 
     @application.post("/api/documents")
-    async def upload(http_request:Request,file: UploadFile | None = File(None), files: list[UploadFile] | None = File(None)):
+    async def upload(
+        http_request: Request, file: UploadFile | None = File(None),
+        files: list[UploadFile] | None = File(None),
+        original_path: str | None = Form(None, max_length=4096),
+    ):
         uploads = ([file] if file else []) + (files or [])
-        return await save_uploads(http_request, uploads)
+        try:
+            if len(uploads) != 1:
+                # Preserve the public example guard for rejected batches.
+                if access.enabled and uploads:
+                    access.require_uploadable(http_request, [
+                        (await item.read(MAX_IFC_UPLOAD + 1), item.filename) for item in uploads
+                    ])
+                raise HTTPException(422, "Upload one file at a time from Home.")
+            item = uploads[0]
+            payload = await item.read(MAX_IFC_UPLOAD + 1)
+            return await run_in_threadpool(save_file, http_request, payload, item.filename or "Untitled source", original_path)
+        except DocumentError as error:
+            raise HTTPException(error.status, error.message) from None
+        finally:
+            for item in uploads:
+                await item.close()
 
     @application.post("/api/buildings/{building_id}/sources")
     async def add_sources(building_id: str,http_request:Request,file: UploadFile | None = File(None),files: list[UploadFile] | None = File(None)):
@@ -228,7 +279,21 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
             private=[access.descriptor(store.get(item["building_id"])) for item in store.list()
                      if item["building_id"]not in access.examples] if access.is_editor(http_request) else []
             return {"buildings":examples+private}
-        return {"buildings": [store.get(item["building_id"]).public() for item in store.list()]}
+        include_local_paths = local_paths_enabled(http_request)
+        documents = [store.get(item["building_id"]) for item in store.list()]
+        return {"buildings": [
+            {**document.public(), "local_file_path": store.linked_source_path(document) if include_local_paths else None}
+            for document in documents
+        ]}
+
+    @application.put("/api/buildings/{building_id}/library")
+    def set_library_visibility(building_id: str, visible: bool, http_request: Request):
+        access.require_editable(http_request, building_id)
+        try:
+            application.state.documents.set_library_visibility(building_id, visible)
+            return {"visible": visible}
+        except DocumentError as error:
+            raise HTTPException(error.status, error.message) from None
 
     @application.get("/api/buildings/{building_id}")
     def building(building_id: str,http_request:Request):

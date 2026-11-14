@@ -7,6 +7,7 @@ from app.service import ask
 from test_backend import png,evidence
 from test_ifc_import import fixture_model,encode
 import pytest
+import ifcopenshell
 
 
 class ReviewedFixture:
@@ -78,12 +79,17 @@ def test_missing_review_hook_fails_instead_of_publishing(drawing):
     with pytest.raises(ProviderError,match='required answer review'):ask(drawing,'Question',provider)
 
 
-def test_native_wrong_count_is_replaced_by_source_bound_count_including_meshless(tmp_path):
+@pytest.mark.parametrize("question", [
+    "How many windows are in this IFC model?",
+    "how many windows are in the building?",
+])
+def test_native_wrong_count_is_replaced_by_source_bound_count_including_meshless(tmp_path, question):
     model,wall,window,space=fixture_model();store=DocumentStore(tmp_path)
+    model.create_entity("IfcBuilding", GlobalId=ifcopenshell.guid.new())
     try:
         doc=store.add(encode(model),'native.ifc');doc.source_bytes=encode(model)
         provider=ReviewedFixture(DraftAnswer(status='answered',answer='999 windows',model_evidence=[{'element_id':window.GlobalId,'label':'Window','observation':'Fixture wrong count'}]))
-        result=ask(doc,'How many windows are in this IFC model?',provider)
+        result=ask(doc,question,provider)
         assert result.answer.startswith('1 windows')and result.calculation_results[0]['value']==1
         assert result.model_evidence[0].element_id==window.GlobalId
         assert not next(e for e in doc.scene.elements if e.id==window.GlobalId).geometry

@@ -102,6 +102,26 @@ function resetAnswer() {
   setError("ask-error");
 }
 
+async function uploadFromNativePicker() {
+  if (state.busy || !window.chatUI?.isHome()) return;
+  setError("upload-error");
+  state.busy = "upload";
+  updateControls();
+  try {
+    const result = await request("/api/documents/native-picker", {method: "POST"}, 320000);
+    if (!result.cancelled) {
+      await refreshSavedBuildings();
+      announce("Original file saved.");
+    }
+  } catch (error) {
+    await refreshSavedBuildings();
+    setError("upload-error", error.message);
+  } finally {
+    state.busy = null;
+    updateControls();
+  }
+}
+
 async function uploadFile(input) {
   const files = Array.from(input?.name ? [input] : input || []);
   if (!files.length || state.busy || (window.chatUI && !window.chatUI.isHome())) return;
@@ -125,6 +145,8 @@ async function uploadFile(input) {
   window.chatUI?.onUpload();
   const form = new FormData();
   form.append("files", file);
+  // Desktop file pickers may provide a path. Standard browser uploads only provide a name.
+  if (typeof file.path === "string" && file.path) form.append("original_path", file.path);
   try {
     const result = await request("/api/documents", {method:"POST", body:form});
     if (version !== state.requestVersion) return;
@@ -182,7 +204,7 @@ async function activateDocument(result, workspaceMode = null) {
   $("filename").textContent=result.filename;$("filename").title=result.filename;
   $("page-count").textContent=result.kind==="ifc"?"IFC model":`${result.pages.length} ${result.pages.length===1?"page":"pages"}`;
   $("document-warnings").textContent=(result.warnings || []).join(" ");$("document-warnings").hidden=!$("document-warnings").textContent;
-  $("drop-zone").hidden=true;$("document-view").hidden=false;$("upload-label").textContent="Open other files";$("zoom").value="100";$("image-stage").style.width="100%";
+  $("drop-zone").hidden=true;$("document-view").hidden=false;$("upload-label").textContent="Open other files";$("zoom").value="100";setDrawingFit("width");
   if(result.kind==="ifc"){
     setView("model");await loadScene(stagedScene||await request(sceneUrl));
     suggestions[0].dataset.question="How many windows are in this IFC model?";suggestions[0].textContent="Count windows";
@@ -378,6 +400,35 @@ function displayPages() {
   const sourceView=window.chatUI?.sourceView();
   return state.evidenceRevision&&sourceView?.revision_id===state.evidenceRevision?sourceView.pages:state.document?.pages||[];
 }
+let drawingFit = "width";
+
+function updateDrawingFit() {
+  if (!drawingFit) return;
+  const stage = $("image-stage");
+  if (drawingFit === "width") {
+    stage.style.width = "100%";
+    return;
+  }
+  const viewer = $("viewer");
+  const image = $("page-image");
+  const styles = getComputedStyle(viewer);
+  const height = viewer.clientHeight - parseFloat(styles.paddingTop) - parseFloat(styles.paddingBottom);
+  if (height > 0 && image.complete && image.naturalWidth && image.naturalHeight) {
+    stage.style.width = `${Math.floor(height * image.naturalWidth / image.naturalHeight)}px`;
+  }
+}
+
+function setDrawingFit(mode) {
+  drawingFit = mode;
+  updateDrawingFit();
+  window.workspaceControls?.syncDrawingFit();
+}
+
+function setDrawingZoom(width) {
+  setDrawingFit(null);
+  $("image-stage").style.width = width;
+}
+
 function renderPage() {
   const pages=displayPages(),page=pages[state.pageIndex];
   if (!page) return;
@@ -410,7 +461,7 @@ function renderOverlay() {
   overlay.style.top = `${top * 100}%`;
   overlay.style.width = `${(right - left) * 100}%`;
   overlay.style.height = `${(bottom - top) * 100}%`;
-  $("overlay-number").textContent = state.sourceSelection ? "Source" : String(state.selectedEvidence + 1);
+  $("overlay-number").textContent = "Source";
   overlay.hidden = false;
   $("viewer-caption").textContent = `${state.sourceSelection ? "Saved source region" : `Reference ${state.selectedEvidence + 1}`} · Page ${evidence.page} · ${evidence.label}`;
   $("viewer").scrollTo({ left: Math.max(0, overlay.offsetLeft + overlay.offsetWidth / 2 - $("viewer").clientWidth / 2), top: Math.max(0, overlay.offsetTop + overlay.offsetHeight / 2 - $("viewer").clientHeight / 2), behavior: "instant" });
@@ -1264,9 +1315,13 @@ function changePage(direction) {
 $("previous-page").addEventListener("click", () => changePage(-1));
 $("next-page").addEventListener("click", () => changePage(1));
 $("viewer").addEventListener("keydown", (event) => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); changePage(event.key === "ArrowLeft" ? -1 : 1); } });
-$("zoom").addEventListener("change", () => { $("image-stage").style.width = `${Number($("zoom").value)}%`; });
+$("zoom").addEventListener("change", () => setDrawingZoom(`${Number($("zoom").value)}%`));
 $("page-image").addEventListener("error", () => setError("upload-error", "The drawing preview could not be loaded. Try uploading the file again."));
-$("page-image").addEventListener("load", renderOverlay);
+$("page-image").addEventListener("load", () => {
+  updateDrawingFit();
+  renderOverlay();
+});
+new ResizeObserver(updateDrawingFit).observe($("viewer"));
 $("refresh-health").addEventListener("click", checkHealth);
 voice = new window.BlueprintVoice({state: () => state, request, updateControls});
 updateControls();

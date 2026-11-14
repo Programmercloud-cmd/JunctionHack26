@@ -62,6 +62,8 @@ class BuildingStore:
     def list(self):
         result=[]
         for path in self.root.glob("*/building.json"):
+            if (path.parent / "removed-from-library").exists():
+                continue
             try:
                 metadata=json.loads(path.read_text())
                 current=json.loads((path.parent/"CURRENT.json").read_text())
@@ -70,6 +72,46 @@ class BuildingStore:
                 continue
         return sorted(result,key=lambda b:b.get("updated_at",0),reverse=True)
 
+    def linked_source_path(self, document):
+        link = self.directory(document.id) / "original-path.json"
+        try:
+            path = Path(json.loads(link.read_text()))
+            if path.is_absolute() and path.is_file():
+                return str(path)
+        except (OSError, ValueError, TypeError):
+            pass
+        return None
+
+    def link_original_path(self, building_id, filename):
+        document = self.get(building_id)
+        try:
+            path = Path(filename).expanduser()
+            if not path.is_absolute():
+                raise DocumentError("Enter the absolute path to the original file.", 422)
+            path = path.resolve(strict=True)
+            stored = self.directory(building_id) / "source.original"
+            if self.root.parent.resolve() in path.parents:
+                raise DocumentError("Choose the original file outside Blueprint storage.", 422)
+            if not path.is_file() or path.stat().st_size != stored.stat().st_size:
+                raise DocumentError("That file does not match the saved upload.", 422)
+            with path.open("rb") as stream:
+                if hashlib.file_digest(stream, "sha256").hexdigest() != document.id:
+                    raise DocumentError("That file does not match the saved upload.", 422)
+        except (OSError, ValueError, RuntimeError):
+            raise DocumentError("Blueprint could not read that file path.", 422) from None
+        with self.lock:
+            _atomic_json(self.directory(building_id) / "original-path.json", str(path))
+        return str(path)
+
+    def set_library_visibility(self, building_id, visible):
+        with self.lock:
+            self.get(building_id)
+            marker = self.directory(building_id) / "removed-from-library"
+            if visible:
+                marker.unlink(missing_ok=True)
+            else:
+                marker.touch()
+
     def add(self,data,filename):
         building_id=hashlib.sha256(data).hexdigest()
         with self.lock:
@@ -77,6 +119,7 @@ class BuildingStore:
             if (directory/"CURRENT.json").exists():
                 document=self.get(building_id)
                 self._alias(document,data,filename)
+                self.set_library_visibility(building_id, True)
                 return document
             # Reuse the existing upload normalization/importer; do not create a parallel parser.
             with tempfile.TemporaryDirectory(prefix="normalize-",dir=self.root.parent) as tmp:

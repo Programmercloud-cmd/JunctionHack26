@@ -284,3 +284,42 @@ def test_real_sdk_serializes_gate_crop_and_answer(tmp_path, monkeypatch):
     finally:
         provider.close()
         store.close()
+
+
+def test_upload_records_only_verified_original_path(app_client, tmp_path):
+    client, _ = app_client
+    upload(client, name="Floor plan.png")
+    assert client.get("/api/buildings").json()["buildings"][0]["local_file_path"] is None
+
+    original = tmp_path.parent / f"{tmp_path.name} original.png"
+    try:
+        original.write_bytes(b"wrong file")
+        def upload_with_path():
+            return client.post("/api/documents", files={"file": ("Floor plan.png", png())},
+                               data={"original_path": str(original)})
+
+        assert upload_with_path().status_code == 200
+        assert client.get("/api/buildings").json()["buildings"][0]["local_file_path"] is None
+        original.write_bytes(png())
+        assert upload_with_path().status_code == 200
+        assert client.get("/api/buildings").json()["buildings"][0]["local_file_path"] == str(original)
+    finally:
+        original.unlink(missing_ok=True)
+
+
+def test_remove_and_restore_saved_file(app_client):
+    client, _ = app_client
+    document = upload(client)
+    building_id = document["building_id"]
+    endpoint = f"/api/buildings/{building_id}/library"
+
+    assert client.put(endpoint, params={"visible": False}).json() == {"visible": False}
+    assert client.get("/api/buildings").json()["buildings"] == []
+    assert client.get(document["pages"][0]["image_url"]).status_code == 200
+
+    assert client.put(endpoint, params={"visible": True}).json() == {"visible": True}
+    assert client.get("/api/buildings").json()["buildings"][0]["building_id"] == building_id
+
+    client.put(endpoint, params={"visible": False}).raise_for_status()
+    assert upload(client)["building_id"] == building_id
+    assert client.get("/api/buildings").json()["buildings"][0]["building_id"] == building_id

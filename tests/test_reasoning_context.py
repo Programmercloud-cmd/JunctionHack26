@@ -137,3 +137,46 @@ def test_entity_type_retrieval_does_not_expand_for_grammatical_substrings(tmp_pa
         assert {wall.GlobalId,space.GlobalId}<={r['id']for r in context['catalog']}
         assert context['retrieval']['selected_records']==1 and not context['retrieval']['all_records_selected']
     finally:store.close()
+
+
+def test_decisions_get_only_matching_original_records_for_a_whole_building_count(tmp_path):
+    from app.providers.gemini import GeminiProvider
+
+    model, wall, window, _ = fixture_model()
+    model.create_entity("IfcBuilding", GlobalId=ifcopenshell.guid.new())
+    store, doc = document_for(tmp_path, model)
+    try:
+        provider = GeminiProvider.__new__(GeminiProvider)
+        question = "how many windows are in the building?"
+        context = json.loads(provider._decision_input(doc, question, None)[1]["text"])
+        assert context["catalog_complete"]
+        assert context["source_catalog_count"]["entity_type"] == "IfcWindow"
+        assert context["source_catalog_count"]["value"] == 1
+        assert context["matching_source_records"] == [{"element_id": window.GlobalId, "step_id": window.id()}]
+        assert "catalog" not in context and "relationships" not in context
+        assert not next(e for e in doc.scene.elements if e.id == window.GlobalId).geometry
+
+        qualified = "How many windows are on the ground floor?"
+        context = json.loads(provider._decision_input(doc, qualified, None)[1]["text"])
+        assert wall.GlobalId in {record["id"] for record in context["catalog"]}
+
+        # A resolved question cannot silently lose a qualifier for Decisions.
+        doc.conversation_context = {"original_question": qualified}
+        context = json.loads(provider._decision_input(doc, question, None)[1]["text"])
+        assert "source_catalog_count" not in context
+    finally:
+        store.close()
+
+
+def test_building_count_does_not_combine_multiple_buildings(tmp_path):
+    from app.reasoning import native_count_decision_context
+
+    model, *_ = fixture_model()
+    for _ in range(2):
+        model.create_entity("IfcBuilding", GlobalId=ifcopenshell.guid.new())
+    store, doc = document_for(tmp_path, model)
+    try:
+        assert native_count_decision_context(doc, "How many windows are in the building?") is None
+        assert native_count_decision_context(doc, "How many windows are in this IFC model?") is not None
+    finally:
+        store.close()

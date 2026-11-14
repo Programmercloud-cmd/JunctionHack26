@@ -4,7 +4,9 @@ import json
 import math
 import re
 from copy import deepcopy
+from .highlights import whole_model_count_kind
 from .providers.gemini import ProviderError
+from .schemas import NativeCalculation
 
 
 def build_reasoning(document):
@@ -105,6 +107,57 @@ def relevant_user_values(document,question,*,allow=False):
 def ensure_reasoning(document):
     if document.reasoning is None:document.reasoning=build_reasoning(document)
     return document.reasoning
+
+
+NATIVE_COUNT_TYPES = {"wall": "IfcWall", "door": "IfcDoor", "window": "IfcWindow", "room": "IfcSpace"}
+
+
+def native_model_count_kind(document, question, *, require_original_scope=False):
+    if document.kind != "ifc" or not document.scene or document.scene.derived:
+        return None
+    original = (document.conversation_context or {}).get("original_question", question)
+    model_kind = whole_model_count_kind(question)
+    if model_kind and not require_original_scope:
+        return model_kind
+    reasoning = ensure_reasoning(document)
+    single_building = (
+        reasoning["coverage"].get("catalog_complete")
+        and sum(record["ifc_type"] == "IfcBuilding" for record in reasoning["objects"]) == 1
+    )
+    kind = model_kind or whole_model_count_kind(question, single_building=single_building)
+    if kind and kind == whole_model_count_kind(original, single_building=single_building):
+        return kind
+    return None
+
+
+def native_count_decision_context(document, question):
+    """Keep evidence for an exact count small enough for the Decisions context window."""
+    kind = native_model_count_kind(document, question, require_original_scope=True)
+    if not kind:
+        return None
+    entity_type = NATIVE_COUNT_TYPES[kind]
+    reasoning = ensure_reasoning(document)
+    result = execute_native_calculation(
+        reasoning, NativeCalculation(operation="count", scope="model", entity_type=entity_type)
+    )
+    if result["status"] != "complete":
+        return None
+    return {
+        "source_kind": "native_ifc",
+        "sources": source_catalog(document),
+        "evidence_rule": reasoning.get("source_note", "Facts describe supplied IFC records."),
+        "catalog_complete": True,
+        "source_catalog_count": {
+            "entity_type": entity_type,
+            "scope": "whole uploaded IFC",
+            "value": result["value"],
+            "method": result["method"],
+        },
+        "matching_source_records": [
+            {"element_id": ref["object_id"], "step_id": ref["source"].get("step_id")}
+            for ref in result["contributing_records"]
+        ],
+    }
 
 
 def retrieve_context(document, question=""):

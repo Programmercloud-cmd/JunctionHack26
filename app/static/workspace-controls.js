@@ -92,6 +92,28 @@
   const pageSelect=node("select");pageSelect.id="workspace-page";pageSelect.setAttribute("aria-label","Supplied drawing and page");
   pageSelect.addEventListener("change",()=>act({type:"browse_source",page:Number(pageSelect.value),source_revision_id:chatUI.sourceView().revision_id}));
   pages.append(pageLabel,previous,pageSelect,next);tools.append(pages);
+  const fitControls = node("div", null, "workspace-fit");
+  fitControls.setAttribute("role", "group");
+  fitControls.setAttribute("aria-label", "Blueprint fit");
+  const fitButtons = new Map();
+  for (const [mode, label] of [["width", "Fit to width"], ["height", "Fit to height"]]) {
+    const fit = node("button", label);
+    fit.type = "button";
+    fit.addEventListener("click", () => {
+      setDrawingFit(mode);
+      $("viewer").scrollTo(0, 0);
+    });
+    fitButtons.set(mode, fit);
+    fitControls.append(fit);
+  }
+  tools.append(fitControls);
+
+  function syncDrawingFit() {
+    for (const [mode, fit] of fitButtons) {
+      fit.setAttribute("aria-pressed", String(drawingFit === mode));
+    }
+  }
+
   function pageAction(delta){const view=chatUI.sourceView(),index=view.pages.findIndex(p=>p.page===view.page);return {type:"browse_source",page:view.pages[index+delta]?.page,source_revision_id:view.revision_id};}
 
   const toggles=node("div",null,"workspace-toggles");const checks={};
@@ -172,7 +194,9 @@
       workspace.classList.remove("workspace-expanded");
     }
     syncFullscreen();
+    fitControls.hidden = pages.hidden;
+    syncDrawingFit();
     renderEvidence();
   }
-  window.workspaceControls={refresh,showStatus};window.addEventListener("blueprint:workspace",refresh);refresh();
+  window.workspaceControls={refresh,showStatus,syncDrawingFit};window.addEventListener("blueprint:workspace",refresh);refresh();
 })();

@@ -102,3 +102,30 @@ def test_fullscreen_and_chat_pane_resize(static_server, scene_page):
         page.get_by_role("button", name="Exit full screen").click()
         expect(page.get_by_role("button", name=f"Full screen: {view}")).to_be_visible()
         expect(divider).to_have_attribute("aria-valuenow", "28")
+
+
+def test_blueprint_fit_controls_follow_viewer_size(static_server, scene_page):
+    from playwright.sync_api import expect
+
+    page = scene_page
+    chat_fixture(page, static_server)
+    width = page.get_by_role("button", name="Fit to width")
+    height = page.get_by_role("button", name="Fit to height")
+    expect(width).to_have_attribute("aria-pressed", "true")
+    height.click()
+    expect(height).to_have_attribute("aria-pressed", "true")
+    height_fits = """() => {
+        const viewer = document.querySelector('#viewer');
+        const image = document.querySelector('#page-image');
+        const style = getComputedStyle(viewer);
+        const available = viewer.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+        return Math.abs(image.getBoundingClientRect().height - available) <= 2;
+    }"""
+    page.wait_for_function(height_fits)
+    page.set_viewport_size({"width": 1000, "height": 800})
+    page.wait_for_function(height_fits)
+    width.click()
+    expect(width).to_have_attribute("aria-pressed", "true")
+    expect(page.locator("#image-stage")).to_have_attribute("style", "width: 100%;")
+    page.get_by_role("button", name="3D model", exact=True).click()
+    expect(height).to_be_hidden()
