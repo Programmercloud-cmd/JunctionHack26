@@ -1,0 +1,33 @@
+Implement the next reconstruction iteration using the established planning, independent plan review, bounded implementation and independent implementation review workflow.
+
+The priority is faithful schematic reconstruction, not photorealism. The current model of unchanged colorful-11397.png incorrectly encloses the terrace as a room, turns some door geometry into diagonal walls, and misses clearly depicted doors, windows, stairs and furniture. Diagnose these against the original image and actual generated description/IFC; do not assume the causes.
+
+Address semantic and geometric correctness before expanding visual detail:
+
+1. Separate walls from room footprints. Describe actual wall segments and shared boundaries explicitly. Room polygons must not automatically create enclosing walls on every edge. Distinguish walls from door leaves, swing arcs, furniture and annotation lines.
+2. Reconstruct openings reliably. Associate doors/windows with the correct wall, preserve their depicted position and width, and create actual openings. Uncertain associations must remain explicitly unresolved rather than become walls or arbitrary attachments.
+3. Distinguish indoor and outdoor spaces. Terraces and balconies should have their depicted footprints and boundaries without invented full-height enclosure. Represent railings or open edges where supported.
+4. Account for other meaningful depicted components. Add schematic stairs, tables, cabinets and sanitary fixtures. Simple geometry or flat symbols are sufficient where the source establishes a footprint but not a reliable 3D shape. Missing vertical dimensions should become explicit display assumptions, not a reason to omit visible features.
+
+“Everything shown” means every meaningful building or furnishing feature is accounted for as reconstructed, schematically represented, or explicitly unresolved—not that annotation text and every drawn line become physical geometry. Do not silently narrow this to rooms and a few selected openings.
+
+Preserve the pipeline:
+
+Original image/PDF → Gemini structured building description → deterministic Python/IfcOpenShell → generated IFC → existing Three.js viewer.
+
+Keep original-page provenance, stable IDs, cached models, portable IFC reopening, validated answer highlights, background fading and independent assumption controls. Generated IFC remains derived visualization and must never become authoritative factual evidence. Preserve Gemini’s sufficiency gate, source citations, refusal behavior and provider switch.
+
+Make reconstruction fidelity directly reviewable. Provide a top-down comparison or overlay of reconstructed footprints, wall segments and openings against the original drawing, using the stored source-coordinate transforms. Check omitted features, invented walls, incorrect enclosures and misplaced openings. Geometry validity and successful API calls alone are not sufficient acceptance evidence.
+
+Acceptance should include:
+
+- Unchanged colorful-11397.png, with both depicted floors and no manual cropping or rotation.
+- Terrace/balcony represented without invented enclosure.
+- Door leaves and swing arcs do not create diagonal walls.
+- Clearly depicted doors/windows appear in the correct boundaries; unresolved features are visibly identified.
+- Stairs and visible furnishings have appropriate schematic representations.
+- Original colorful-1794.png remains a regression case.
+- Live Gemini verification, visual comparison against both originals, focused regression tests, and independent implementation review.
+- Unsupported actual-height questions still refuse despite visible extrusions; export/reopen preserves provenance and assumptions.
+
+Keep this hackathon-sized: prioritize correct schematic geometry over materials, detailed meshes, new formats or infrastructure. Before adding self-imposed constraints, explain what they restrict, why they are needed, whether they are external requirements or design choices, and how they could block valid inputs or the demo. Report partial coverage honestly rather than declaring fidelity from passing tests alone.
