@@ -1,0 +1,140 @@
+Build an impressive, orbitable architectural concept visualization for our Junction hackathon demo.
+
+This is the visual “wow” experience for peer review: users should explore what a building could look like, with attractive materials, furnishings, lighting and outdoor spaces. Prioritize a coherent, polished result and smooth interaction.
+
+WORKSPACE AND BRANCH
+
+Work in a new, separate Git worktree on:
+  feat/orbitable-concept-visualization
+
+The existing repository is:
+  /home/jcb/dev/github/JunctionHack26
+
+Create a sibling worktree if available. Do not change the active checkout’s branch, stash its changes, reset files or interrupt another session.
+
+First inspect git status and the available branches. The current application may contain uncommitted or untracked implementation files: a worktree created from HEAD alone may therefore be missing the actual application.
+
+Ensure the new worktree starts from the current application baseline. If necessary, transfer a carefully scoped snapshot of current source, tests and documentation into the new worktree without modifying the original checkout. Record the starting commit and any transferred changes so your implementation can be distinguished from the baseline.
+
+Do not blindly copy secrets, uploads, runtime directories, virtual environments or the full dataset. Reuse required dataset files read-only where practical. Keep credentials local and untracked; never print them. Do not commit, push, merge or deploy unless explicitly requested.
+
+Use a separate development-server port so the existing session remains usable.
+
+INITIAL INSPECTION
+
+Read AGENTS.md, docs/PLAN.md, docs/CONTRACT.md, docs/HANDOFF.md and the current reconstruction contracts. Follow applicable project instructions.
+
+Inspect the current application and an actual saved generated IFC, its embedded building description, source references and assumptions. Verify which fixes are already present rather than relying on historical conversation summaries.
+
+A separate task may be fixing relative floor-size distortion caused by independently normalizing each floor’s bounding box. Coordinate with that work. Do not duplicate its implementation or compensate for scaling errors by resizing floors in the presentation layer. If the fix is not yet available, keep your rendering work independent and document the integration dependency.
+
+PRODUCT EXPERIENCE
+
+Keep the existing source-grounded inspection experience and add a distinct concept-visualization mode.
+
+The concept mode should provide:
+- An attractive, orbitable building/floor model.
+- A useful initial camera angle and reset-view control.
+- Floor selection and a dollhouse/cutaway presentation that reveals interiors.
+- Convincing materials, lighting, shadows and glazing.
+- Furniture, fixtures and outdoor details that make the spaces feel designed.
+- Smooth interaction and cached scene reuse across camera movements and questions.
+
+A single clear “Concept visualization” label is sufficient. Do not cover the scene with factual/inferred badges, warnings or assumption markers. This mode illustrates what the building could become.
+
+Plausible decorative details are welcome: flooring, paint, furniture styles, plants, lighting fixtures and terrace furniture. Missing vertical dimensions may use sensible visualization assumptions.
+
+Keep the building recognizable. Preserve reconstructed room relationships, meaningful walls, openings, stairs, outdoor spaces and relative proportions. Do not silently move structural geometry, invent additional floors or force different floors to align merely to make the scene prettier.
+
+TECHNICAL DIRECTION
+
+Start with the existing Three.js browser application. The deliverable is a real-time 3D scene that users can orbit, not only a static rendered image.
+
+Inspect the current Three.js version and rendering setup before choosing techniques. Aim for a polished architectural visualization using a small, justified combination of materials, lighting, shadows, tone mapping and optional post-processing.
+
+Avoid introducing Blender/MCP, remote rendering or cloud infrastructure unless a demonstrated limitation makes them necessary. Blender may later help prepare assets, but it should not be required to operate the initial demo.
+
+Reuse the existing reconstructed IFC/model and stable object IDs. Keep presentation assets and decorative additions in a separate visual layer so they cannot become factual source evidence or contaminate the original derived-IFC provenance.
+
+Gemini remains the final-demo provider. It may propose a compact, structured style specification that deterministic application code applies. Do not require an AI call for orbiting, zooming, selecting floors or applying deterministic visual settings. Do not execute model-generated Python or JavaScript.
+
+Prefer a small coherent asset collection or reusable procedural components over a large asset pipeline. Use assets whose licenses permit the intended use and record their sources. Keep the demo self-contained where practical.
+
+PRESERVE EXISTING BEHAVIOR
+
+Do not regress:
+- Original image/PDF and supplied-IFC handling.
+- Source-grounded QA and the Gemini sufficiency gate.
+- Citations and refusal behavior.
+- Provider switching.
+- Stable object identities and cached models.
+- Source-coordinate overlays and source inspection.
+- Generated-IFC provenance and reopening.
+- Existing answer highlighting and assumption controls in the inspection experience.
+
+Decorative objects, suggested finishes and assumed dimensions must never enter factual QA context. Unsupported actual-height questions must still refuse even when the concept model has convincing visible extrusions.
+
+HACKATHON SCOPE
+
+Deliver one excellent default visual treatment first. A coherent style is more valuable than many unfinished themes.
+
+Prioritize:
+1. Correct integration with the existing model and scale.
+2. Good framing, lighting and materials.
+3. Recognizable furnishings and outdoor spaces.
+4. Smooth orbit/floor interaction.
+5. A polished transition between inspection and concept modes.
+
+Defer walkthrough navigation, detailed roofs/façades, structural engineering, physics, new file formats, authentication, databases and elaborate infrastructure.
+
+Do not impose arbitrary extraction or rendering caps without explanation. Before introducing a constraint, explain what it restricts, why it is needed, whether it is external or a design choice, and how it could affect valid inputs or the demo. Measure performance before adopting substantial complexity or limits.
+
+WORKFLOW
+
+Use the established orchestration workflow:
+1. A planner proposes the smallest implementation, file ownership and acceptance checks.
+2. An independent reviewer checks the plan.
+3. Assign bounded implementation tasks with clear ownership.
+4. An independent reviewer examines the implementation.
+5. Integrate and verify the actual browser experience.
+
+Keep this workflow lightweight and focused. Reviewers must not independently approve their own implementation.
+
+Keep rendering changes separate from ongoing reconstruction work. Communicate shared-contract changes before implementing them. Do not overwrite another session’s edits.
+
+ACCEPTANCE
+
+Use unchanged colorful-11397.png and its saved generated description/IFC as the main case. Reuse saved extraction output rather than spending another Gemini call unless extraction itself genuinely needs investigation.
+
+Demonstrate:
+- Both depicted floors can be explored.
+- The terrace and balcony remain recognizable outdoor spaces.
+- Relative floor/interior proportions follow the underlying model.
+- The default view immediately looks polished and intentionally designed.
+- Orbit, zoom, floor selection and reset work smoothly.
+- Concept additions remain separate from factual QA.
+- Inspection mode, source links and highlighting still work.
+- An unsupported actual-height question still refuses.
+
+Use colorful-1794.png as a secondary regression case where practical.
+
+Run the appropriate focused tests and verify the real browser flow. Capture screenshots from representative viewpoints and report measured rendering/load performance on the available machine.
+
+Do not declare visual success from unit tests or valid meshes alone. Inspect the actual result. Distinguish pre-existing reconstruction defects from rendering defects, and report remaining limitations honestly.
+
+HANDOFF
+
+Finish with:
+- Worktree path and branch.
+- Exact command and port for launching this version.
+- What was implemented and how to demonstrate it.
+- Screenshots and verification results.
+- Dependencies and asset-license notes.
+- Any required integration with the scaling work.
+- A clear account of baseline changes versus your own implementation.
+
+Do not merge the worktree into the original checkout automatically.
+
+---
+
+proceed
