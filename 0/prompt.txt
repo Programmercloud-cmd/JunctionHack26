@@ -1,0 +1,9 @@
+[50] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[51] assistant: Plan revision accepted by independent reviewer; no remaining planning blockers.
+
+- Google reception spans multiple VAD turns. Stop waits for terminal completion with a configurable 15-second deadline; timeout preserves finalized text and reports incomplete transcription.
+- Test a pause-completion already in flight at Stop. Local event timing alone must not be presented as guaranteed finality.
+- Native room floors come from `Storey.Name`; aliases expand visibly to floor-qualified names. Duplicate canonical targets are rejected.
+- Speech accepts up to 6,000 characters with explicit text fallback, never truncation.
+- Backend owns new voice modules/config/tests; root owns main integration, environment, dependencies, and documentation; frontend owns UI and browser checks.
