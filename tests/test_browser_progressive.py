@@ -84,7 +84,7 @@ def test_preview_review_stop_saved_reopen_and_current_question(progressive_serve
     expect(page.locator('#building-review-status')).not_to_contain_text('in progress')
     page.wait_for_timeout(200);assert snapshot(page)['revision_id']==before_stop
     building=snapshot(page)['building_id'];calls=provider.reconstruction_calls
-    page.reload();page.get_by_role('button',name='Open saved building',exact=True).click();page.locator('#chat-log button',has_text='plan.png').click()
+    page.reload();page.locator('#home-library-list button',has_text='plan.png').click()
     page.wait_for_function('window.blueprintViewer?.data.derived===true',timeout=30000)
     assert provider.reconstruction_calls==calls
     # Re-uploading identical bytes opens the durable model without a new extraction.
@@ -125,7 +125,7 @@ def test_source_only_views_reopen_without_automatic_restart(progressive_server,s
     expect(page.locator('#unsupported-views')).to_contain_text('elevation')
     page.get_by_role('button',name='Inspect original',exact=True).click();expect(page.locator('#page-image')).to_be_visible()
     building=page.evaluate('state.document.building_id');calls=provider.reconstruction_calls
-    page.reload();page.get_by_role('button',name='Open saved building',exact=True).click();page.locator('#chat-log button',has_text='elevation.png').click()
+    page.reload();page.locator('#home-library-list button',has_text='elevation.png').click()
     page.wait_for_function('state.document!==null')
     assert page.evaluate('state.document.unresolved_views.length')>0
     upload(page,name='elevation.png')
@@ -150,7 +150,9 @@ def test_native_citations_inspect_pinned_meshless_and_definition_records(progres
     properties=model.create_entity('IfcPropertySet',GlobalId=ifcopenshell.guid.new(),Name='Many',HasProperties=[model.create_entity('IfcPropertySingleValue',Name=f'P{i}',NominalValue=model.create_entity('IfcReal',float(i)))for i in range(60)])
     model.create_entity('IfcRelDefinesByProperties',GlobalId=ifcopenshell.guid.new(),RelatedObjects=[window],RelatingPropertyDefinition=properties)
     template=model.create_entity('IfcWindowType',GlobalId=ifcopenshell.guid.new(),Name='Source template',PredefinedType='WINDOW',PartitioningType='SINGLE_PANEL')
-    page.goto(url);page.locator('#file-input').set_input_files({'name':'native.ifc','mimeType':'application/x-step','buffer':encode(model)})
+    page.goto(url)
+    page.locator('#file-input').set_input_files({'name':'native.ifc','mimeType':'application/x-step','buffer':encode(model)})
+    page.locator("#home-library-list button").first.click()
     page.wait_for_function('window.blueprintViewer?.data.source_kind==="ifc"',timeout=30000)
     scene=page.evaluate('window.blueprintViewer.data')
     assert template.GlobalId not in [e['id']for e in scene['elements']]

@@ -53,16 +53,27 @@ def test_automatic_extraction_and_incremental_reupload_cache(tmp_path):
         duplicate=client.post('/api/documents',files={'file':('renamed.png',png())}).json()
         assert not duplicate['is_new_upload'] and duplicate['extraction_jobs']==[]
         old_revision=saved.revision_id
-        appended=client.post(f"/api/buildings/{saved.id}/sources",files=[('files',('second.png',other_png()))]).json()
-        finish(app.state.jobs,appended['extraction_jobs'])
-        latest=app.state.documents.get(saved.id)
-        assert len(provider.extracts)==2 and len(latest.pages)==2
-        assert latest.pages[0].number==1 and latest.pages[1].number==2
-        assert client.get(f'/api/buildings/{saved.id}/revisions/{old_revision}/pages/1').status_code==200
-        assert client.get(f'/api/buildings/{saved.id}/revisions/{old_revision}/pages/2').status_code==404
+        second = ('second.png', other_png())
+        assert client.post(f"/api/buildings/{saved.id}/sources", files={"file": second}).status_code == 422
+        assert client.post('/api/documents', files=[('files', ('first.png', png())), ('files', second)]).status_code == 422
+        separate = client.post('/api/documents', files={'file': second}).json()
+        finish(app.state.jobs, separate['extraction_jobs'])
+        assert len(provider.extracts) == 2
+        assert separate['building_id'] != saved.id
+        assert len(app.state.documents.get(saved.id).pages) == 1
+        assert client.get(f'/api/buildings/{saved.id}/revisions/{old_revision}/pages/1').status_code == 200
+        assert client.get(f'/api/buildings/{saved.id}/revisions/{old_revision}/pages/2').status_code == 404
+        grouped = app.state.documents.add_many([(second[1], second[0])], building_id=saved.id)
+        for path in ('/api/ask', '/api/questions', '/api/chat/actions'):
+            result = client.post(path, json={
+                'document_id': grouped.id, 'revision_id': grouped.revision_id,
+                **({'message': 'What is shown?', 'request_id': 'test-grouped'}
+                   if path.endswith('/actions') else {'question': 'What is shown?'}),
+            })
+            assert result.status_code == 409, result.text
     reopened=create_app(storage_root=tmp_path,provider_factory=lambda:pytest.fail('Reopen must not infer'))
     with TestClient(reopened) as client:
-        assert client.get('/api/buildings').json()['buildings'][0]['interpretation_status']=='complete'
+        assert any(item['interpretation_status']=='complete' for item in client.get('/api/buildings').json()['buildings'])
         result=client.post('/api/documents',files={'file':('same.png',png())}).json()
         assert result['extraction_jobs']==[]
 

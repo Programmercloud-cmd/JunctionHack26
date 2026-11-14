@@ -162,9 +162,14 @@ def test_stale_persistent_operations_and_source_membership(chat_client):
     client, store, provider = chat_client
     old = saved_drawing(store, scene=False)
     newer = store.commit(old.snapshot(), old.revision_id, status="source_available")
-    for action in [{"type": "reconstruct", "mode": "refine"}, {"type": "show_model"}, {"type": "attach_sources"}]:
+    for action in [{"type": "reconstruct", "mode": "refine"}, {"type": "show_model"}]:
         response = post(client, provider, payload(old), [action])
         assert response.status_code == 409
+    for kind in ("attach_sources", "new_upload", "list_saved", "open_saved"):
+        blocked = post(client, provider, payload(newer), [{"type": kind}]).json()
+        assert blocked["actions"] == []
+        assert "Use Home" in blocked["message"]
+    assert all("saved_buildings" not in catalog for _, catalog in provider.calls)
     response = post(client, provider, payload(newer), [{"type": "show_source", "page": 2}])
     assert response.status_code == 422
     response = post(client, provider, payload(newer), [{"type": "show_source", "page": 1}])

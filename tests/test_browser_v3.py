@@ -110,7 +110,9 @@ def test_actual_geometry_overlay_layers_clicks_unresolved_and_reopen(semantic_se
     original_id=scene["document_id"]
     with page.expect_download() as download: action(page,{"type":"download_ifc"})
     target=tmp_path/"semantic.ifc"; download.value.save_as(target)
+    page.get_by_role("tab", name="Home").click()
     page.locator("#file-input").set_input_files(str(target))
+    page.locator("#home-library-list button").first.click()
     page.wait_for_function("id=>window.blueprintViewer?.data.document_id && window.blueprintViewer.data.document_id!==id",arg=original_id)
     expect(page.locator("#inventory-counts")).to_contain_text("1 unresolved")
     action(page,{"type":"set_comparison","enabled":True})

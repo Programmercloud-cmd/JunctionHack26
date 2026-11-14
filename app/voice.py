@@ -123,6 +123,8 @@ def attach_voice_routes(application, transcription_factory=None, speech_factory=
             if start.get("type") != "start" or not isinstance(start.get("document_id"), str) or not isinstance(start.get("custom_vocabulary", []), list):
                 raise VoiceError("Start voice input with a document and a list of custom vocabulary.", 400)
             document = application.state.documents.get(start["document_id"])
+            if len(document.sources) > 1:
+                raise VoiceError("Open a single file from Home to use voice input.", 409)
             terms = normalized_terms(document_vocabulary(document)["terms"] + start.get("custom_vocabulary", []))
             if len(terms) > GOOGLE_VOCABULARY_LIMIT:
                 raise VoiceError("Google accepts at most 1,000 vocabulary phrases. Remove custom words or use a building with fewer room-name hints.", 400)
@@ -214,7 +216,9 @@ def attach_voice_routes(application, transcription_factory=None, speech_factory=
                 raise VoiceError("Send a valid speech request.", 400) from None
             if not isinstance(body, dict) or not isinstance(body.get("document_id"), str) or not isinstance(body.get("text"), str):
                 raise VoiceError("Speech requires a document and answer text.", 400)
-            application.state.documents.get(body["document_id"])
+            document = application.state.documents.get(body["document_id"])
+            if len(document.sources) > 1:
+                raise VoiceError("Open a single file from Home to use spoken answers.", 409)
             text = body["text"]
             if not text.strip() or len(text) > SPEECH_TEXT_LIMIT:
                 raise VoiceError("Spoken answers support 1–6,000 characters. Read the complete written answer instead; it has not been shortened.", 400)

@@ -131,12 +131,17 @@ def source_bytes(pdf=False):
 
 
 def upload(page, pdf=False, name=None):
-    page.locator("#file-input").set_input_files({
-        "name": name or ("two-pages.pdf" if pdf else "plan.png"),
-        "mimeType": "application/pdf" if pdf else "image/png", "buffer": source_bytes(pdf),
-    })
-    page.wait_for_function("!document.getElementById('file-input').disabled")
-    page.locator("#chat-log").get_by_role("button", name="Inspect original", exact=True).click()
+    page.get_by_role("tab", name="Home").click()
+    page.get_by_role("button", name="Upload file", exact=True).wait_for(state="visible")
+    page.wait_for_function("!document.getElementById('home-upload').disabled")
+    with page.expect_response("**/api/documents") as uploaded:
+        page.locator("#file-input").set_input_files({
+            "name": name or ("two-pages.pdf" if pdf else "plan.png"),
+            "mimeType": "application/pdf" if pdf else "image/png", "buffer": source_bytes(pdf),
+        })
+    assert uploaded.value.ok
+    filename = uploaded.value.json()["filename"]
+    page.locator("#home-library-list").get_by_role("button", name=filename).click()
     page.locator("#page-image").wait_for(state="visible")
 
 
@@ -209,8 +214,8 @@ def test_unconfigured_preview_remains_usable(server, browser_page):
         "model": "fixture", "decision_model": "fixture", "limits": {"max_upload_mb": 10, "max_pages": 5}}))
     page.goto(server)
     expect(page.locator("#chat-connection")).to_have_text("Provider unavailable")
-    expect(page.locator("#chat-log")).to_contain_text("To enable answers")
     upload(page)
+    expect(page.locator("#chat-log")).to_contain_text("To enable answers")
     page.locator("#question").fill("How many rooms?")
     expect(page.locator("#ask-button")).to_be_disabled()
     expect(page.locator("#page-image")).to_be_visible()
@@ -229,3 +234,29 @@ def test_gemini_pipeline_is_identified(server, browser_page):
     expect(answer.locator("details")).to_contain_text("Evidence sufficiency: sufficient")
     expect(answer.locator("details")).to_contain_text("do not guarantee answer correctness")
     assert page.evaluate("state.health.gate_kind") == "gemini_decisions"
+
+
+def test_hydrogen_debug_output_logs_once_after_question(server, browser_page, monkeypatch):
+    raw_output = '{  "answer": "Unprocessed debug fixture"  }\n'
+    answer = FixtureProvider.answer
+
+    def answer_with_raw_output(self, *args, **kwargs):
+        self.debug_answer_callback(raw_output)
+        return answer(self, *args, **kwargs)
+
+    monkeypatch.setattr(FixtureProvider, "answer", answer_with_raw_output)
+    page = browser_page
+    messages = []
+    page.on("console", lambda message: messages.append(message.text))
+    page.goto(server)
+    upload(page)
+    with page.expect_console_message(predicate=lambda message: message.text == raw_output):
+        ask(page, "Count rooms")
+    page.evaluate("refreshBuilding()")
+    page.evaluate("refreshBuilding()")
+    assert messages.count(raw_output) == 1
+    assert not page.locator("[data-job-state]").evaluate_all(
+        "(nodes, output) => nodes.some(node => node.dataset.jobState.includes(output))", raw_output.strip()
+    )
+    job = page.evaluate("state.jobs.find(job => job.kind === 'question')")
+    assert "debug_hydrogen_outputs" not in page.request.get(f"{server}/api/jobs/{job['id']}").json()

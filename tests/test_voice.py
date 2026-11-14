@@ -303,7 +303,7 @@ async def test_speech_disconnect_cancels_pending_generation():
 
     provider = Speech()
     application = FastAPI()
-    application.state.documents = SimpleNamespace(get=lambda _: object())
+    application.state.documents = SimpleNamespace(get=lambda _: SimpleNamespace(sources=[]))
     attach_voice_routes(application, speech_factory=lambda: provider)
     endpoint = next(route.endpoint for route in application.routes if route.path == "/api/voice/speech")
     messages = asyncio.Queue()

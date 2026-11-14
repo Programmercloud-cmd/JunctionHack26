@@ -18,6 +18,7 @@ def open_fixture_job(page, static_server, document, job):
     page.locator("#file-input").set_input_files(
         {"name": "plan.png", "mimeType": "image/png", "buffer": source_bytes()}
     )
+    page.locator("#home-library-list button").first.click()
     row = page.locator(f'[data-entry="job:{job["id"]}"]')
     row.wait_for(state="attached")
     for summary in row.locator("summary").all():summary.click()

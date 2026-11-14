@@ -172,6 +172,7 @@ def test_real_ifc_orbit_counts_highlights_source_and_scene_reuse(scene_server, s
     page.on("request", lambda req: scene_requests.append(req.method) if req.url.endswith("/scene") else None)
     page.goto(scene_server)
     page.locator("#file-input").set_input_files(str(SAMPLE))
+    page.locator("#home-library-list button").first.click()
     page.wait_for_function("window.blueprintViewer?.getSnapshot().mesh_count > 200", timeout=90000)
     page.locator("#chat-log").get_by_role("button", name="Open saved model", exact=True).click()
     expect(page.locator("#workspace-title")).to_have_text("Saved model · interpretation")

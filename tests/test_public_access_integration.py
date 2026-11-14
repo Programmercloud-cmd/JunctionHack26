@@ -151,8 +151,7 @@ def test_chat_actions_require_code_exact_example_revisions_and_readonly_outputs(
         assert result.status_code==200,result.text
         assert result.json()['actions'][0]['revision_id']==doc.revision_id
         provider.actions=[{'type':'attach_sources'}]
-        # CURRENT consistency can independently reject before the readonly check.
-        assert client.post('/api/chat/actions',json=body).status_code==409
+        assert client.post('/api/chat/actions',json=body).json()['actions']==[]
 
 
 def test_chat_readonly_guard_runs_with_current_equal_to_manifest(prepared):
@@ -162,10 +161,10 @@ def test_chat_readonly_guard_runs_with_current_equal_to_manifest(prepared):
         unlock(client)
         body={'message':'Change this example','request_id':'readonly-fixture','document_id':doc.id,
               'revision_id':doc.revision_id,'workspace':{'geometry_revision_id':doc.revision_id}}
-        for action in [{'type':'attach_sources'},{'type':'reconstruct','mode':'refine'},{'type':'retry_extraction'}]:
+        for action in [{'type':'reconstruct','mode':'refine'},{'type':'retry_extraction'}]:
             provider.actions=[action]
             result=client.post('/api/chat/actions',json=body)
             assert result.status_code==409,result.text
             assert 'read-only'in result.json()['detail']
-        assert len(provider.calls)==3
+        assert len(provider.calls)==2
         assert client.app.state.documents.get(doc.id).revision_id==doc.revision_id

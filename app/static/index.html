@@ -7,7 +7,7 @@
   <title>Blueprint — Your drawings, in conversation</title>
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/access.css">
-  <link rel="stylesheet" href="/static/workspace-controls.css">
+  <link rel="stylesheet" href="/static/workspace-controls.css?v=2">
   <script type="importmap">{"imports":{"three":"/static/vendor/three/three.module.js"}}</script>
   <script src="/static/voice.js" defer></script>
   <script src="/static/app.js" defer></script>
@@ -18,21 +18,47 @@
 <body>
   <a class="skip-link" href="#question">Skip to conversation</a>
   <main id="chat-shell" class="chat-shell">
-    <section id="chat-column" class="chat-column" aria-label="Blueprint conversation">
-      <header class="chat-header"><a href="/" class="chat-brand"><span aria-hidden="true">▧</span> Blueprint</a><span id="chat-connection" role="status">Connecting…</span></header>
-      <nav id="workspace-navigation" class="workspace-navigation" aria-label="Drawing and model controls" hidden></nav>
-      <div id="chat-scroll" class="chat-scroll">
-        <div id="chat-welcome" class="chat-welcome"><p class="chat-kicker">A conversation with your drawings</p><h1>Start with a blueprint.</h1><p>Attach your plans and ask a question.<br>When you want a closer look, we’ll open the workspace.</p><div class="chat-actions"><button id="welcome-upload" type="button">Attach drawings <span aria-hidden="true">↗</span></button><button id="welcome-saved" type="button">Open saved building</button></div></div>
-        <div id="chat-log" class="chat-log" role="log" aria-label="Conversation messages" aria-live="polite" aria-relevant="additions text"></div>
+    <header class="chat-header">
+      <a href="/" class="chat-brand"><span aria-hidden="true">▧</span> Blueprint</a>
+      <div class="app-header-controls">
+        <div class="app-tabs" role="tablist" aria-label="App navigation">
+          <button id="home-tab" role="tab" type="button" aria-controls="home-library" aria-selected="true">Home</button>
+          <button id="details-tab" role="tab" type="button" aria-controls="details-panel" aria-selected="false" tabindex="-1" disabled>Details</button>
+        </div>
       </div>
-      <div id="chat-composer" class="chat-composer"><div id="attachment-summary" hidden></div><div id="composer-slot"></div><p class="chat-footnote">Original sources first. Modeled geometry is an interpretation.</p></div>
+      <span id="chat-connection" role="status">Connecting…</span>
+    </header>
+    <section id="home-library" class="home-library" role="tabpanel" aria-labelledby="home-tab">
+      <div class="home-library-heading">
+        <h1>Files</h1>
+        <button id="home-upload" type="button" class="secondary-button">Upload file</button>
+        <input id="file-input" type="file" accept="image/jpeg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf,.ifc,.svg,.dxf,.dwg" class="file-input" aria-label="Upload a blueprint file">
+      </div>
+      <p id="home-library-status" role="status">Loading files…</p>
+      <p id="home-library-error" role="alert" hidden></p>
+      <table class="home-files" aria-label="Saved files" hidden>
+        <thead><tr><th scope="col">File</th><th scope="col">AI interpretation ready</th><th scope="col">3D model available</th></tr></thead>
+        <tbody id="home-library-list"></tbody>
+      </table>
     </section>
-    <section id="visual-workspace" class="visual-workspace" aria-label="Visual workspace" hidden>
-      <div class="workspace-caption"><span id="workspace-title">Drawing workspace</span><span id="workspace-status"></span></div>
-      <div id="workspace-tools" class="workspace-tools"></div>
-      <div id="workspace-content"></div>
-      <aside id="selection-evidence" class="selection-evidence" aria-label="Selected object evidence"></aside>
-    </section>
+    <div id="details-panel" class="details-panel" role="tabpanel" aria-labelledby="details-tab" hidden>
+      <section id="chat-column" class="chat-column" aria-label="Blueprint conversation">
+        <div id="chat-scroll" class="chat-scroll">
+          <div id="chat-log" class="chat-log" role="log" aria-label="Conversation messages" aria-live="polite" aria-relevant="additions text"></div>
+        </div>
+        <div id="chat-composer" class="chat-composer"><div id="attachment-summary" hidden></div><div id="composer-slot"></div><p class="chat-footnote">Original sources first. Modeled geometry is an interpretation.</p></div>
+      </section>
+      <div id="chat-divider" class="chat-divider" role="separator" tabindex="0"
+           aria-label="Resize chat pane" aria-controls="chat-column" aria-orientation="vertical"
+           aria-valuemin="25" aria-valuemax="65" aria-valuenow="35"></div>
+      <section id="visual-workspace" class="visual-workspace" aria-label="Drawing and 3D model" hidden>
+        <div class="workspace-caption"><span id="workspace-title">Drawing workspace</span><span id="workspace-status"></span><button id="workspace-fullscreen" type="button">Full screen</button></div>
+        <nav id="workspace-navigation" class="workspace-navigation" aria-label="Drawing and model controls" hidden></nav>
+        <div id="workspace-tools" class="workspace-tools"></div>
+        <div id="workspace-content"></div>
+        <aside id="selection-evidence" class="selection-evidence" aria-label="Selected object evidence" hidden></aside>
+      </section>
+    </div>
   </main>
   <!-- Existing operation adapters retain their DOM anchors; presentation lives above. -->
   <div id="operation-adapters" hidden inert>
@@ -56,7 +82,6 @@
     <div class="workspace">
       <section class="source-panel panel" aria-labelledby="source-heading">
         <div class="panel-heading"><div><span class="step">01</span><h2 id="source-heading">Source drawing</h2></div><button type="button" class="secondary-button upload-label" id="upload-label">Choose files</button></div>
-        <input id="file-input" type="file" multiple accept="image/jpeg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf,.ifc,.svg,.dxf,.dwg" class="file-input" aria-label="Upload a floor plan or IFC model">
 
         <div id="drop-zone" class="drop-zone" tabindex="0" role="button" aria-label="Choose related drawing files or an IFC model. You can also drop files here.">
           <div class="plan-icon" aria-hidden="true"><span></span><i></i><b></b></div>
@@ -119,31 +144,31 @@
         <div class="panel-heading"><div><span class="step">02</span><h2 id="question-heading">Building conversation</h2></div><span id="connection-label" class="connection-label">Checking setup…</span></div>
         <div id="conversation" class="conversation" aria-label="Building conversation"></div><p id="conversation-error" class="error-message" hidden></p><form id="question-form" class="question-form">
           <label for="question">What would you like to know?</label>
-          <textarea id="question" rows="3" maxlength="2000" placeholder="What labeled spaces are shown on this drawing?" required disabled aria-describedby="question-help"></textarea>
-          <div class="question-meta"><span id="question-help">Upload a drawing to get started.</span><span id="character-count">0 / 2000</span></div>
-          <div class="voice-panel" aria-label="Voice question controls">
-            <div class="voice-actions"><button id="voice-record" type="button" class="secondary-button" disabled>Speak question</button><button id="voice-stop-recording" type="button" class="secondary-button" hidden>Stop recording</button><button id="voice-cancel" type="button" class="text-button" hidden>Cancel</button></div>
-            <p id="voice-status" role="status" aria-live="polite" data-state="idle">Upload a drawing to use voice.</p>
-            <p class="voice-help">Speak, stop, review the transcript, then ask. Audio is sent to Google while recording.</p>
-            <div id="voice-error" class="error-message" role="alert" hidden></div>
-            <details id="voice-original" hidden><summary>Original transcription</summary><p id="voice-original-text"></p></details>
-            <p id="voice-alias-preview" class="voice-help" hidden></p>
-            <details id="voice-vocabulary"><summary>Room names and vocabulary</summary>
-              <p id="voice-vocabulary-note" class="voice-help">Room names become available when a building model is loaded.</p>
-              <p id="voice-building-terms" class="voice-building-terms"></p>
-              <label for="voice-custom-terms">Additional words or names · one per line</label><textarea id="voice-custom-terms" rows="2" placeholder="Talotekniikka&#10;B-204" disabled></textarea>
-              <p class="voice-help">Names help recognition; they are not evidence about the building.</p>
-              <div class="voice-alias-fields"><label for="voice-alias-name">Easy phrase<input id="voice-alias-name" type="text" placeholder="plant room" disabled></label><label for="voice-alias-target">Room on the plan<select id="voice-alias-target" disabled><option value="">Choose a room…</option></select></label></div>
-              <button id="voice-add-alias" type="button" class="secondary-button" disabled>Add room alias</button>
-              <ul id="voice-alias-list" class="voice-alias-list"></ul>
-              <button id="voice-apply-aliases" type="button" class="text-button" disabled>Preview aliases in question</button>
-              <p class="voice-help">Aliases are kept for this document in this tab. Review substitutions before asking.</p>
-            </details>
-            <div class="voice-playback"><label><input id="voice-auto-read" type="checkbox" disabled> Read answers aloud</label><label><input id="voice-technical-details" type="checkbox" disabled> Read technical details</label><button id="voice-read" type="button" class="text-button" disabled>Read answer</button><button id="voice-play" type="button" class="secondary-button" hidden>Play audio</button><button id="voice-stop-speech" type="button" class="text-button" hidden>Stop audio</button></div>
-            <p class="voice-help">Spoken answers keep the conclusion and limitations. Technical evidence remains on screen.</p>
-            <p id="voice-speech-unavailable" class="voice-help" role="status" hidden>Spoken answer preparation is unavailable. The written answer and evidence remain on screen.</p>
-            <p id="voice-setup" class="voice-help">Checking voice setup…</p><button id="voice-refresh" type="button" class="text-button">Check voice setup</button>
+          <div class="prompt-row">
+            <textarea id="question" rows="3" maxlength="2000" placeholder="What labeled spaces are shown on this drawing?" required disabled aria-describedby="question-help"></textarea>
+            <div class="composer-voice">
+              <button id="voice-record" class="push-to-talk" type="button" aria-label="Hold to talk" aria-describedby="voice-help" title="Hold to talk" disabled>
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                  <rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4m-3 0h6"/>
+                </svg>
+                <span id="voice-label" aria-hidden="true">Hold to talk</span>
+              </button>
+              <button id="voice-read-answers" class="answer-audio-toggle" type="button" aria-label="Read answers aloud" aria-pressed="false" title="Read answers aloud" disabled>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M11 5 6 9H3v6h3l5 4z"/><path class="audio-on" d="M15 9a4 4 0 0 1 0 6m3-9a8 8 0 0 1 0 12"/><path class="audio-off" d="m16 10 5 5m0-5-5 5"/>
+                </svg>
+              </button>
+            </div>
           </div>
+          <p id="voice-help" class="sr-only">Hold with a pointer, Space, or Enter. Audio is sent to Google for transcription while recording.</p>
+          <p id="voice-status" class="sr-only" role="status"></p>
+          <p id="voice-error" class="voice-error" role="alert" hidden></p>
+          <p id="voice-speech-status" class="sr-only" role="status"></p>
+          <div class="answer-audio-status">
+            <p id="voice-speech-error" class="voice-error" role="status" hidden></p>
+            <button id="voice-play-answer" class="chat-inline-button" type="button" hidden>Play answer audio</button>
+          </div>
+          <div class="question-meta"><span id="question-help">Upload a drawing to get started.</span><span id="character-count">0 / 2000</span></div>
           <div class="suggestions" aria-label="Example questions"><button type="button" data-question="What labeled spaces are shown on this drawing?" disabled>Identify spaces</button><button type="button" data-question="What dimensions are explicitly shown?" disabled>Inspect dimensions</button><button type="button" data-question="What is the ceiling height?" disabled>Check ceiling height</button></div>
           <button id="ask-button" type="submit" class="primary-button" disabled><span id="ask-label">Ask the drawing</span><span aria-hidden="true">↗</span></button>
         </form>

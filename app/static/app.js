@@ -1,12 +1,12 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const state = { document: null, pageIndex: 0, selectedEvidence: null, sourceSelection: null, result: null, busy: null, providerReady: false, health: null, requestVersion: 0, scene: null, viewer: null, selectedElement: null, selectedComparison: null, view: "drawing", epoch:0, jobs:[], savedBuildings:[], pollTimer:null, pollingEpoch:null, questionRequest:null, askSubmitting:false, reconstructionSubmitting:false, uploadMode:"new", conversation:[], clarificationReply:null, assumptionRows:[], assumptionEdits:new Map(), evidenceRevision:null };
+const state = { document: null, pageIndex: 0, selectedEvidence: null, sourceSelection: null, result: null, busy: null, providerReady: false, health: null, requestVersion: 0, scene: null, viewer: null, selectedElement: null, selectedComparison: null, view: "drawing", epoch:0, jobs:[], savedBuildings:[], pollTimer:null, pollingEpoch:null, questionRequest:null, askSubmitting:false, reconstructionSubmitting:false, conversation:[], clarificationReply:null, assumptionRows:[], assumptionEdits:new Map(), evidenceRevision:null };
 let voice = null;
 const suggestions = Array.from(document.querySelectorAll("[data-question]"));
 
 function announce(message) { $("announcer").textContent = message; }
-function setError(id, message = "") { $(id).textContent = message; $(id).hidden = !message; window.chatUI?.onError(id,message); }
+function setError(id, message = "") { $(id).textContent = message; $(id).hidden = !message; window.chatUI?.onError(id,message);if(id==="upload-error")window.workspaceControls?.showStatus(message); }
 function updateControls() {
   const busy = Boolean(state.busy);
   const recording = Boolean(voice?.recording);
@@ -91,7 +91,6 @@ async function checkHealth() {
 }
 
 function resetAnswer() {
-  voice?.stopSpeech(false);
   state.nativeEvidenceToken=(state.nativeEvidenceToken || 0)+1;$("native-record-inspector").hidden=true;
   state.result = null;
   state.selectedEvidence = null;
@@ -103,30 +102,41 @@ function resetAnswer() {
   setError("ask-error");
 }
 
-async function uploadFile(input, append = false) {
-  const files=Array.from(input?.name ? [input] : input || []);
-  if (!files.length || state.busy) return;
+async function uploadFile(input) {
+  const files = Array.from(input?.name ? [input] : input || []);
+  if (!files.length || state.busy || (window.chatUI && !window.chatUI.isHome())) return;
   setError("upload-error");
-  for(const file of files){
-    const maxMB=/\.ifc$/i.test(file.name)?(state.health?.limits?.max_ifc_mb||25):(state.health?.limits?.max_upload_mb||10);
-    if(file.size>maxMB*1024*1024){setError("upload-error",`${file.name} exceeds the ${maxMB} MB per-file limit.`);return;}
-    if(!/\.(jpe?g|png|pdf|ifc|svg|dxf|dwg)$/i.test(file.name)){setError("upload-error","Choose JPG, PNG, PDF, SVG, DXF or IFC. DWG needs an available converter.");return;}
+  if (files.length !== 1) {
+    setError("upload-error", "Choose one file to upload.");
+    return;
+  }
+  const [file] = files;
+  const maxMB = /\.ifc$/i.test(file.name) ? (state.health?.limits?.max_ifc_mb || 25) : (state.health?.limits?.max_upload_mb || 10);
+  if (file.size > maxMB * 1024 * 1024) {
+    setError("upload-error", `${file.name} exceeds the ${maxMB} MB per-file limit.`);
+    return;
+  }
+  if (!/\.(jpe?g|png|pdf|ifc|svg|dxf|dwg)$/i.test(file.name)) {
+    setError("upload-error", "Choose JPG, PNG, PDF, SVG, DXF or IFC. DWG needs an available converter.");
+    return;
   }
   voice?.cancelAll();
   state.busy="upload";const version=++state.requestVersion;updateControls();
-  window.chatUI?.onUpload(files,append);
-  const form=new FormData();for(const file of files)form.append("files",file);
-  const path=append&&state.document?`/api/buildings/${state.document.building_id}/sources`:"/api/documents";
-  try{
-    const result=await request(path,{method:"POST",body:form});if(version!==state.requestVersion)return;
-    if(!result.document_id||!Array.isArray(result.pages))throw new Error("The server did not return a usable source document.");
-    if(append&&result.document_id===state.document?.document_id){
-      state.document=result;for(const job of result.extraction_jobs||[])rememberJob(job);
-      renderPage();renderSourceList();renderBuildingStatus();await refreshAssumptions();schedulePoll(0);
-    }else await activateDocument({...result,jobs:result.jobs||result.extraction_jobs||[]});
-    refreshSavedBuildings();announce("Original sources saved. Interpretation is independent of optional 3D generation.");
-  }catch(error){setError("upload-error",error.message);}
-  finally{state.busy=null;$("file-input").value="";state.uploadMode="new";updateControls();}
+  window.chatUI?.onUpload();
+  const form = new FormData();
+  form.append("files", file);
+  try {
+    const result = await request("/api/documents", {method:"POST", body:form});
+    if (version !== state.requestVersion) return;
+    if (!result.document_id || !Array.isArray(result.pages)) throw new Error("The server did not return a usable source document.");
+    await refreshSavedBuildings();
+    announce("Original file saved.");
+  } catch (error) {
+    setError("upload-error", error.message);
+  } finally {
+    state.busy = null;
+    updateControls();
+  }
 }
 
 function terminalJob(job) {return ["complete","needs_attention","failed","budget_exhausted","stopped","interrupted"].includes(job.status);}
@@ -138,6 +148,7 @@ function schedulePoll(delay=1000) {
 }
 async function refreshSavedBuildings() {
   $("refresh-buildings").disabled=true;
+  state.savedBuildingsError = false;
   try {
     const result=await request("/api/buildings",{},15000);state.savedBuildings=result.buildings || [];
     const selected=$("saved-building-select").value || state.document?.building_id || "";
@@ -145,10 +156,27 @@ async function refreshSavedBuildings() {
     for(const item of state.savedBuildings)$("saved-building-select").append(new Option(`${item.filename} · ${item.has_scene?"model available":"source available"}`,item.building_id||item.document_id));
     $("saved-building-select").value=selected;
     $("saved-buildings-note").textContent=`${state.savedBuildings.length} saved ${state.savedBuildings.length===1?"building":"buildings"}`;
-  }catch(error){$("saved-buildings-note").textContent="Saved building list unavailable. Existing uploads remain usable.";}
-  finally{$("refresh-buildings").disabled=false;updateControls();}
+  }catch(error){state.savedBuildingsError = true;$("saved-buildings-note").textContent="Saved building list unavailable. Existing uploads remain usable.";}
+  finally{state.savedBuildingsLoaded = true;$("refresh-buildings").disabled=false;updateControls();}
 }
-async function activateDocument(result) {
+async function activateDocument(result, workspaceMode = null) {
+  // Preload the initial view before replacing the building. Keep the old
+  // drawing and model if an original or saved scene cannot be retrieved.
+  const sceneUrl=result.scene_url||(result.kind==="ifc"?`/api/documents/${result.document_id}/scene`:null);
+  let stagedScene=null,stagedSceneError=null;
+  if(workspaceMode){
+    const page=result.pages?.[0];
+    if(page&&(workspaceMode==="source"||!sceneUrl)){
+      const url=new URL(page.image_url,location.origin);
+      if(url.origin!==location.origin)throw new Error("The page preview URL is invalid.");
+      const image=new Image();image.src=url.href;
+      try{await image.decode();}catch{throw new Error("The blueprint preview could not be loaded. Your previous view is still open.");}
+    }
+    if(sceneUrl){
+      try{stagedScene=await request(sceneUrl);}
+      catch(error){if(!page||workspaceMode!=="source")throw error;stagedSceneError=error;}
+    }
+  }
   clearTimeout(state.pollTimer);state.epoch++;state.jobs=result.jobs || [];state.questionRequest=null;state.askSubmitting=false;state.reconstructionSubmitting=false;
   clearScene();state.document=result;voice?.newDocument(result.document_id);state.pageIndex=0;state.conversation=[];state.clarificationReply=null;state.assumptionEdits.clear();state.evidenceRevision=null;resetAnswer();setError("building-poll-error");
   $("filename").textContent=result.filename;$("filename").title=result.filename;
@@ -156,25 +184,26 @@ async function activateDocument(result) {
   $("document-warnings").textContent=(result.warnings || []).join(" ");$("document-warnings").hidden=!$("document-warnings").textContent;
   $("drop-zone").hidden=true;$("document-view").hidden=false;$("upload-label").textContent="Open other files";$("zoom").value="100";$("image-stage").style.width="100%";
   if(result.kind==="ifc"){
-    setView("model");await loadScene(await request(result.scene_url || `/api/documents/${result.document_id}/scene`));
+    setView("model");await loadScene(stagedScene||await request(sceneUrl));
     suggestions[0].dataset.question="How many windows are in this IFC model?";suggestions[0].textContent="Count windows";
     suggestions[1].dataset.question="How many rooms are in this IFC model?";suggestions[1].textContent="Count rooms";
   }else{
     setView("drawing");renderPage();
     suggestions[0].dataset.question="What labeled spaces are shown on this drawing?";suggestions[0].textContent="Identify spaces";
     suggestions[1].dataset.question="What dimensions are explicitly shown?";suggestions[1].textContent="Inspect dimensions";
-    if(result.scene_url)await loadScene(await request(result.scene_url));
+    if(stagedScene||(!workspaceMode&&sceneUrl))await loadScene(stagedScene||await request(sceneUrl));
   }
   renderSourceList();renderBuildingStatus();renderJobs();updateControls();
-  window.chatUI?.onDocument(result);
+  window.chatUI?.onDocument(result,workspaceMode);
+  if(stagedSceneError)setError("scene-error",stagedSceneError.message);
   if(progressiveDocument()){await Promise.allSettled([refreshConversation(),refreshAssumptions()]);schedulePoll(0);}
 }
-async function openBuilding(id) {
+async function openBuilding(id, workspaceMode = null) {
   if(!id||state.busy)return;
   if(id===state.document?.building_id){await refreshBuilding();return;}
   voice?.cancelAll();
   state.busy="upload";const version=++state.requestVersion;updateControls();setError("upload-error");
-  try{const result=await request(`/api/buildings/${id}`);if(version===state.requestVersion){await activateDocument(result);announce(`Opened saved building ${result.filename}. No new reconstruction was started.`);}}
+  try{const result=await request(`/api/buildings/${id}`);if(version===state.requestVersion){await activateDocument(result,workspaceMode);announce(`Opened saved building ${result.filename}. No new reconstruction was started.`);}}
   catch(error){if(version===state.requestVersion)setError("upload-error",error.message);}
   finally{if(version===state.requestVersion){state.busy=null;updateControls();}}
 }
@@ -286,7 +315,11 @@ function renderJobs() {
     $("ask-progress-label").textContent=question.message || "Inspecting the source";
     if(terminalJob(question)){
       state.questionRequest.pending=false;
-      if(question.status==="complete"&&question.answer){renderResult(question.answer,true);voice?.answerReady();refreshConversation();}
+      if(question.status==="complete"&&question.answer){
+        renderResult(question.answer,true);
+        if(!window.chatUI||window.chatUI.isLatestSubmission(question.request_id))voice?.answerReady(question.answer);
+        refreshConversation();
+      }
       else{setError("ask-error",question.message || "Question stopped without a confirmed answer.");$("answer-empty").hidden=false;}
     }
   }
@@ -315,6 +348,8 @@ async function refreshBuilding() {
     if(revisionChanged){renderSourceList();refreshAssumptions();if(!state.evidenceRevision)renderPage();}
     const savedOption=[...$("saved-building-select").options].find(option=>option.value===id);
     if(savedOption)savedOption.textContent=`${result.filename} · ${result.has_scene?"model available":"source available"}`;
+    const catalogIndex=state.savedBuildings.findIndex(item=>(item.building_id||item.document_id)===id);
+    if(catalogIndex>=0)state.savedBuildings[catalogIndex]={...state.savedBuildings[catalogIndex],has_scene:result.has_scene,interpretation_status:result.interpretation_status};
     renderBuildingStatus();renderJobs();setError("building-poll-error");updateControls();
     window.chatUI?.onDocument(state.document);
   }catch(error){if(epoch===state.epoch)setError("building-poll-error",`${error.message} The displayed model remains available. Use Refresh status to retry.`);}
@@ -413,7 +448,6 @@ function answerForDisplayedRevision(result) {
 }
 function renderResult(result, preserveView = false) {
   result=answerForDisplayedRevision(result);
-  voice?.stopSpeech(false);
   state.result = result;
   updateControls();
   state.selectedEvidence = null;
@@ -581,11 +615,11 @@ async function loadScene(scene) {
   let prepared=null;
   if(updating){try{prepared=state.viewer.prepareRevision(scene);state.viewer.commitRevision(prepared);}catch(error){setError("scene-error","The model update could not be published. The previous usable revision remains available.");return;}}
   state.scene = scene;
-  voice?.refreshVocabulary();
   const unscaled = scene.units !== "m" || (scene.floors || []).some((floor) => floor.scale_status !== "known");
   $("scene-badge").textContent = unscaled ? "Approximate · unscaled" : scene.derived ? "Calibrated footprints · assumed heights" : "IFC geometry · metres";
   $("scene-badge").classList.toggle("unscaled", unscaled);
   const count = scene.elements.filter((element) => element.geometry).length;
+  $("no-model-geometry").textContent = "No 3D geometry was reconstructed. Inspect the unresolved source items below.";
   $("no-model-geometry").hidden = count > 0;
   $("model-canvas-container").hidden = count === 0;
   $("scene-summary").textContent = scene.derived ? `${scene.floors.length} interpreted floor diagrams · ${count} rendered objects. Generated geometry is a visualization, never factual source evidence. ${unscaled ? "Scale is unknown on one or more floors; relative display units cannot establish dimensions or compare physical floor sizes." : "Footprints use cited source calibration; heights and wall thicknesses remain display assumptions."}` : `${scene.elements.length} source elements · ${count} rendered${scene.source_page ? ` · source page ${scene.source_page}` : ""}. ${unscaled ? "Horizontal geometry is inferred; heights and thicknesses are assumptions in relative units." : "Coordinates and properties come from the supplied IFC. Room volumes appear when selected or highlighted."}`;
@@ -1031,7 +1065,7 @@ function updateCutawayNote() {
 }
 
 async function refreshConversation() {
-  if(!progressiveDocument())return;
+  if(!progressiveDocument() || (state.document.sources?.length || 0) > 1)return;
   const epoch=state.epoch,id=state.document.building_id;
   try{
     const payload=await request(`/api/buildings/${id}/conversation`,{},15000);if(epoch!==state.epoch)return;
@@ -1149,7 +1183,6 @@ async function applyAssumptions() {
   }catch(error){if(epoch===state.epoch)setError("assumption-error",error.message);}
   finally{state.applyingAssumptions=false;updateAssumptionButton();}
 }
-$("append-sources").addEventListener("click",()=>{state.uploadMode="append";$("file-input").click();});
 $("retry-extraction").addEventListener("click",async()=>{const epoch=state.epoch;try{const payload=await request(`/api/buildings/${state.document.building_id}/extraction`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({retry:true})});if(epoch===state.epoch){for(const job of payload.jobs||[])rememberJob(job);schedulePoll(0);}}catch(error){if(epoch===state.epoch)setError("building-poll-error",error.message);}});
 $("apply-assumptions").addEventListener("click",applyAssumptions);
 
@@ -1197,7 +1230,6 @@ $("question-form").addEventListener("submit", async (event) => {
   const question=$("question").value.trim();
   if(!question||!state.document||state.busy||state.askSubmitting||!state.providerReady||voice?.recording)return;
   voice?.cancelAll();
-  voice?.questionSubmitted(question);
   resetAnswer();$("answer-empty").hidden=true;
   const epoch=state.epoch,building=state.document.document_id;
   if(state.document.building_id&&state.document.revision_id){
@@ -1210,19 +1242,16 @@ $("question-form").addEventListener("submit", async (event) => {
     return;
   }
   state.busy="ask";const version=++state.requestVersion;updateControls();
-  try{const result=await request("/api/ask",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({document_id:building,question})});if(version===state.requestVersion){renderResult(result);voice?.answerReady();}}
+  try{const result=await request("/api/ask",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({document_id:building,question})});if(version===state.requestVersion){renderResult(result);voice?.answerReady(result);}}
   catch(error){if(version===state.requestVersion){setError("ask-error",error.message);$("answer-empty").hidden=false;announce("The request failed. No answer was confirmed.");}}
   finally{state.busy=null;updateControls();}
 });
 
-$("file-input").addEventListener("change", (event) => uploadFile(event.target.files,state.uploadMode==="append"));
-$("upload-label").addEventListener("click", () => { if (!state.busy) {state.uploadMode="new";$("file-input").click();} });
-$("drop-zone").addEventListener("click", () => { if (!state.busy) {state.uploadMode="new";$("file-input").click();} });
-$("drop-zone").addEventListener("keydown", (event) => { if ((event.key === "Enter" || event.key === " ") && !state.busy) { event.preventDefault(); $("file-input").click(); } });
-const sourcePanel = $("source-heading").closest("section");
-sourcePanel.addEventListener("dragover", (event) => { event.preventDefault(); if (!state.busy) $("drop-zone").classList.add("drag-over"); });
-sourcePanel.addEventListener("dragleave", (event) => { if (!sourcePanel.contains(event.relatedTarget)) $("drop-zone").classList.remove("drag-over"); });
-sourcePanel.addEventListener("drop", (event) => { event.preventDefault(); $("drop-zone").classList.remove("drag-over"); if (!state.busy) { uploadFile(event.dataTransfer.files); } });
+$("file-input").addEventListener("change", (event) => {
+  const files = Array.from(event.target.files);
+  event.target.value = "";
+  uploadFile(files);
+});
 $("question").addEventListener("input", updateControls);
 suggestions.forEach((button) => button.addEventListener("click", () => { $("question").value = button.dataset.question; updateControls(); $("question").focus(); }));
 function changePage(direction) {

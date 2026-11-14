@@ -34,6 +34,7 @@ def test_persistent_controls_property_provenance_and_independent_overlays(static
     for field in ['position','target','up']:assert after[field]==pytest.approx(before[field],abs=1e-10)
     page.locator('#workspace-theme').select_option('dark')
     expect(page.locator('html')).to_have_attribute('data-theme','dark')
+    expect(page.locator('#workspace-theme')).to_have_css('background-color', 'rgb(25, 24, 22)')
     expect(card).to_contain_text('Fixture display height')
     page.locator('#workspace-theme').select_option('light')
     page.get_by_role('button',name='Blueprints',exact=True).click()
@@ -72,3 +73,32 @@ def test_new_group_selection_clears_stale_focused_evidence(static_server,scene_p
     assert page.evaluate('chatUI.inspection()') is None
     assert page.evaluate('chatUI.snapshot().selected_ids')==['window-2']
     expect(page.locator('#selection-evidence')).not_to_contain_text('Fixture window-1')
+
+
+def test_fullscreen_and_chat_pane_resize(static_server, scene_page):
+    from playwright.sync_api import expect
+
+    page = scene_page
+    chat_fixture(page, static_server)
+    divider = page.get_by_role("separator", name="Resize chat pane")
+    bounds = divider.bounding_box()
+    x, y = bounds["x"] + bounds["width"] / 2, bounds["y"] + bounds["height"] / 2
+    page.mouse.move(x, y)
+    page.mouse.down()
+    page.mouse.move(x + 150, y, steps=4)
+    page.mouse.up()
+    assert int(divider.get_attribute("aria-valuenow")) > 30
+    divider.press("Home")
+    expect(divider).to_have_attribute("aria-valuenow", "25")
+    divider.press("ArrowRight")
+    expect(divider).to_have_attribute("aria-valuenow", "28")
+
+    for view, toggle in [("blueprint", None), ("3D model", "3D model")]:
+        if toggle:
+            page.get_by_role("button", name=toggle, exact=True).click()
+        page.get_by_role("button", name=f"Full screen: {view}").click()
+        page.wait_for_function("""document.fullscreenElement?.id === 'visual-workspace' ||
+            document.getElementById('visual-workspace').classList.contains('workspace-expanded')""")
+        page.get_by_role("button", name="Exit full screen").click()
+        expect(page.get_by_role("button", name=f"Full screen: {view}")).to_be_visible()
+        expect(divider).to_have_attribute("aria-valuenow", "28")

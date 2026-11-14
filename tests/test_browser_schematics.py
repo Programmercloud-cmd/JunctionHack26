@@ -114,7 +114,9 @@ def test_unresolved_annotations_preserve_geometry_highlights_and_source(annotati
     with page.expect_download() as download:action(page,{"type":"download_ifc"})
     artifact=tmp_path/"annotated.ifc";download.value.save_as(artifact)
     original_id=scene["document_id"]
+    page.get_by_role("tab", name="Home").click()
     page.locator("#file-input").set_input_files(str(artifact))
+    page.locator("#home-library-list button").first.click()
     page.wait_for_function("id=>window.blueprintViewer?.data.document_id&&window.blueprintViewer.data.document_id!==id",arg=original_id)
     assert page.locator(".model-annotations").count()==1
     assert page.locator(".unresolved-annotation").count()==4

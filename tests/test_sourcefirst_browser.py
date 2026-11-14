@@ -84,11 +84,12 @@ def setup_routes(page,scene=None):
     return document,messages,requests
 
 
-def test_source_first_chat_append_pinned_evidence_and_batch_inputs(static_server,scene_page):
+def test_source_first_single_file_chat_pinned_evidence_and_batch_inputs(static_server,scene_page):
     from playwright.sync_api import expect
     page=scene_page;document,messages,requests=setup_routes(page)
     page.goto(static_server)
-    page.locator('#file-input').set_input_files([{'name':'plan.png','mimeType':'image/png','buffer':source_bytes()},{'name':'section.png','mimeType':'image/png','buffer':source_bytes()}])
+    page.locator('#file-input').set_input_files({'name':'plan.png','mimeType':'image/png','buffer':source_bytes()})
+    page.locator("#home-library-list button").first.click()
     page.get_by_role('button',name='Inspect original',exact=True).click()
     expect(page.locator('#page-image')).to_be_visible()
     assert not any('reconstruction' in path or path.endswith('/scene') for _,path,_ in requests)
@@ -102,9 +103,7 @@ def test_source_first_chat_append_pinned_evidence_and_batch_inputs(static_server
     import json
     submitted=[json.loads(body) for method,path,body in requests if path=='questions']
     assert submitted[1]['reply_to']=='1a' and submitted[1]['clarification_response']=='Ground floor'
-    # Appending a source preserves the conversation and old answer citations.
-    page.evaluate("state.uploadMode='append'")
-    page.locator('#file-input').set_input_files({'name':'section.png','mimeType':'image/png','buffer':source_bytes()})
+    # A completed answer still links to its exact source revision.
     expect(page.locator('.chat-user')).to_have_count(2)
     page.locator('.chat-citation',has_text='Assembly hall').click()
     expect(page.locator('#evidence-overlay')).to_be_visible()
@@ -114,13 +113,14 @@ def test_source_first_chat_append_pinned_evidence_and_batch_inputs(static_server
     page.wait_for_function("state.jobs.some(j=>j.kind==='refinement')")
     edit=json.loads(next(body for _,path,body in requests if path.endswith('/refinements')))
     assert edit['edits'][0]['value']==3.4 and edit['edits'][0]['unit']=='m'
-    assert edit['base_revision_id']=='d'*32
+    assert edit['base_revision_id']==document['revision_id']
 
 
 def test_native_clipping_all_floors_preserves_meshes_and_mode(static_server,scene_page):
     page=scene_page;document,_,_=setup_routes(page)
     page.goto(static_server)
     page.locator('#file-input').set_input_files({'name':'plan.png','mimeType':'image/png','buffer':source_bytes()})
+    page.locator("#home-library-list button").first.click()
     page.wait_for_function('state.document!==null')
     scene={'document_id':document['document_id'],'building_id':document['building_id'],'revision_id':'a'*32,'revision_number':1,
         'derived':False,'units':'m','layout':'aligned','floors':[],'elements':[],'warnings':[],
@@ -198,6 +198,7 @@ def test_real_source_only_chat_explicit_ifc_and_user_height(sourcefirst_server,s
     from playwright.sync_api import expect
     url,provider,app=sourcefirst_server;page=scene_page;page.goto(url)
     page.locator('#file-input').set_input_files({'name':'assembly.png','mimeType':'image/png','buffer':source_bytes()})
+    page.locator("#home-library-list button").first.click()
     page.wait_for_function("state.document?.interpretation_status==='complete'",timeout=15000)
     assert provider.extract_calls==1 and provider.review_calls==0
     assert page.evaluate('window.blueprintViewer===null')
@@ -226,7 +227,10 @@ def test_real_source_only_chat_explicit_ifc_and_user_height(sourcefirst_server,s
     page.locator('#question').fill('What actual height is shown in the drawing?');page.locator('#ask-button').click()
     expect(page.locator('.chat-answer').last).to_contain_text('Insufficient source evidence',timeout=15000)
     calls=provider.extract_calls
+    page.get_by_role("tab", name="Home").click()
+    page.wait_for_function("!document.getElementById('home-upload').disabled")
     page.locator('#file-input').set_input_files({'name':'renamed.png','mimeType':'image/png','buffer':source_bytes()})
+    page.locator("#home-library-list button").first.click()
     page.wait_for_function('window.blueprintViewer?.meshes.size>0',timeout=15000)
     assert provider.extract_calls==calls
     assert sum(m['role']=='user' for m in app.state.documents.conversation(building))==3
@@ -240,6 +244,7 @@ def test_queued_question_response_preserves_newly_typed_followup(static_server,s
     page.route('**/api/questions',lambda route:pending.append(route))
     page.goto(static_server)
     page.locator('#file-input').set_input_files({'name':'plan.png','mimeType':'image/png','buffer':source_bytes()})
+    page.locator("#home-library-list button").first.click()
     page.locator('#question').fill('First question')
     with page.expect_request('**/api/questions'):page.locator('#ask-button').click()
     page.locator('#question').fill('A newly typed follow-up')
@@ -261,6 +266,7 @@ def test_failed_job_exposes_only_sanitized_diagnostic_as_text(static_server,scen
     page.route(f'**/api/buildings/{document["building_id"]}',lambda route:route.fulfill(json={**document,"jobs":[failed]}))
     page.goto(static_server)
     page.locator('#file-input').set_input_files({'name':'plan.png','mimeType':'image/png','buffer':source_bytes()})
+    page.locator("#home-library-list button").first.click()
     row=page.locator('[data-entry="job:failed-dxf"]')
     expect(row).to_be_visible()
     expect(row).to_contain_text(diagnostic)

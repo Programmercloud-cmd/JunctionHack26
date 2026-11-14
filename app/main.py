@@ -52,7 +52,8 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
     async def lifespan(application):
         application.state.documents = BuildingStore(Path(storage_root or os.getenv("BLUEPRINT_STORAGE_ROOT") or ROOT / ".runtime"))
         access.validate_store(application.state.documents)
-        application.state.jobs = JobRunner(application.state.documents, application.state.provider_factory)
+        application.state.jobs = JobRunner(application.state.documents, application.state.provider_factory,
+                                           debug_answers=not access.enabled)
         yield
         application.state.jobs.close()
         application.state.documents.close()
@@ -85,11 +86,18 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
     def selected_document(http_request,identity,revision=None):
         return access.document(application.state.documents,http_request,identity,revision)
 
+    def require_single_file_chat(document):
+        if len(document.sources) > 1:
+            raise DocumentError("This saved bundle contains multiple files. Chat is available for single-file entries.", 409)
+
     def pinned_question(http_request,request):
         if access.enabled and request.document_id in access.examples:
             document=access.question_document(application.state.documents,http_request,request.document_id,request.revision_id)
+            require_single_file_chat(document)
             return request.model_copy(update={"revision_id":document.revision_id}),document
-        return request,None
+        document = application.state.documents.get(request.document_id)
+        require_single_file_chat(document)
+        return request, None
 
     @application.get("/")
     def index():
@@ -108,12 +116,13 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
     @application.post("/api/chat/actions")
     def resolve_chat_actions(request: ChatActionRequest,http_request:Request):
         try:
-            if access.enabled and request.document_id in access.examples:
-                selected_document(http_request,request.document_id,request.revision_id)
-                if request.workspace.geometry_revision_id:
-                    selected_document(http_request,request.document_id,request.workspace.geometry_revision_id)
+            if not request.document_id:
+                raise DocumentError("Open a file from Home to use chat.", 422)
+            require_single_file_chat(selected_document(http_request, request.document_id, request.revision_id))
+            if request.workspace.geometry_revision_id:
+                require_single_file_chat(selected_document(http_request, request.document_id, request.workspace.geometry_revision_id))
             result=chat_actions(application.state.documents, application.state.jobs,
-                application.state.provider_factory, request)
+                application.state.provider_factory, request, file_only=True)
             if request.document_id and any(action["type"] in {"refine","reconstruct","retry_extraction","attach_sources"}
                                            for action in result.get("actions",[])):
                 access.require_editable(http_request,request.document_id)
@@ -121,20 +130,21 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
         except (DocumentError, ProviderError) as error:
             raise HTTPException(error.status, error.message) from None
 
-    async def save_uploads(http_request,uploads,building_id=None):
+    async def save_uploads(http_request,uploads):
         if not uploads:raise HTTPException(422,"Choose at least one source file.")
         try:
             payloads=[(await upload.read(MAX_IFC_UPLOAD+1),upload.filename or "Untitled source") for upload in uploads]
             access.require_uploadable(http_request,payloads)
-            if building_id:access.require_editable(http_request,building_id)
+            if len(payloads) > 1:
+                raise HTTPException(422, "Upload one file at a time from Home.")
             def save():
                 store=application.state.documents
-                initial_id=building_id or hashlib.sha256(payloads[0][0]).hexdigest()
+                initial_id=hashlib.sha256(payloads[0][0]).hexdigest()
                 with store.lock:
                     existed=(store.directory(initial_id)/"CURRENT.json").exists()
                     previous=store.get(initial_id) if existed else None
                     previous_sources={source["source_id"] for source in previous.sources} if previous else set()
-                    document=store.add_many(payloads,building_id=building_id)
+                    document=store.add(*payloads[0])
                     new_ids=[source["source_id"] for source in document.sources if source["source_id"] not in previous_sources]
                 extraction_jobs=application.state.jobs.extract(document.id,new_ids,retry=False) if new_ids and document.interpretation_status!="complete" else []
                 return {**document.public(),"is_new_upload":not existed,"added_source_ids":new_ids,"extraction_jobs":extraction_jobs}
@@ -145,11 +155,17 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
 
     @application.post("/api/documents")
     async def upload(http_request:Request,file: UploadFile | None = File(None), files: list[UploadFile] | None = File(None)):
-        return await save_uploads(http_request,([file] if file else [])+(files or []))
+        uploads = ([file] if file else []) + (files or [])
+        return await save_uploads(http_request, uploads)
 
     @application.post("/api/buildings/{building_id}/sources")
     async def add_sources(building_id: str,http_request:Request,file: UploadFile | None = File(None),files: list[UploadFile] | None = File(None)):
-        return await save_uploads(http_request,([file] if file else [])+(files or []),building_id)
+        try:
+            access.require_editable(http_request, building_id)
+            raise HTTPException(422, "Upload a separate file from Home.")
+        finally:
+            for upload in ([file] if file else []) + (files or []):
+                await upload.close()
 
     @application.get("/api/documents/{document_id}/pages/{page}")
     def preview(document_id: str, page: int,http_request:Request):
@@ -189,7 +205,7 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
     @application.get("/api/buildings/{building_id}/conversation")
     def conversation(building_id: str):
         try:
-            application.state.documents.get(building_id)
+            require_single_file_chat(application.state.documents.get(building_id))
             return {"conversation_id":building_id,"messages":application.state.documents.conversation(building_id)}
         except DocumentError as error:raise HTTPException(error.status,error.message) from None
 
@@ -218,7 +234,10 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
     def building(building_id: str,http_request:Request):
         try:
             document = selected_document(http_request,building_id)
-            return {**access.descriptor(document), "jobs": application.state.jobs.for_building(building_id) if access.is_editor(http_request) else []}
+            jobs = application.state.jobs.for_building(building_id, include_debug_answers=True) if access.is_editor(http_request) else []
+            if len(document.sources) > 1:
+                jobs = [job for job in jobs if job["kind"] != "question"]
+            return {**access.descriptor(document), "jobs": jobs}
         except DocumentError as error:
             raise HTTPException(error.status, error.message) from None
 

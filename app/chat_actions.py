@@ -493,7 +493,7 @@ def _source(record, document):
     return source
 
 
-def _context(store, runner, request):
+def _context(store, runner, request, *, file_only=False):
     document = store.revision(request.document_id, request.revision_id) if request.document_id else None
     geometry = None
     if request.workspace.geometry_revision_id:
@@ -512,7 +512,7 @@ def _context(store, runner, request):
         raise DocumentError("The captured floor is outside its saved revision.", 409)
     if any(not records[key]["renderable"] for key in request.workspace.tour.ids):
         raise DocumentError("A tour cannot contain objects without saved renderable geometry.", 422)
-    saved = {item["building_id"]:item for item in store.list()}
+    saved = {} if file_only else {item["building_id"]:item for item in store.list()}
     jobs = runner.for_building(document.id) if document else []
     return document, geometry, records, floors, saved, jobs
 
@@ -523,13 +523,16 @@ def interpret(provider, request, catalog):
         return _intent_stage("adapter_response", lambda: ChatIntent.model_validate(
             provider.interpret_chat_actions(request.message, catalog)))
     navigation = Document(id="navigation", filename="navigation", pages=[])
+    instructions = INSTRUCTIONS
+    if "saved_buildings" not in catalog:
+        instructions += "\nThe chat is scoped to the open file. Direct users to Home to open or upload another file."
     kwargs = {"extra_data":catalog, "include_qa_context":False}
     if callable(getattr(provider, "_generate", None)):
         wire = _intent_stage("provider_response", lambda: provider._generate(
-            navigation, request.message, INSTRUCTIONS, WireChatIntent, **kwargs))
+            navigation, request.message, instructions, WireChatIntent, **kwargs))
     elif callable(getattr(provider, "_parse", None)):
         wire = _intent_stage("provider_response", lambda: provider._parse(
-            navigation, request.message, INSTRUCTIONS, WireChatIntent, **kwargs))
+            navigation, request.message, instructions, WireChatIntent, **kwargs))
     else:
         raise ProviderError("The configured provider does not support chat intent interpretation.", 503)
     wire = _intent_stage("wire_validation", lambda: WireChatIntent.model_validate(wire))
@@ -572,7 +575,7 @@ def _log_intent_failure(stage, error):
         diagnostic["logged"] = True
 
 
-def resolve_actions(store, runner, request, intent, context=None):
+def resolve_actions(store, runner, request, intent, context=None, *, file_only=False):
     document, geometry, records, floors, saved, jobs = context or _context(store, runner, request)
     base = {"request_id":request.request_id, "document_id":request.document_id, "revision_id":request.revision_id,
         "geometry_revision_id":request.workspace.geometry_revision_id, "navigation_epoch":request.workspace.navigation_epoch}
@@ -587,6 +590,8 @@ def resolve_actions(store, runner, request, intent, context=None):
     try:
         for action in intent.actions:
             kind = action.type
+            if file_only and kind in {"open_saved", "list_saved", "new_upload", "attach_sources"}:
+                raise Clarify("Use Home to open or upload a file.")
             result = action.model_dump(mode="json")
             if kind not in global_types and document is None:
                 raise Clarify("Attach drawings or open a saved building first.")
@@ -707,10 +712,10 @@ def resolve_actions(store, runner, request, intent, context=None):
         "clarification":None}
 
 
-def chat_actions(store, runner, provider_factory, request):
+def chat_actions(store, runner, provider_factory, request, *, file_only=False):
     started = monotonic()
     request = ChatActionRequest.model_validate(request)
-    context = _context(store, runner, request)
+    context = _context(store, runner, request, file_only=file_only)
     document, geometry, records, floors, saved, jobs = context
     catalog = {"authority":"Navigation associations only; not factual source evidence or extraction completeness.",
         "workspace":request.workspace.model_dump(mode="json"), "document_id":request.document_id,
@@ -721,19 +726,20 @@ def chat_actions(store, runner, provider_factory, request):
         "pages":[page.number for page in document.pages] if document else [],
         "page_sources":[{"page":page.number, "source_id":page.source_id, "source_page":page.source_page,
             "filename":page.source_filename} for page in document.pages] if document else [],
-        "saved_buildings":[{"building_id":key, "filename":value.get("filename")} for key,value in saved.items()],
         "jobs":[{key:job.get(key) for key in ("id", "kind", "status")} for job in jobs],
         "captured_focus":{"object_id":request.workspace.focused_id,
             "source_revision_id":(geometry or document).revision_id if geometry or document else None,
             "source_kind":(records.get(request.workspace.focused_id, {}).get("source") or {}).get("kind") if request.workspace.focused_id else None},
         "current_message":request.message}
+    if not file_only:
+        catalog["saved_buildings"] = [{"building_id": key, "filename": value.get("filename")} for key, value in saved.items()]
     provider = None
     diagnostic = {"reference":uuid4().hex, "logged":False}
     diagnostic_token = _intent_diagnostic.set(diagnostic)
     try:
         provider = provider_factory()
         intent = ChatIntent.model_validate(interpret(provider, request, catalog))
-        result = _intent_stage("action_resolution", lambda: resolve_actions(store, runner, request, intent, context))
+        result = _intent_stage("action_resolution", lambda: resolve_actions(store, runner, request, intent, context, file_only=file_only))
         usage = getattr(provider, "usage", None)
         result["usage"] = usage.model_dump(mode="json") if hasattr(usage, "model_dump") else {}
         result["usage"]["latency_ms"] = round((monotonic() - started) * 1000)

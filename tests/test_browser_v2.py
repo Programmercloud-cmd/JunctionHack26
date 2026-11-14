@@ -75,6 +75,7 @@ def upload_building(page):
         pages.append(image.rotate(180))
     output=BytesIO(); pages[0].save(output,format="PDF",save_all=True,append_images=pages[1:])
     page.locator("#file-input").set_input_files({"name":"three-floor-diagrams.pdf","mimeType":"application/pdf","buffer":output.getvalue()})
+    page.locator("#home-library-list button").first.click()
     page.wait_for_function("!document.getElementById('file-input').disabled && document.getElementById('page-image').naturalWidth > 0")
 
 
@@ -149,7 +150,9 @@ def test_multifloor_original_regions_explosion_and_ifc_roundtrip(building_server
         action(page,{"type":"download_ifc"})
     artifact=tmp_path / "derived.ifc"; download.value.save_as(artifact)
     assert artifact.read_bytes().startswith(b"ISO-10303-21")
+    page.get_by_role("tab", name="Home").click()
     page.locator("#file-input").set_input_files(str(artifact))
+    page.locator("#home-library-list button").first.click()
     page.wait_for_function("old=>window.blueprintViewer?.data.document_id && window.blueprintViewer.data.document_id!==old",arg=original_id,timeout=30000)
     expect(page.locator("#scene-badge")).to_have_text(expected_badge)
     expect(page.locator("#explode-floors")).to_be_checked()

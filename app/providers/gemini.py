@@ -603,6 +603,10 @@ class GeminiProvider:
             self.last_response_text = "".join(part.text for part in getattr(content,"parts",[]) or []
                 if getattr(part,"text",None) is not None and not getattr(part,"thought",False))
             self.last_response_call_id = record["call_id"]
+            if schema is DraftAnswer and record["model"] == "gemini-4-hydrogen":
+                capture = getattr(self, "debug_answer_callback", None)
+                if capture is not None and self.last_response_text:
+                    capture(self.last_response_text)
             try: self.last_structured_output = json.loads(self.last_response_text)
             except (ValueError,TypeError): self.last_structured_output = None
             if any(candidate.finish_reason == types.FinishReason.MAX_TOKENS for candidate in candidates):

@@ -66,6 +66,7 @@ def chat_fixture(page, url, *, model=True):
     page.route('**/api/chat/actions', action_route)
     page.goto(url)
     page.locator('#file-input').set_input_files({'name': 'fixture.png', 'mimeType': 'image/png', 'buffer': source_bytes()})
+    page.locator('#home-library-list button').filter(has_text=doc['filename']).click()
     page.wait_for_function('state.document !== null')
     if model:
         page.wait_for_function('window.blueprintViewer?.meshes.size === 3')
@@ -88,7 +89,7 @@ def test_chat_layout_themes_selection_tour_and_captured_source(static_server, sc
     from playwright.sync_api import expect
     page = scene_page
     doc, scene, calls, pending = chat_fixture(page, static_server)
-    expect(page.locator('#visual-workspace')).to_be_hidden()
+    expect(page.locator('#visual-workspace')).to_be_visible()
     say(page, 'Use dark theme.')
     expect(page.locator('html')).to_have_attribute('data-theme', 'dark')
     assert page.evaluate('getComputedStyle(document.documentElement).getPropertyValue("--background").trim()') == '#121110'
@@ -253,10 +254,13 @@ def test_visual_controls_reveal_model_and_reject_missing_model(static_server,sce
     for action in [{'type':'set_floor','floor_id':'f1'},{'type':'set_separation','enabled':True},{'type':'set_cutaway','percent':60}]:
         page.evaluate("chatUI.execute({type:'close_workspace'})")
         expect(page.locator('#visual-workspace')).to_be_hidden()
+        page.locator('#home-library-list button').first.click()
         page.evaluate('action=>chatUI.execute(action)',action)
         expect(page.locator('#visual-workspace')).to_be_visible()
     page.evaluate("chatUI.execute({type:'set_view',mode:'concept'})")
     page.evaluate("chatUI.execute({type:'close_workspace'})")
+    page.locator('#home-library-list button').first.click()
+    page.evaluate("chatUI.execute({type:'set_view',mode:'concept'})")
     page.evaluate("chatUI.execute({type:'set_cutaway',percent:50})")
     assert page.evaluate('chatUI.snapshot().view_mode')=='concept'
     page.evaluate("state.document.kind='ifc';state.document.pages=[]")
@@ -289,3 +293,129 @@ def test_concept_proposal_chat_attribution_and_host_source(static_server,scene_p
     page.locator('.chat-proposals').get_by_role('button',name='Inspect proposal',exact=True).last.click()
     expect(card).to_contain_text('Fixture decorative planting')
     assert page.evaluate('state.scene.elements.length')==count
+
+
+def test_home_list_select_and_single_file_upload(static_server, scene_page):
+    from playwright.sync_api import expect
+
+    page = scene_page
+    first, _, calls, _ = chat_fixture(page, static_server)
+    second_id, uploaded_id = 'c' * 64, 'd' * 64
+
+    def drawing(ident, filename):
+        return dict(first, document_id=ident, building_id=ident, filename=filename, has_scene=False,
+                    scene_url=None, geometry_revision_id=None, sources=[])
+
+    second, uploaded = drawing(second_id, 'Second blueprint.pdf'), drawing(uploaded_id, 'Local blueprint.png')
+    catalog = [first, second]
+    page.route('**/api/buildings', lambda route: route.fulfill(json={'buildings': catalog}))
+    page.route(f'**/api/buildings/{second_id}', lambda route: route.fulfill(json=second))
+    page.route(f'**/api/buildings/{uploaded_id}', lambda route: route.fulfill(json=uploaded))
+    page.evaluate("refreshSavedBuildings()")
+    expect(page.locator('#home-upload')).to_be_hidden()
+    expect(page.locator('#file-input')).not_to_have_attribute("multiple", "")
+    page.locator('#question').fill('Only for the first file')
+    page.get_by_role('tab', name='Home').click()
+    expect(page.locator('#chat-composer')).to_be_hidden()
+    expect(page.locator('#chat-log')).to_be_hidden()
+    page.locator('#home-library-list').get_by_role('button', name='Second blueprint.pdf').click()
+    expect(page.locator('#visual-workspace')).to_be_visible()
+    expect(page.locator('#attachment-summary')).to_contain_text('Second blueprint.pdf')
+    expect(page.locator('#question')).to_have_value('')
+
+    page.get_by_role('tab', name='Home').click()
+    upload = page.get_by_role('button', name='Upload file')
+    file = {'name': 'Local blueprint.png', 'mimeType': 'image/png', 'buffer': source_bytes()}
+    upload_path = '**/api/documents'
+    page.route(upload_path, lambda route: route.fulfill(status=422, json={'detail': 'Fixture blueprint rejected.'}))
+    with page.expect_file_chooser() as chooser:
+        upload.click()
+    chooser.value.set_files(file)
+    expect(page.locator('#home-library-error')).to_have_text('Fixture blueprint rejected.')
+    expect(page.locator('#home-library')).to_be_visible()
+    page.unroute(upload_path)
+    catalog.append(uploaded)
+    page.route(upload_path, lambda route: route.fulfill(json=uploaded))
+    with page.expect_file_chooser() as chooser:
+        upload.click()
+    chooser.value.set_files(file)
+    local = page.locator('#home-library-list').get_by_role('button', name='Local blueprint.png')
+    expect(local).to_be_visible()
+    expect(page.locator('#chat-column')).to_be_hidden()
+    expect(page.get_by_role('tab', name='Details')).to_be_disabled()
+    local.click()
+    expect(page.locator('#attachment-summary')).to_contain_text('Local blueprint.png')
+    expect(page.locator('#home-library')).to_be_hidden()
+    assert not any(method == 'POST' and ('reconstruction' in path or path.endswith('/sources'))
+                   for method, path, _ in calls)
+
+
+def test_home_details_restore_workspace_and_draft(static_server, scene_page):
+    from playwright.sync_api import expect
+
+    page = scene_page
+    page.goto(static_server)
+    home = page.get_by_role("tab", name="Home")
+    details = page.get_by_role("tab", name="Details")
+    expect(home).to_have_attribute("aria-selected", "true")
+    expect(details).to_be_disabled()
+
+    _, _, calls, _ = chat_fixture(page, static_server)
+    expect(details).to_be_enabled()
+    expect(page.get_by_role("heading", name="Files")).to_be_hidden()
+    expect(page.locator("#page-image")).to_be_visible()
+    expect(page.get_by_role("heading", name="Files")).to_be_hidden()
+    source = page.locator("#page-image").get_attribute("src")
+    page.get_by_role("button", name="3D model", exact=True).click()
+    expect(page.locator("#model-canvas-container")).to_be_visible()
+    page.evaluate("chatUI.execute({type:'set_camera',preset:'top'})")
+    before = page.evaluate("blueprintViewer.getCameraState()")
+    page.locator("#question").fill("Keep my draft")
+
+    home.click()
+    expect(home).to_have_attribute("aria-selected", "true")
+    expect(page.get_by_role("heading", name="Files")).to_be_in_viewport()
+    expect(page.locator("#visual-workspace")).to_be_hidden()
+    expect(page.locator("#workspace-navigation")).to_be_hidden()
+    expect(page.locator("#question")).to_be_hidden()
+    home.press("ArrowRight")
+    expect(home).to_be_focused()
+    expect(details).to_be_disabled()
+    page.locator("#home-library-list button").first.click()
+    expect(details).to_have_attribute("aria-selected", "true")
+    expect(page.locator("#model-canvas-container")).to_be_visible()
+    after = page.evaluate("blueprintViewer.getCameraState()")
+    assert after["position"] == pytest.approx(before["position"])
+    assert after["target"] == pytest.approx(before["target"])
+    assert not any("reconstruction" in path for _, path, _ in calls)
+
+    page.get_by_role("button", name="Blueprints", exact=True).click()
+    expect(page.locator("#page-image")).to_have_attribute("src", source)
+    home.click()
+    page.locator("#home-library-list button").first.click()
+    expect(page.locator("#page-image")).to_be_visible()
+    expect(page.locator("#page-image")).to_have_attribute("src", source)
+    expect(page.locator("#question")).to_have_value("Keep my draft")
+
+
+
+def test_legacy_file_group_is_visible_without_chat(static_server, scene_page):
+    from playwright.sync_api import expect
+
+    page = scene_page
+    doc, _, calls, _ = chat_fixture(page, static_server)
+    group_id = 'e' * 64
+    group = {**doc, 'document_id': group_id, 'building_id': group_id, 'filename': 'Legacy group',
+             'has_scene': False, 'scene_url': None, 'geometry_revision_id': None,
+             'sources': [*doc['sources'], {'source_id': 'f' * 64, 'filename': 'Other page.png'}]}
+    page.route('**/api/buildings', lambda route: route.fulfill(json={'buildings': [doc, group]}))
+    page.route(f'**/api/buildings/{group_id}', lambda route: route.fulfill(json=group))
+    page.evaluate('refreshSavedBuildings()')
+    page.get_by_role('tab', name='Home').click()
+    item = page.locator('#home-library-list').get_by_role('button', name='Legacy group')
+    expect(item).to_contain_text('View only')
+    item.click()
+    expect(page.locator('#page-image')).to_be_visible()
+    expect(page.locator('#chat-composer')).to_be_hidden()
+    expect(page.locator('#chat-log')).to_contain_text('file group is view only')
+    assert not any(path == f'buildings/{group_id}/conversation' for _, path, _ in calls)

@@ -107,10 +107,15 @@ def test_cross_document_roundtrip_and_stale_mutation_remain_guarded(static_serve
     say(page, 'What is depicted?')
     page.wait_for_timeout(50)
     other = copy.deepcopy(doc)
-    other.update(document_id='e'*64, building_id='e'*64, has_scene=False, scene_url=None, geometry_revision_id=None)
+    other.update(document_id='e'*64, building_id='e'*64, filename='Other fixture.png',
+                 has_scene=False, scene_url=None, geometry_revision_id=None)
     page.route('**/api/buildings/'+'e'*64, lambda route: route.fulfill(json={**other, 'jobs': []}))
-    page.evaluate('(id)=>chatUI.execute({type:"open_saved",building_id:id})', other['building_id'])
-    page.evaluate('(id)=>chatUI.execute({type:"open_saved",building_id:id})', doc['building_id'])
+    page.route('**/api/buildings', lambda route: route.fulfill(json={'buildings': [doc, other]}))
+    page.evaluate('refreshSavedBuildings()')
+    for building in (other, doc):
+        page.get_by_role('tab', name='Home').click()
+        page.locator('#home-library-list').get_by_role('button', name=building['filename']).click()
+        expect(page.locator('#attachment-summary')).to_contain_text(building['filename'])
     finish(pending, [{'type': 'question', 'question': 'What is depicted?', 'revision_id': doc['revision_id']}])
     page.wait_for_timeout(150)
     assert not qa_posts(calls)
@@ -159,7 +164,7 @@ def test_visibility_controls_do_not_pause_tour_and_missing_model_tab_does_not_bu
     after = page.evaluate('chatUI.snapshot()')
     assert after['tour'] == before['tour'] and after['navigation_epoch'] == before['navigation_epoch']
     assert page.evaluate('chatUI.inspection().record.id') == 'window-1'
-    page.evaluate("chatUI.execute({type:'tour',command:'pause'});clearScene();chatUI.execute({type:'switch_model'})")
+    page.evaluate("chatUI.execute({type:'tour',command:'pause'});clearScene();state.document.has_scene=false;chatUI.execute({type:'switch_model'})")
     expect(page.locator('#no-model-geometry')).to_be_visible()
     expect(page.locator('#chat-log')).to_contain_text('No saved 3D model is available')
     assert not any('reconstruction' in path for _, path, _ in calls)
@@ -211,11 +216,9 @@ def test_provider_unavailable_keeps_saved_buildings_discoverable(static_server, 
     # unavailable inference. The preceding upload only establishes fixture data.
     page.goto(static_server)
     page.wait_for_function('window.chatUI && state.health && !state.providerReady')
+    expect(page.locator('#home-upload')).to_be_visible()
+    page.locator('#home-library-list').get_by_role('button', name=doc['filename']).click()
     expect(page.locator('[data-entry="provider-setup"]')).to_be_visible()
-    expect(page.locator('#welcome-saved')).to_be_visible()
-    expect(page.locator('#welcome-saved')).to_be_in_viewport()
-    page.locator('#welcome-saved').click()
-    page.get_by_role('button', name=doc['filename'], exact=True).click()
     page.wait_for_function('state.document && state.viewer?.meshes.size===3')
     page.evaluate("chatUI.execute({type:'switch_model'})")
     expect(page.locator('#visual-workspace')).to_be_visible()
@@ -262,8 +265,7 @@ def test_reopened_answer_uses_persisted_job_identity_on_poll(static_server, scen
     page.route('**/api/buildings/'+doc['building_id']+'/conversation', lambda route: route.fulfill(json={'messages': [message]}))
     page.route('**/api/buildings/'+doc['building_id'], lambda route: route.fulfill(json={**doc, 'jobs': jobs}))
     page.goto(static_server)
-    page.locator('#welcome-saved').click()
-    page.get_by_role('button', name=doc['filename'], exact=True).click()
+    page.locator('#home-library-list').get_by_role('button', name=doc['filename']).click()
     expect(page.locator('.chat-answer')).to_have_count(1)
     jobs.append({'id': 'saved-question', 'request_id': 'saved-request', 'building_id': doc['building_id'],
                  'kind': 'question', 'status': 'complete', 'phase': 'complete', 'answer': answer})

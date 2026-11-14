@@ -48,8 +48,10 @@ def pipeline_config():
 
 
 class JobRunner:
-    def __init__(self,store,provider_factory):
+    def __init__(self,store,provider_factory,*,debug_answers=False):
         self.store=store;self.provider_factory=provider_factory
+        self.debug_answers = debug_answers
+        self.debug_answer_outputs: dict[str, list[str]] = {}
         self.executor=ThreadPoolExecutor(max_workers=2,thread_name_prefix="building")
         self.lock=threading.RLock();self.jobs={};self.events={};self.futures={};self.active={};self.deadlines={};self.closing=False;self.source_locks={}
         for building in store.list():
@@ -304,9 +306,14 @@ class JobRunner:
             if identity not in self.jobs:raise DocumentError("Job not found.",404)
             return deepcopy(self.jobs[identity])
 
-    def for_building(self,building_id):
+    def for_building(self,building_id,*,include_debug_answers=False):
         with self.lock:
-            return sorted([deepcopy(j)for j in self.jobs.values()if j["building_id"]==building_id],key=lambda j:j["created_at"],reverse=True)
+            jobs = [deepcopy(job) for job in self.jobs.values() if job["building_id"] == building_id]
+            if include_debug_answers and self.debug_answers:
+                for job in jobs:
+                    if outputs := self.debug_answer_outputs.get(job["id"]):
+                        job["debug_hydrogen_outputs"] = outputs.copy()
+            return sorted(jobs, key=lambda job: job["created_at"], reverse=True)
 
     def _new(self,document,kind,request_id=None):
         identity=uuid.uuid4().hex
@@ -716,9 +723,12 @@ class JobRunner:
 
     def _question(self,identity,snapshot,question,pin_display=False):
         provider=None
+        raw_outputs = []
         try:
             self._check(identity,float("inf"))
             provider=self._bind_provider(identity,self.provider_factory())
+            if self.debug_answers:
+                provider.debug_answer_callback = raw_outputs.append
             def progress(phase):
                 self._check(identity,float("inf"))
                 self._update(identity,status="running",phase=phase,message=phase)
@@ -742,13 +752,21 @@ class JobRunner:
                     self._update(identity,status="complete",phase="complete",message="Clarification requested." if answer.status=="clarification" else "Answer checked against supplied evidence.",
                         answer=answer.model_dump(),assistant_message_id=message["id"],conversation_id=snapshot.id,
                         revision_id=displayed.revision_id,revision_number=displayed.revision_number)
+                    if raw_outputs:
+                        # Keep the latest responses available for polling, outside saved jobs.
+                        self.debug_answer_outputs[identity] = raw_outputs
+                        if len(self.debug_answer_outputs) > 32:
+                            del self.debug_answer_outputs[next(iter(self.debug_answer_outputs))]
         except JobStopped:
             self._update(identity,status="stopped",phase="stopped",message="Question stopped; unpublished draft discarded.")
         except Exception as error:
             safe=error.message if isinstance(error,(ProviderError,DocumentError)) else "Question processing failed operationally; no evidence conclusion was made."
             self._update(identity,status="failed",phase="failed",message=safe)
         finally:
-            if provider:provider.close()
+            if provider:
+                if self.debug_answers:
+                    provider.debug_answer_callback = None
+                provider.close()
 
 
     def _failure(self,identity,error,provider=None):

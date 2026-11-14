@@ -1,3 +1,13 @@
+# Push-to-talk and blueprint picker checkpoint
+
+The composer exposes a single hold-to-talk microphone beside the prompt. Pointer, touch and keyboard holds append an editable draft; sending remains explicit. Release stops capture, including on interrupted startup and focus loss. The browser no longer exposes playback or manual vocabulary controls; the voice APIs and automatic model vocabulary remain available.
+
+The drawing/model workspace groups its tabs with a saved blueprint picker and a disk loader. The picker uses the server-filtered library; disk files open as a separate building using the existing accepted formats and access rules. Source page navigation stays separate, and switching does not request reconstruction. Canceling a picker or failing to load required data keeps the current view.
+
+An independent Chromium review checked desktop and touch layouts with synthetic drawings and a deterministic transcription provider. It caught tabs falling below the workspace on mobile; the revised layout was rechecked. No live voice inference or deployment was performed.
+
+---
+
 # UI correction integration checkpoint — 2026-11-14
 
 The reviewed UI branch through `40a2809` was integrated without conflicts or overwriting uncommitted work. Runtime release `1bb9c04` is deployed at https://95.133.254.90.sslip.io. Read [CHAT_UI_INTEGRATION_RESULTS.md](CHAT_UI_INTEGRATION_RESULTS.md) for commit mapping, direct browser evidence and open accuracy findings. The full integrated browser-enabled suite passed 811 tests with one skipped; doctor passed. The public access, provider switch, reconstruction and refinement contracts are unchanged. No push.

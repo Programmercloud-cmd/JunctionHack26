@@ -14,7 +14,7 @@ import wave
 
 import pytest
 
-from test_browser import upload
+from test_browser import source_bytes, upload
 from test_browser_3d import SceneFixtureProvider, generate_scene
 
 pytestmark = pytest.mark.skipif(os.getenv("RUN_BROWSER_TESTS") != "1", reason="opt-in browser checks")
@@ -22,13 +22,10 @@ pytestmark = pytest.mark.skipif(os.getenv("RUN_BROWSER_TESTS") != "1", reason="o
 
 class VoiceFixtureState:
     mode = "normal"
-    speech_mode = "normal"
-    answer_mode = "normal"
     sessions = None
     spoken = None
     questions = None
     closed = 0
-    speech_closed = 0
 
 
 @pytest.fixture
@@ -39,7 +36,6 @@ def voice_server(tmp_path, monkeypatch):
     from app.voice_config import VoiceError
     state = VoiceFixtureState()
     state.sessions, state.spoken, state.questions = [], [], []
-    state.synthesis_started = threading.Event()
     for name in ("GEMINI_API_KEY", "ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID"):
         monkeypatch.setenv(name, "fixture-never-sent")
     monkeypatch.setenv("VOICE_FINALIZATION_TIMEOUT_SECONDS", "0.3")
@@ -95,29 +91,17 @@ def voice_server(tmp_path, monkeypatch):
     class Speech:
         async def synthesize(self, text):
             state.spoken.append(text)
-            state.synthesis_started.set()
-            if state.speech_mode == "delay":
-                await asyncio.sleep(20)
-            if state.speech_mode == "failure":
-                raise VoiceError("Fixture speech unavailable.")
-            # A valid synthetic WAV is served by the fake speech adapter; production
-            # adapter returns MP3. Browser decoding/playback is real in this test.
             output = BytesIO()
             with wave.open(output, "wb") as audio:
-                audio.setnchannels(1); audio.setsampwidth(2); audio.setframerate(16000)
-                audio.writeframes(bytes(16000 * 2 * 2))
+                audio.setnchannels(1)
+                audio.setsampwidth(2)
+                audio.setframerate(16_000)
+                audio.writeframes(bytes(16_000 * 2 * 10))
             return output.getvalue()
         async def aclose(self):
-            state.speech_closed += 1
+            pass
 
     class QA(SceneFixtureProvider):
-        def answer(self, document, question, gate, crop=None):
-            answer = super().answer(document, question, gate, crop)
-            if state.answer_mode == "windows" and gate.decision == "sufficient":
-                answer.answer = "There are 2 windows, each 1.2 m wide (GlobalId: 2XQY000000000000000001; STEP: #42; IfcWindow). Their height is not established."
-                answer.missing_information = ["Window height"]
-                answer.next_action = "Check the section drawing."
-            return answer
         def gate(self, document, question, crop=None):
             state.questions.append(question)
             return super().gate(document, question, crop)
@@ -158,12 +142,16 @@ def voice_page():
 
 def ready(page, url, model=False):
     from playwright.sync_api import expect
-    page.goto(url); upload(page)
+    page.goto(url)
+    page.locator("#file-input").set_input_files({
+        "name": "plan.png", "mimeType": "image/png", "buffer": source_bytes(),
+    })
+    page.locator("#home-library-list button").first.click()
+    expect(page.locator("#attachment-summary")).to_contain_text("plan.png")
     expect(page.locator("#voice-record")).to_be_enabled()
     if model:
         generate_scene(page)
         page.wait_for_function("window.blueprintViewer?.data.elements.length > 0")
-        expect(page.locator("#voice-alias-target option")).to_have_count(3)
 
 
 def submit_and_get_answer(page):
@@ -184,321 +172,195 @@ def microphone_stopped(page):
     page.wait_for_function("window.voiceTestStreams.every(s => s.getTracks().every(t => t.readyState === 'ended'))")
 
 
-def test_live_transcript_alias_answer_evidence_and_audio(voice_server, voice_page):
+def hold_pointer(page):
+    page.locator("#voice-record").hover()
+    page.mouse.down()
+
+
+def test_pointer_hold_transcribes_and_keeps_draft_for_explicit_send(voice_server, voice_page):
     from playwright.sync_api import expect
-    url, state = voice_server; page = voice_page
+
+    url, state = voice_server
+    page = voice_page
     ready(page, url, model=True)
-    page.locator("#voice-vocabulary").evaluate("e => e.open = true")
-    page.locator("#voice-custom-terms").fill("Talotekniikka\nSähkötila")
-    page.locator("#voice-alias-name").fill("plant room")
-    page.locator("#voice-alias-target").select_option(index=1)
-    page.locator("#voice-add-alias").click()
-    page.locator("#voice-record").click()
+    mic = page.get_by_role("button", name="Hold to talk")
+    expect(mic).to_have_count(1)
+    expect(page.locator(".prompt-row #voice-record")).to_be_visible()
+    expect(page.locator(".voice-panel")).to_have_count(0)
+
+    page.locator("#question").fill("On the upper floor:")
+    hold_pointer(page)
     expect(page.locator("#voice-status")).to_contain_text("Listening")
-    expect(page.locator("#question")).to_have_value("Where is plant room?")
+    expect(page.locator("#question")).to_have_value("On the upper floor: Where is plant room?")
     expect(page.locator("#ask-button")).to_be_disabled()
     state.mode = "delayed"
-    page.locator("#voice-stop-recording").click()
-    expect(page.locator("#voice-status")).to_contain_text("Transcript ready")
-    expect(page.locator("#question")).to_have_value("Where is Room A (Source floor)?")
-    expect(page.locator("#voice-alias-preview")).to_be_visible()
-    expect(page.locator("#voice-original-text")).to_have_text("Where is plant room?")
+    page.mouse.move(20, 20)
+    page.mouse.up()
     microphone_stopped(page)
+    expect(page.locator("#voice-status")).to_contain_text("Transcript ready")
+    expect(page.locator("#question")).to_have_value("On the upper floor: Where is plant room?")
+    assert not state.questions and not state.spoken
     assert state.sessions[0].ended and state.sessions[0].bytes > 0
-    assert {"Room A", "Room B", "plant room", "Talotekniikka", "Sähkötila"} <= set(state.sessions[0].vocabulary)
-    page.locator("#voice-auto-read").check()
-    page.locator("#ask-button").click()
-    expect(page.locator("#answer-text")).to_have_text("Fixture: Room A is shown on this plan.")
-    expect(page.locator("#evidence-list button")).to_have_count(1)
-    page.wait_for_function("window.blueprintViewer.getSnapshot().highlight_ids.length === 1")
-    expect(page.locator("#voice-status")).to_contain_text("Reading answer")
-    assert state.spoken == ["Fixture: Room A is shown on this plan."]
-    assert state.questions == ["Where is Room A (Source floor)?"]
-    page.locator("#voice-stop-speech").click()
-    expect(page.locator("#voice-stop-speech")).to_be_hidden()
+    assert {"Room A", "Room B"} <= set(state.sessions[0].vocabulary)
+
+    page.locator("#question").fill("Where is Room A?")
+    assert submit_and_get_answer(page)["answer"] == "Fixture: Room A is shown on this plan."
+    assert state.questions == ["Where is Room A?"]
+    assert not state.spoken
     page.set_viewport_size({"width": 390, "height": 844})
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
 
 
-def test_stop_timeout_preserves_text_and_replacement_cleans_microphone(voice_server, voice_page):
+@pytest.mark.parametrize("key", ["Space", "Enter"])
+def test_keyboard_hold_preserves_final_fragments_and_ignores_repeat(voice_server, voice_page, key):
     from playwright.sync_api import expect
-    url, state = voice_server; page = voice_page
-    ready(page, url)
-    state.mode = "hang"
-    page.locator("#voice-record").click()
-    expect(page.locator("#question")).to_have_value("Where is plant room?")
-    page.locator("#voice-stop-recording").click()
-    expect(page.locator("#voice-error")).to_contain_text("incomplete")
-    expect(page.locator("#question")).to_have_value("Where is plant room?")
-    expect(page.locator("#question")).to_be_enabled()
-    microphone_stopped(page)
-    state.mode = "normal"
-    page.locator("#question").fill("")
-    page.locator("#voice-record").click()
-    expect(page.locator("#voice-status")).to_contain_text("Listening")
-    upload(page, name="replacement.png")
-    microphone_stopped(page)
-    expect(page.locator("#voice-custom-terms")).to_have_value("")
-    expect(page.locator("#voice-alias-list li")).to_have_count(0)
-    expect(page.locator("#voice-record")).to_be_enabled()
 
-
-def test_cancel_connecting_and_finalizing_and_permission_denial(voice_server, voice_page):
-    from playwright.sync_api import expect
-    url, state = voice_server; page = voice_page
-    ready(page, url)
-    state.mode = "connecting"
-    page.locator("#voice-record").click()
-    expect(page.locator("#voice-cancel")).to_be_visible()
-    page.locator("#voice-cancel").click()
-    microphone_stopped(page)
-    expect(page.locator("#voice-record")).to_be_enabled()
-    state.mode = "hang"
-    page.locator("#question").fill("")
-    page.locator("#voice-record").click()
-    expect(page.locator("#voice-status")).to_contain_text("Listening")
-    page.locator("#voice-stop-recording").click()
-    expect(page.locator("#voice-status")).to_contain_text("Finalizing")
-    page.locator("#voice-cancel").click()
-    microphone_stopped(page)
-    expect(page.locator("#voice-record")).to_be_enabled()
-    page.evaluate("() => { navigator.mediaDevices.getUserMedia = async () => { throw new DOMException('denied', 'NotAllowedError'); }; }")
-    page.locator("#voice-record").click()
-    expect(page.locator("#voice-error")).to_contain_text("permission was denied")
-    expect(page.locator("#question")).to_be_enabled()
-
-
-def test_speech_failures_stop_and_negative_answer_are_text_safe(voice_server, voice_page):
-    from playwright.sync_api import expect
-    url, state = voice_server; page = voice_page
-    ready(page, url)
-    page.locator("#question").fill("What is the ceiling height?")
-    answer_payload = submit_and_get_answer(page)
-    expect(page.locator("#result-status")).to_have_text("Missing information")
-    state.speech_mode = "failure"
-    page.locator("#voice-read").click()
-    expect(page.locator("#voice-error")).to_contain_text("Fixture speech unavailable")
-    expect(page.locator("#answer-text")).to_have_text("The inspected pages do not establish this answer.")
-    assert state.spoken == [answer_payload["spoken_answer"]]
-    assert "Height dimension" in state.spoken[0] and "Provide a section drawing." in state.spoken[0]
-    state.speech_mode = "delay"
-    page.locator("#voice-read").click()
-    expect(page.locator("#voice-status")).to_contain_text("Generating")
-    page.locator("#voice-stop-speech").click()
-    expect(page.locator("#voice-stop-speech")).to_be_hidden()
-    expect(page.locator("#question")).to_be_enabled()
-    state.speech_mode = "normal"
-    page.locator("#question").fill("How many rooms?")
-    page.locator("#ask-button").click()
-    expect(page.locator("#answer-text")).to_have_text("Fixture: one labeled room.")
-    expect(page.locator("#voice-status")).not_to_contain_text("Reading answer")
-
-
-def test_alias_unicode_boundaries_nonrecursive_and_ambiguous_targets(voice_server, voice_page):
-    from playwright.sync_api import expect
-    url, _ = voice_server; page = voice_page
-    rooms = [{"id": "one", "name": "Tila", "floor_label": "Ground"},
-             {"id": "two", "name": "Tila", "floor_label": "Upper"},
-             {"id": "bad1", "name": "Office", "floor_label": "Ground"},
-             {"id": "bad2", "name": "Office", "floor_label": "Ground"}]
-    page.route("**/voice-vocabulary", lambda route: route.fulfill(json={"terms": ["Tila", "Office"], "rooms": rooms, "warnings": []}))
-    ready(page, url)
-    page.locator("#voice-vocabulary").evaluate("e => e.open = true")
-    expect(page.locator('#voice-alias-target option[value="bad1"]')).to_be_disabled()
-    for alias, target in [("sähkö", "one"), ("sähkö tila", "two"), ("Tila", "two")]:
-        page.locator("#voice-alias-name").fill(alias)
-        page.locator("#voice-alias-target").select_option(target)
-        page.locator("#voice-add-alias").click()
-    page.locator("#question").fill("Näytä SÄHKÖ tila ja sähkö sekä sähkötalo.")
-    page.locator("#voice-apply-aliases").click()
-    expect(page.locator("#question")).to_have_value("Näytä Tila (Upper) ja Tila (Ground) sekä sähkötalo.")
-    expect(page.locator("#voice-original-text")).to_have_text("Näytä SÄHKÖ tila ja sähkö sekä sähkötalo.")
-    page.locator("#voice-alias-name").fill("SÄHKÖ")
-    page.locator("#voice-add-alias").click()
-    expect(page.locator("#voice-error")).to_contain_text("already exists")
-
-
-def test_missing_voice_credentials_preserves_text_path(voice_server, voice_page):
-    from playwright.sync_api import expect
-    url, _ = voice_server; page = voice_page
-    page.route("**/api/voice/config", lambda route: route.fulfill(json={"transcription_ready": False, "speech_ready": False, "transcription_model": "fixture", "language_codes": []}))
-    page.goto(url); upload(page)
-    expect(page.locator("#voice-record")).to_be_disabled()
-    expect(page.locator("#voice-setup")).to_contain_text("still type")
-    page.locator("#question").fill("How many rooms?")
-    page.locator("#ask-button").click()
-    expect(page.locator("#answer-text")).to_have_text("Fixture: one labeled room.")
-
-
-def test_final_fragments_preserve_split_words_and_punctuation(voice_server, voice_page):
-    from playwright.sync_api import expect
-    url, state = voice_server; page = voice_page
+    url, state = voice_server
+    page = voice_page
     ready(page, url)
     state.mode = "fragments"
-    page.locator("#voice-record").click()
+    page.locator("#voice-record").focus()
+    page.keyboard.down(key)
     expect(page.locator("#voice-status")).to_contain_text("Listening")
-    page.locator("#voice-stop-recording").click()
+    page.keyboard.down(key)
+    page.keyboard.up(key)
     expect(page.locator("#voice-status")).to_contain_text("Transcript ready")
     expect(page.locator("#question")).to_have_value("Talotekniikka?")
     microphone_stopped(page)
-
-
-def test_alias_nfc_and_repeated_preview_do_not_rewrite_canonical_names(voice_server, voice_page):
-    from playwright.sync_api import expect
-    url, _ = voice_server; page = voice_page
-    rooms = [{"id": "plant", "name": "plant room", "floor_label": "Upper"},
-             {"id": "finnish", "name": "Kokous", "floor_label": "Ground"}]
-    page.route("**/voice-vocabulary", lambda route: route.fulfill(json={"terms": [], "rooms": rooms, "warnings": []}))
-    ready(page, url)
-    page.locator("#voice-vocabulary").evaluate("e => e.open = true")
-    for alias, target in [("plant", "plant"), ("Va\u0308ina\u0308mo\u0308inen", "finnish")]:
-        page.locator("#voice-alias-name").fill(alias)
-        page.locator("#voice-alias-target").select_option(target)
-        page.locator("#voice-add-alias").click()
-    page.locator("#question").fill("Where are plant and Väinämöinen?")
-    page.locator("#voice-apply-aliases").click()
-    expect(page.locator("#question")).to_have_value("Where are plant room (Upper) and Kokous (Ground)?")
-    page.locator("#voice-apply-aliases").click()
-    expect(page.locator("#question")).to_have_value("Where are plant room (Upper) and Kokous (Ground)?")
-
-
-def test_second_spoken_question_starts_fresh_but_preserves_unsent_draft(voice_server, voice_page):
-    from playwright.sync_api import expect
-    url, state = voice_server; page = voice_page
-    ready(page, url)
-    for _ in range(2):
-        page.locator("#voice-record").click()
-        expect(page.locator("#question")).to_have_value("Where is plant room?")
-        page.locator("#voice-stop-recording").click()
-        expect(page.locator("#voice-status")).to_contain_text("Transcript ready")
-        assert submit_and_get_answer(page)["answer"] == "Fixture: one labeled room."
-        expect(page.locator("#chat-log .chat-answer").last).to_be_visible()
-        expect(page.locator("#voice-record")).to_be_enabled()
-    assert state.questions and set(state.questions) == {"Where is plant room?"}
-    page.locator("#question").fill("On the upper floor:")
-    page.locator("#voice-record").click()
-    expect(page.locator("#question")).to_have_value("On the upper floor: Where is plant room?")
-    page.locator("#voice-stop-recording").click()
+    assert len(state.sessions) == 1 and not state.questions
+    expect(page.locator("#voice-record")).to_be_focused()
+    page.keyboard.down(key)
+    expect(page.locator("#voice-status")).to_contain_text("Listening")
+    page.keyboard.up(key)
     expect(page.locator("#voice-status")).to_contain_text("Transcript ready")
     microphone_stopped(page)
+    assert len(state.sessions) == 2 and not state.questions
 
 
-def test_autoplay_blocked_offers_manual_play_without_regenerating(voice_server, voice_page):
+def test_release_during_permission_closes_late_stream(voice_server, voice_page):
     from playwright.sync_api import expect
-    url, state = voice_server; page = voice_page
-    ready(page, url)
-    page.locator("#question").fill("How many rooms?")
-    page.locator("#ask-button").click()
-    expect(page.locator("#answer-text")).to_have_text("Fixture: one labeled room.")
-    page.evaluate("""() => {
-      const original = HTMLMediaElement.prototype.play;
-      let block = true;
-      HTMLMediaElement.prototype.play = function() {
-        if (block) { block = false; return Promise.reject(new DOMException('Autoplay blocked', 'NotAllowedError')); }
-        return original.call(this);
-      };
-    }""")
-    page.locator("#voice-read").click()
-    expect(page.locator("#voice-play")).to_be_visible()
-    expect(page.locator("#voice-status")).to_contain_text("Press Play")
-    page.locator("#voice-play").click()
-    expect(page.locator("#voice-status")).to_contain_text("Reading answer")
-    assert state.spoken == ["Fixture: one labeled room."]
-    page.locator("#voice-stop-speech").click()
-    expect(page.locator("#voice-play")).to_be_hidden()
 
-
-def test_cancel_pending_microphone_permission_closes_late_stream(voice_server, voice_page):
-    from playwright.sync_api import expect
-    url, state = voice_server; page = voice_page
+    url, state = voice_server
+    page = voice_page
     ready(page, url)
     page.evaluate("""() => {
       const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
       navigator.mediaDevices.getUserMedia = async (...args) => {
         const stream = await original(...args);
-        await new Promise(resolve => setTimeout(resolve, 400));
+        await new Promise(resolve => { window.completeMicPermission = resolve; });
         return stream;
       };
     }""")
-    page.locator("#voice-record").click()
-    page.wait_for_function("window.voiceTestStreams.length > 0")
-    page.locator("#voice-cancel").click()
+    hold_pointer(page)
+    page.wait_for_function("Boolean(window.completeMicPermission)")
+    page.mouse.up()
+    expect(page.locator("#voice-record")).to_have_text("Hold to talk")
+    page.evaluate("window.completeMicPermission()")
     microphone_stopped(page)
-    expect(page.locator("#voice-record")).to_be_enabled()
     assert not state.sessions
 
 
-def test_prepared_speech_defaults_to_conclusion_and_details_are_explicit(voice_server, voice_page):
+def test_blur_releases_capture_and_timeout_preserves_transcript(voice_server, voice_page):
     from playwright.sync_api import expect
-    url, state = voice_server; page = voice_page
-    ready(page, url, model=True)
-    state.answer_mode = "windows"
-    page.locator("#voice-auto-read").check()
-    page.locator("#question").fill("How many windows and how wide are they?")
-    result = submit_and_get_answer(page)
-    expect(page.locator("#answer-text")).to_have_text(result["answer"])
-    expect(page.locator("#answer-text")).to_contain_text("GlobalId")
-    expect(page.locator("#evidence-list button")).to_have_count(1)
-    page.wait_for_function("window.blueprintViewer.getSnapshot().highlight_ids.length === 1")
-    expect(page.locator("#voice-status")).to_contain_text("Reading answer")
-    assert state.spoken == [result["spoken_answer"]]
-    assert "GlobalId" not in state.spoken[0]
-    assert "1.2 m" in state.spoken[0] and "height is not established" in state.spoken[0]
-    assert "Window height" in state.spoken[0] and "Check the section drawing." in state.spoken[0]
-    page.locator("#voice-technical-details").check()
-    expect(page.locator("#voice-stop-speech")).to_be_hidden()
-    assert len(state.spoken) == 1  # Preference changes never start another billed request.
-    page.locator("#voice-read").click()
-    expect(page.locator("#voice-status")).to_contain_text("Reading answer")
-    assert state.spoken[-1] == result["spoken_answer_with_details"]
-    assert "GlobalId" in state.spoken[-1] and "1.2 m" in state.spoken[-1]
-    expect(page.locator("#answer-text")).to_have_text(result["answer"])
-    page.locator("#voice-stop-speech").click()
-    state.speech_mode = "delay"
-    state.synthesis_started.clear()
-    page.locator("#voice-read").click()
-    expect(page.locator("#voice-status")).to_contain_text("Generating")
-    assert state.synthesis_started.wait(3)
-    requests_before_toggle = len(state.spoken)
-    page.locator("#voice-technical-details").uncheck()
-    expect(page.locator("#voice-stop-speech")).to_be_hidden()
-    expect(page.locator("#voice-status")).to_contain_text("preference updated")
-    assert len(state.spoken) == requests_before_toggle
 
-
-@pytest.mark.parametrize("legacy", [False, True])
-def test_unavailable_preparation_never_reads_raw_metadata_but_legacy_still_works(voice_server, voice_page, legacy):
-    from playwright.sync_api import expect
-    url, state = voice_server; page = voice_page
-    def building_route(route):
-        response = route.fetch()
-        building = response.json()
-        for job in building.get("jobs", []):
-            if job.get("kind") == "question" and job.get("answer"):
-                result = job["answer"]
-                result["answer"] = "Written answer with GlobalId: INTERNAL-ONLY."
-                for field in ("spoken_answer", "spoken_answer_with_details"):
-                    if legacy:
-                        result.pop(field, None)
-                    else:
-                        result[field] = None
-        route.fulfill(response=response, json=building)
-
-    page.route("**/api/buildings/*", building_route)
+    url, state = voice_server
+    page = voice_page
     ready(page, url)
-    page.locator("#voice-auto-read").check()
+    state.mode = "hang"
+    hold_pointer(page)
+    expect(page.locator("#question")).to_have_value("Where is plant room?")
+    page.locator("#question").focus()
+    microphone_stopped(page)
+    page.mouse.up()
+    expect(page.locator("#voice-error")).to_contain_text("incomplete")
+    expect(page.locator("#question")).to_have_value("Where is plant room?")
+    expect(page.locator("#question")).to_be_editable()
+    assert state.sessions[0].ended
+
+
+def test_home_navigation_during_hold_cancels_capture(voice_server, voice_page):
+    from playwright.sync_api import expect
+
+    url, state = voice_server
+    page = voice_page
+    ready(page, url)
+    hold_pointer(page)
+    expect(page.locator("#voice-status")).to_contain_text("Listening")
+    page.get_by_role("tab", name="Home").evaluate("tab => tab.click()")
+    page.locator("#file-input").set_input_files({
+        "name": "replacement.pdf",
+        "mimeType": "application/pdf",
+        "buffer": source_bytes(pdf=True),
+    })
+    microphone_stopped(page)
+    page.mouse.up()
+    page.locator("#home-library-list button").filter(has_text="replacement.pdf").click()
+    expect(page.locator("#attachment-summary")).to_contain_text("replacement.pdf")
+    expect(page.locator("#voice-record")).to_be_enabled()
+    assert not state.sessions[0].ended
+
+
+def test_missing_voice_credentials_preserves_text_path(voice_server, voice_page):
+    from playwright.sync_api import expect
+
+    url, _ = voice_server
+    page = voice_page
+    page.route("**/api/voice/config", lambda route: route.fulfill(json={"transcription_ready": False}))
+    page.goto(url)
+    upload(page)
+    expect(page.locator("#voice-record")).to_be_disabled()
+    expect(page.locator("#voice-record")).to_have_attribute("title", "Voice transcription is unavailable")
     page.locator("#question").fill("How many rooms?")
-    page.locator("#ask-button").click()
-    expect(page.locator("#answer-text")).to_have_text("Written answer with GlobalId: INTERNAL-ONLY.")
-    expect(page.locator("#evidence-list button")).to_have_count(1)
-    if legacy:
-        expect(page.locator("#voice-status")).to_contain_text("Reading answer")
-        assert state.spoken == ["Written answer with GlobalId: INTERNAL-ONLY."]
-    else:
-        expect(page.locator("#voice-read")).to_be_disabled()
-        expect(page.locator("#voice-auto-read")).to_be_disabled()
-        expect(page.locator("#voice-speech-unavailable")).to_be_visible()
-        expect(page.locator("#voice-error")).to_contain_text("preparation is unavailable")
-        page.locator("#voice-technical-details").check()
-        expect(page.locator("#voice-read")).to_be_disabled()
-        assert not state.spoken
+    assert submit_and_get_answer(page)["answer"] == "Fixture: one labeled room."
+
+
+def test_spoken_answers_opt_in_and_cancel_without_replaying_history(voice_server, voice_page):
+    from playwright.sync_api import expect
+
+    url, state = voice_server
+    page = voice_page
+    ready(page, url)
+    toggle = page.get_by_role("button", name="Read answers aloud")
+    expect(toggle).to_have_attribute("aria-pressed", "false")
+    page.locator("#question").fill("How many rooms?")
+    submit_and_get_answer(page)
+    expect(page.locator(".chat-answer")).to_be_visible()
+    toggle.click()
+    expect(toggle).to_have_attribute("aria-pressed", "true")
+    assert not state.spoken
+
+    page.locator("#question").fill("What is the ceiling height?")
+    result = submit_and_get_answer(page)
+    expect(page.locator("#voice-speech-status")).to_contain_text("Reading the answer aloud")
+    assert state.spoken == [result["spoken_answer"]]
+    toggle.click()
+    expect(toggle).to_have_attribute("aria-pressed", "false")
+    assert page.evaluate("voice.speech === null")
+
+    page.locator("#question").fill("How many rooms?")
+    submit_and_get_answer(page)
+    expect(page.locator(".chat-answer")).to_have_count(3)
+    assert state.spoken == [result["spoken_answer"]]
+
+
+def test_autoplay_fallback_plays_same_audio_without_regenerating(voice_server, voice_page):
+    from playwright.sync_api import expect
+
+    url, state = voice_server
+    page = voice_page
+    ready(page, url)
+    page.evaluate("""() => {
+        const play = Audio.prototype.play;
+        Audio.prototype.play = function() {
+            Audio.prototype.play = play;
+            return Promise.reject(new DOMException("Autoplay blocked", "NotAllowedError"));
+        };
+    }""")
+    page.get_by_role("button", name="Read answers aloud").click()
+    page.locator("#question").fill("How many rooms?")
+    result = submit_and_get_answer(page)
+    fallback = page.get_by_role("button", name="Play answer audio")
+    expect(fallback).to_be_visible()
+    fallback.click()
+    expect(page.locator("#voice-speech-status")).to_contain_text("Reading the answer aloud")
+    assert state.spoken == [result["spoken_answer"]]

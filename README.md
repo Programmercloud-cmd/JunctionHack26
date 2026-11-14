@@ -18,9 +18,11 @@ Open http://127.0.0.1:8000. Uploads, previews and IFC import/viewing work withou
 ## Try the two demo flows
 
 1. Upload `duplex_arc.ifc` from the dataset's `ifc_bench` folder. Drag to orbit, scroll to zoom. Ask **How many windows are in this IFC model?** Supported source objects highlight while other elements fade to 10% opacity. Click a highlighted object or its evidence row to inspect its GlobalId, STEP reference and properties. Rooms mean supplied IFC spaces. Select supplied storeys and adjust the cutaway percentage; geometry is clipped, never shrunk.
-2. Upload unchanged `colorful-1794.png` or `colorful-11397.png`. Source interpretation starts automatically and is saved before any IFC work; questions inspect original drawings even without a model. Select **Generate 3D** to enrich missing geometry and build/reopen a derived IFC. Multiple files can be uploaded together or appended to the selected building. Sections/elevations remain evidence; possible repeated floor views do not automatically create storeys. Use the conversation's citations to locate the original file/page, and inspect **Assumptions and missing inputs** before applying supplied values. User heights never establish horizontal scale or become dimensions observed in the blueprint.
+2. Upload unchanged `colorful-1794.png` or `colorful-11397.png`. Source interpretation starts automatically and is saved before any IFC work; questions inspect original drawings even without a model. Select **Generate 3D** to enrich missing geometry and build/reopen a derived IFC. Sections/elevations remain evidence; possible repeated floor views do not automatically create storeys. Use the conversation's citations to locate the original file/page, and inspect **Assumptions and missing inputs** before applying supplied values. User heights never establish horizontal scale or become dimensions observed in the blueprint.
 
-Use **Saved buildings** to reopen without inference, including after restart. Repeat uploads are recognized by content. Explicit refinement starts a new job; asking questions never reconstructs the model. See [source-first verification](docs/SOURCE_FIRST_VERIFICATION.md) and [the API contract](docs/SOURCE_FIRST_CONTRACT.md) for tested flows and remaining limitations. Genuine native IFC currently stays a separate building; mixed native/drawing grouping is explicitly rejected. DWG requires a converter that is not available here.
+Select a file from **Home** to reopen it without inference, including after restart. Repeat uploads are recognized by content. Explicit refinement starts a new job; asking questions never reconstructs the model. See [source-first verification](docs/SOURCE_FIRST_VERIFICATION.md) and [the API contract](docs/SOURCE_FIRST_CONTRACT.md) for tested flows and remaining limitations. Genuine native IFC currently stays a separate building; mixed native/drawing grouping is explicitly rejected. DWG requires a converter that is not available here.
+
+**Home** lists saved files and is where you upload a new file. An upload adds the file to the list. Selecting a file opens **Details**, where chat uses that file and its saved interpretation. A multi-page PDF remains one file. Older bundles that contain multiple files can still be viewed, with chat disabled for those bundles.
 
 **Source comparison** overlays the actual reopened IFC footprints, wall sections and openings on the original page. Toggle layers to check missing features, invented walls and displaced openings. The interpreted inventory links every generated or unresolved record to its source; it is not a claim that every source feature was found. Stairs, furnishings and fixtures use simple schematic geometry. Terraces/balconies are outdoor spaces; room polygons never create walls.
 
@@ -75,12 +77,20 @@ Uploads are normalized to PNG with a maximum 4096-pixel edge (input images over 
 
 Read [AGENTS.md](AGENTS.md), [the active source-first specification](docs/SOURCE_FIRST_SPEC.md), [reviewed plan](docs/SOURCE_FIRST_PLAN.md), [API contract](docs/SOURCE_FIRST_CONTRACT.md), and [handoff](docs/HANDOFF.md). Root owns contracts/environment/integration; bounded implementers and independent reviewers follow the established workflow. Tests use injected providers and are not a model-quality evaluation. DWG without a validated converter, photorealism, Blender/MCP and cloud/HPC rendering remain deferred. SVG and DXF previews are supported with the documented limitations.
 
-## Model-quality experiment
+## Counting benchmark
 
-Use the same document/question pairs for ordinary Gemini and the gated pipeline. Measure answer coverage, error among answered questions, unsupported answers, unnecessary abstention, latency and token usage. Include deliberately incomplete and ambiguous drawings, as well as sparse JPGs with answerable questions. Split by drawing/building rather than translations or file formats. Keep reference answers out of runtime context.
+With the app's Gemini credential configured and the full Junction dataset in `junction-dataset/`, run from the repository root:
 
-API references: [Decisions](https://aistudio.google.com/docs/decisions-api), [models](https://aistudio.google.com/docs/models). The Decisions SDK requires google-genai 3.2 or later; this environment pins the installed version. Model names are configurable because account access can differ.
+```sh
+PYTHONPATH=. .venv/bin/python evaluation/counting/benchmark.py
+```
+
+The default run samples three PDF and three PNG counting questions and scores exact matches. Add `--type length` or `--type area` to sample six original PDFs of that question type and score answers within 2% of the reference after unit conversion. The dataset has no PNG rows for those two types. IFC area rows are outside this drawing-interpretation workflow.
+
+The benchmark uploads the originals to an isolated app store, waits for interpretation, and runs chat routing and QA. The terminal shows model-call progress, separate upload and question timings, and scores. The run directory printed at startup contains the sample manifest and per-case results.
+
+For the two-call experiment, add `--pipeline interpretation-only`. It samples ten questions per group (PDF count, PNG count, PDF length, and PDF area). Gemini 4 Hydrogen builds a question-independent interpretation from each original drawing, then receives the saved `interpretations.json` and exact question to produce a structured numeric answer. The second call uses the JSON as its evidence. This mode skips chat routing, intent resolution, Gemini Decisions, and answer review. Its run directory includes `results.html` with a combined counting score and per-case results.
 
 ## Voice interaction
 
-Use optional Gemini Live transcription to draft an editable question and ElevenLabs to read grounded answers aloud. See [voice setup](docs/VOICE.md).
+Hold the microphone button beside the prompt to dictate, then release to review and edit the transcript before sending. Enable **Read answers aloud** beside the microphone to hear new answers via ElevenLabs. See [voice setup](docs/VOICE.md).

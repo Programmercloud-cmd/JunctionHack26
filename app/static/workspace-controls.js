@@ -4,19 +4,86 @@
 (() => {
   const node = (tag, text, cls) => {const el=document.createElement(tag);if(text!=null)el.textContent=text;if(cls)el.className=cls;return el;};
   const navigation=$("workspace-navigation"), tools=$("workspace-tools"), summary=$("selection-evidence");
+  const workspace = $("visual-workspace");
+  const details = $("details-panel");
+  const fullscreen = $("workspace-fullscreen");
+  const divider = $("chat-divider");
+
+  function syncFullscreen() {
+    const active = document.fullscreenElement === workspace || workspace.classList.contains("workspace-expanded");
+    fullscreen.textContent = active ? "Exit full screen" : "Full screen";
+    const view = chatUI.snapshot().view_mode === "source" ? "blueprint" : "3D model";
+    fullscreen.setAttribute("aria-label", active ? "Exit full screen" : `Full screen: ${view}`);
+  }
+
+  fullscreen.addEventListener("click", async () => {
+    if (document.fullscreenElement === workspace) {
+      await document.exitFullscreen();
+    } else if (workspace.classList.contains("workspace-expanded")) {
+      workspace.classList.remove("workspace-expanded");
+    } else {
+      try {
+        await workspace.requestFullscreen();
+      } catch {
+        if (!workspace.hidden) workspace.classList.add("workspace-expanded");
+      }
+    }
+    syncFullscreen();
+  });
+  document.addEventListener("fullscreenchange", syncFullscreen);
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape" && workspace.classList.contains("workspace-expanded")) {
+      workspace.classList.remove("workspace-expanded");
+      syncFullscreen();
+      fullscreen.focus();
+    }
+  });
+
+  function resizeChat(percent) {
+    const width = Math.round(Math.max(25, Math.min(65, percent)));
+    details.style.setProperty("--chat-width", `${width}%`);
+    divider.setAttribute("aria-valuenow", String(width));
+  }
+
+  divider.addEventListener("pointerdown", event => {
+    if (event.button !== 0 || !event.isPrimary) return;
+    divider.setPointerCapture(event.pointerId);
+    divider.focus();
+  });
+  divider.addEventListener("pointermove", event => {
+    if (!divider.hasPointerCapture(event.pointerId)) return;
+    const bounds = details.getBoundingClientRect();
+    resizeChat((event.clientX - bounds.left) / bounds.width * 100);
+  });
+  divider.addEventListener("keydown", event => {
+    const current = $("chat-column").offsetWidth / details.clientWidth * 100;
+    const widths = {ArrowLeft: current - 3, ArrowRight: current + 3, Home: 25, End: 65};
+    if (!Object.hasOwn(widths, event.key)) return;
+    event.preventDefault();
+    resizeChat(widths[event.key]);
+  });
+  new ResizeObserver(() => {
+    if (details.clientWidth) {
+      divider.setAttribute("aria-valuenow", String(Math.round($("chat-column").offsetWidth / details.clientWidth * 100)));
+    }
+  }).observe($("chat-column"));
+
   const status=node("p",null,"workspace-control-status");status.id="workspace-control-status";status.setAttribute("role","status");status.hidden=true;
-  async function act(action){status.hidden=true;try{await chatUI.execute(action);}catch(error){status.textContent=error.message;status.hidden=false;}finally{refresh();}}
+  function showStatus(message){status.textContent=message;status.hidden=!message;}
+  async function act(action){showStatus("");try{await chatUI.execute(action);}catch(error){showStatus(error.message);}finally{refresh();}}
   function control(label,action,id){const b=node("button",label);b.type="button";if(id)b.id=id;b.addEventListener("click",()=>act(typeof action==="function"?action():action));return b;}
   const tabs=node("div",null,"workspace-nav-buttons");
   const sources=control("Blueprints",{type:"browse_source"},"workspace-blueprints");
   const model=control("3D model",{type:"switch_model"},"workspace-model");
   const selection=control("Return to selection",{type:"return_selection"},"workspace-return-selection");
-  tabs.append(sources,model,selection);navigation.append(tabs,status);
+  tabs.append(sources,model,selection);navigation.append(tabs);
   const themeLabel=node("label",null,"workspace-theme");themeLabel.append(node("span","Theme"));
   const theme=node("select");theme.id="workspace-theme";theme.setAttribute("aria-label","Colour theme");
   for(const value of ["system","light","dark"])theme.append(new Option(value[0].toUpperCase()+value.slice(1),value));
   try{theme.value=localStorage.getItem("blueprint-theme")||"system";}catch{}
-  theme.addEventListener("change",()=>act({type:"set_theme",theme:theme.value}));themeLabel.append(theme);navigation.append(themeLabel);
+  theme.addEventListener("change",()=>act({type:"set_theme",theme:theme.value}));themeLabel.append(theme);document.querySelector(".app-header-controls").append(themeLabel);
+
+  tools.append(status);
 
   const pages=node("div",null,"workspace-pages");pages.id="workspace-pages";
   const previous=control("←",()=>pageAction(-1),"workspace-previous-page");previous.setAttribute("aria-label","Previous supplied page");
@@ -57,7 +124,8 @@
     const revision=inspected.source_revision_id||null;
     const signature=JSON.stringify([inspected,state.assumptionDataRevision,state.assumptionRows,state.scene?.revision_id]);if(signature===rendered)return;rendered=signature;
     summary.replaceChildren();
-    if(!record&&!proposal){summary.append(node("strong","Select an object to inspect its evidence"),node("p","Click a modeled object or an unresolved ? marker. Its source and property assumptions will stay here as you explore.","property-basis"));return;}
+    summary.hidden = !record && !proposal;
+    if (summary.hidden) return;
     const title=node("div",null,"selection-heading");title.append(node("strong",proposal?.label||record.name||record.id));
     if(proposal){
       title.append(node("span","Non-factual proposal","provenance-tag"));summary.append(title,node("p",proposal.note||"Decorative display choice, not source evidence."),node("p","Excluded from factual QA, source counts and IFC exports.","property-basis"));
@@ -100,7 +168,11 @@
     const view=chatUI.sourceView?.()||{pages:[],revision_id:null,page:null};pages.hidden=snap.view_mode!=="source"||!view.pages.length;
     const signature=JSON.stringify([view.pages,view.revision_id]);if(pageSelect.dataset.catalog!==signature){pageSelect.replaceChildren();for(const p of view.pages)pageSelect.append(new Option(`${p.source_filename||state.document?.filename||"Saved source"} · page ${p.source_page||p.page}`,String(p.page)));pageSelect.dataset.catalog=signature;}
     pageSelect.value=String(view.page);const index=view.pages.findIndex(p=>p.page===view.page);previous.disabled=index<=0;next.disabled=index<0||index===view.pages.length-1;
+    if (workspace.hidden && workspace.classList.contains("workspace-expanded")) {
+      workspace.classList.remove("workspace-expanded");
+    }
+    syncFullscreen();
     renderEvidence();
   }
-  window.workspaceControls={refresh};window.addEventListener("blueprint:workspace",refresh);refresh();
+  window.workspaceControls={refresh,showStatus};window.addEventListener("blueprint:workspace",refresh);refresh();
 })();

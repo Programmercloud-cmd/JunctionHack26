@@ -1,413 +1,415 @@
 "use strict";
 
-// Voice is an input/output adapter. Only the existing Ask flow produces answers.
+// Voice only fills the editable question. Sending it uses the usual composer.
 window.BlueprintVoice = class BlueprintVoice {
   constructor(host) {
     this.host = host;
-    this.config = {};
     this.documentId = null;
-    this.vocabulary = {terms: [], rooms: [], warnings: []};
-    this.aliases = [];
-    this.lastSubmitted = null;
     this.mic = null;
-    this.micVersion = 0;
-    this.speechVersion = 0;
-    this.vocabularyVersion = 0;
-    this.speechController = null;
-    this.audio = null;
-    this.audioUrl = null;
+    this.hold = null;
     this.mode = "idle";
-    this.el = (id) => document.getElementById(id);
-    this.el("voice-record").addEventListener("click", () => this.startRecording());
-    this.el("voice-stop-recording").addEventListener("click", () => this.stopRecording());
-    this.el("voice-cancel").addEventListener("click", () => this.cancelRecording("Recording cancelled. Review any received text."));
-    this.el("voice-read").addEventListener("click", () => this.readAnswer());
-    this.el("voice-stop-speech").addEventListener("click", () => this.stopSpeech());
-    this.el("voice-play").addEventListener("click", () => this.playAudio(this.speechVersion));
-    this.el("voice-add-alias").addEventListener("click", () => this.addAlias());
-    this.el("voice-apply-aliases").addEventListener("click", () => this.previewAliases(this.el("question").value));
-    this.el("voice-refresh").addEventListener("click", () => this.checkConfig());
-    this.el("voice-auto-read").addEventListener("change", () => { if (!this.el("voice-auto-read").checked) this.stopSpeech(); });
-    this.el("voice-technical-details").addEventListener("change", () => {
-      this.stopSpeech(false);
-      if (!this.recording) this.status("Reading preference updated. Press Read answer to listen.", "idle");
+    this.ready = false;
+    this.configVersion = 0;
+    this.speechReady = false;
+    this.speechEnabled = false;
+    this.speech = null;
+    this.speechToggle = document.getElementById("voice-read-answers");
+    this.speechFeedback = document.getElementById("voice-speech-status");
+    this.speechErrorMessage = document.getElementById("voice-speech-error");
+    this.playAnswer = document.getElementById("voice-play-answer");
+    this.speechToggle.addEventListener("click", () => {
+      this.speechEnabled = !this.speechEnabled;
+      if (!this.speechEnabled) this.stopSpeech();
+      this.syncSpeechToggle();
     });
+    this.playAnswer.addEventListener("click", () => this.playSpeech(this.speech));
+    this.button = document.getElementById("voice-record");
+    this.label = document.getElementById("voice-label");
+    this.question = document.getElementById("question");
+    this.feedback = document.getElementById("voice-status");
+    this.errorMessage = document.getElementById("voice-error");
+
+    this.button.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || !event.isPrimary || !this.canStart()) return;
+      event.preventDefault();
+      this.button.focus();
+      this.button.setPointerCapture(event.pointerId);
+      this.hold = {pointer: event.pointerId};
+      this.startRecording();
+    });
+    for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+      this.button.addEventListener(type, (event) => {
+        if (this.hold?.pointer === event.pointerId) this.releaseHold();
+      });
+    }
+
+    this.button.addEventListener("keydown", (event) => {
+      if (event.key !== " " && event.key !== "Enter") return;
+      event.preventDefault();
+      if (event.repeat || !this.canStart()) return;
+      this.hold = {key: event.key};
+      this.startRecording();
+    });
+    window.addEventListener("keyup", (event) => {
+      if (this.hold?.key !== event.key) return;
+      event.preventDefault();
+      this.releaseHold();
+    });
+    this.button.addEventListener("contextmenu", (event) => event.preventDefault());
+    this.button.addEventListener("blur", () => this.releaseHold());
+    window.addEventListener("blur", () => this.releaseHold());
     window.addEventListener("pagehide", () => this.cancelAll());
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) this.releaseHold();
+    });
+
     this.checkConfig();
   }
 
   get recording() { return Boolean(this.mic); }
-  status(message, mode = this.mode) {
-    this.mode = mode;
-    this.el("voice-status").textContent = message;
-    this.el("voice-status").dataset.state = mode;
-    this.host.updateControls();
+
+  canStart() {
+    return !this.button.disabled && !this.mic && !this.hold && !document.hidden;
   }
-  error(message) {
-    this.el("voice-error").textContent = message;
-    this.el("voice-error").hidden = !message;
-  }
-  syncControls() {
-    const state = this.host.state();
-    const active = Boolean(state.document) && !state.busy;
-    const recording = this.recording;
-    this.el("voice-record").disabled = !active || recording || !this.config.transcription_ready;
-    this.el("voice-stop-recording").hidden = !recording || this.mode !== "listening";
-    this.el("voice-cancel").hidden = !recording;
-    const speechAvailable = this.speechText(state.result) !== null;
-    this.el("voice-read").disabled = !active || !speechAvailable || !this.config.speech_ready;
-    this.el("voice-speech-unavailable").hidden = !state.result || speechAvailable;
-    this.el("voice-technical-details").disabled = !this.config.speech_ready;
-    this.el("voice-stop-speech").hidden = !this.speechController && !this.audio;
-    this.el("voice-custom-terms").disabled = !active || recording;
-    this.el("voice-alias-name").disabled = !active || recording;
-    this.el("voice-alias-target").disabled = !active || recording || !this.vocabulary.rooms.length;
-    this.el("voice-add-alias").disabled = !active || recording || !this.vocabulary.rooms.length;
-    this.el("voice-apply-aliases").disabled = !active || recording || !this.aliases.length;
-    this.el("voice-auto-read").disabled = !this.config.speech_ready || Boolean(state.result && !speechAvailable);
-    for (const button of this.el("voice-alias-list").querySelectorAll("button")) button.disabled = recording || !active;
-  }
-  async checkConfig() {
-    this.el("voice-refresh").disabled = true;
-    try {
-      this.config = await this.host.request("/api/voice/config", {}, 10000);
-      const missing = [];
-      if (!this.config.transcription_ready) missing.push("Live transcription needs server configuration.");
-      if (!this.config.speech_ready) missing.push("Answer audio needs server configuration.");
-      this.el("voice-setup").textContent = missing.length ? `${missing.join(" ")} You can still type questions.` : "Google transcription and ElevenLabs audio are configured; service access is checked when used.";
-    } catch (_) {
-      this.config = {};
-      this.el("voice-setup").textContent = "Voice setup could not be checked. You can still type questions.";
-    } finally {
-      this.el("voice-refresh").disabled = false;
-      this.host.updateControls();
+
+  releaseHold() {
+    if (!this.hold) return;
+    this.hold = null;
+    if (this.mode === "connecting") {
+      this.cancelAll("Hold the button until the microphone is listening.");
+    } else if (this.mode === "listening") {
+      this.stopRecording();
     }
   }
+
+  status(message, mode = "idle") {
+    this.mode = mode;
+    this.feedback.textContent = message;
+    this.feedback.dataset.state = mode;
+    this.button.dataset.state = mode;
+    const label = {connecting: "Starting…", listening: "Listening…", finalizing: "Finishing…"};
+    this.label.textContent = label[mode] || "Hold to talk";
+    this.host.updateControls();
+  }
+
+  error(message) {
+    this.errorMessage.textContent = message;
+    this.errorMessage.hidden = !message;
+  }
+
+  syncControls() {
+    const state = this.host.state();
+    const chatAvailable = window.chatUI?.chatAvailable() ?? Boolean(this.documentId);
+    this.button.disabled = !chatAvailable || Boolean(state.busy) || !this.ready;
+    this.button.setAttribute("aria-disabled", String(this.button.disabled || this.mode === "finalizing"));
+    this.button.title = this.ready
+      ? this.documentId ? "Hold to talk" : "Open a blueprint to use voice"
+      : "Voice transcription is unavailable";
+    this.question.readOnly = this.recording;
+    this.syncSpeechToggle();
+  }
+
+  syncSpeechToggle() {
+    const unavailable = !this.speechReady || !(window.chatUI?.chatAvailable() ?? Boolean(this.documentId));
+    this.speechToggle.disabled = unavailable || Boolean(this.host.state().busy);
+    this.speechToggle.setAttribute("aria-pressed", String(this.speechEnabled));
+    this.speechToggle.title = this.speechReady
+      ? this.documentId ? `Read answers aloud: ${this.speechEnabled ? "on" : "off"}` : "Open a blueprint to enable spoken answers"
+      : "Spoken answers are unavailable. Check the server’s ElevenLabs API key and voice ID.";
+  }
+
+  async checkConfig() {
+    const version = ++this.configVersion;
+    const config = await this.host.request("/api/voice/config", {}, 10000).catch(() => null);
+    if (this.configVersion !== version) return;
+    this.ready = Boolean(config?.transcription_ready);
+    this.speechReady = Boolean(config?.speech_ready);
+    if (!this.speechReady) {
+      this.speechEnabled = false;
+      this.stopSpeech();
+    }
+    this.host.updateControls();
+  }
+
   newDocument(id) {
     this.cancelAll();
     this.documentId = id;
-    this.aliases = [];
-    this.vocabulary = {terms: [], rooms: [], warnings: []};
-    this.el("voice-custom-terms").value = "";
-    this.el("voice-alias-name").value = "";
-    this.el("voice-original").hidden = true;
-    this.el("voice-alias-preview").hidden = true;
     this.error("");
-    this.renderVocabulary();
-    this.status("Ready for a spoken question.", "idle");
-    this.refreshVocabulary();
+    this.status("");
   }
-  async refreshVocabulary() {
-    const id = this.documentId;
-    const version = ++this.vocabularyVersion;
-    if (!id) return;
-    try {
-      const result = await this.host.request(`/api/documents/${encodeURIComponent(id)}/voice-vocabulary`, {}, 10000);
-      if (id !== this.documentId || version !== this.vocabularyVersion) return;
-      this.vocabulary = result;
-      this.renderVocabulary();
-    } catch (_) {
-      if (id !== this.documentId || version !== this.vocabularyVersion) return;
-      this.el("voice-vocabulary-note").textContent = "Room hints could not be loaded. Custom words can still be supplied.";
-    }
-  }
-  canonical(room) { return room.floor_label ? `${room.name} (${room.floor_label})` : room.name; }
-  normalize(value) { return value.normalize("NFC").trim().replace(/\s+/gu, " ").toLocaleLowerCase(); }
-  targetAvailable(room) {
-    const canonical = this.normalize(this.canonical(room));
-    return Boolean(room.name.trim()) && this.vocabulary.rooms.filter((item) => this.normalize(this.canonical(item)) === canonical).length === 1;
-  }
-  renderVocabulary() {
-    const select = this.el("voice-alias-target");
-    select.replaceChildren(new Option("Choose a room…", ""));
-    for (const room of this.vocabulary.rooms) {
-      const option = new Option(this.canonical(room), room.id);
-      option.disabled = !this.targetAvailable(room);
-      if (option.disabled) option.textContent += " · ambiguous name; type a clarification";
-      select.append(option);
-    }
-    this.el("voice-vocabulary-note").textContent = `${this.vocabulary.terms.length} building vocabulary hints. ${(this.vocabulary.warnings || []).join(" ")}`;
-    this.el("voice-building-terms").textContent = this.vocabulary.terms.join(" · ");
-    this.renderAliases();
-    this.host.updateControls();
-  }
-  addAlias() {
-    const alias = this.el("voice-alias-name").value.normalize("NFC").trim().replace(/\s+/gu, " ");
-    const room = this.vocabulary.rooms.find((item) => item.id === this.el("voice-alias-target").value);
-    if (!alias || !room || !this.targetAvailable(room)) { this.error("Enter an easy phrase and choose a room with an unambiguous name and floor."); return; }
-    if (this.aliases.some((item) => this.normalize(item.alias) === this.normalize(alias))) { this.error("That alias already exists. Remove it before assigning it to another room."); return; }
-    this.aliases.push({alias, roomId: room.id});
-    this.el("voice-alias-name").value = "";
-    this.error("");
-    this.renderAliases();
-    this.host.updateControls();
-  }
-  renderAliases() {
-    const list = this.el("voice-alias-list");
-    list.replaceChildren();
-    for (const item of this.aliases) {
-      const room = this.vocabulary.rooms.find((room) => room.id === item.roomId);
-      const row = document.createElement("li");
-      const text = document.createElement("span");
-      text.textContent = `${item.alias} → ${room ? this.canonical(room) : "Room unavailable"}`;
-      const remove = document.createElement("button");
-      remove.type = "button"; remove.className = "text-button";
-      remove.textContent = "Remove"; remove.setAttribute("aria-label", `Remove alias ${item.alias}`);
-      remove.addEventListener("click", () => { this.aliases = this.aliases.filter((entry) => entry !== item); this.renderAliases(); this.host.updateControls(); });
-      row.append(text, remove); list.append(row);
-    }
-  }
-  applyAliases(text) {
-    const items = this.aliases.map((item) => ({...item, room: this.vocabulary.rooms.find((room) => room.id === item.roomId)}));
-    if (items.some((item) => !item.room || !this.targetAvailable(item.room))) throw new Error("An alias points to an unavailable or ambiguous room. Remove it or edit the question yourself.");
-    if (!items.length) return {text, changed: false};
-    items.sort((a,b) => b.alias.length - a.alias.length);
-    // Protect canonical room references so previewing twice cannot expand an
-    // alias embedded inside its own replacement (e.g. plant -> plant room).
-    const canonical = new Set(items.map((item) => this.normalize(this.canonical(item.room))));
-    const alternatives = [...items.map((item) => this.canonical(item.room)), ...items.map((item) => item.alias.normalize("NFC"))];
-    alternatives.sort((a,b) => b.length - a.length);
-    const escaped = alternatives.map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    const pattern = new RegExp(`(?<![\\p{L}\\p{N}\\p{M}_])(?:${escaped.join("|")})(?![\\p{L}\\p{N}\\p{M}_])`, "giu");
-    let changed = false;
-    const output = text.normalize("NFC").replace(pattern, (match) => {
-      if (canonical.has(this.normalize(match))) return match;
-      const item = items.find((item) => this.normalize(item.alias) === this.normalize(match));
-      if (!item) return match;
-      changed = true;
-      return this.canonical(item.room);
-    });
-    return {text: output, changed};
-  }
-  previewAliases(text) {
-    try {
-      const result = this.applyAliases(text);
-      this.el("question").value = result.text;
-      this.el("voice-alias-preview").hidden = !result.changed;
-      this.el("voice-alias-preview").textContent = result.changed ? "Room aliases were expanded in the question above. Review the room and floor before asking." : "";
-      if (result.changed) this.showOriginal(text);
-      if (result.text.length > 2000) this.error("The question exceeds 2,000 characters. Shorten the editable text before asking; no text was discarded.");
-      this.host.updateControls();
-    } catch (error) { this.error(error.message); }
-  }
-  showOriginal(text) {
-    this.el("voice-original-text").textContent = text;
-    this.el("voice-original").hidden = !text;
-  }
-  customTerms() {
-    return [...this.el("voice-custom-terms").value.split(/\r?\n/u).map((item) => item.trim()).filter(Boolean), ...this.aliases.flatMap((item) => {
-      const room = this.vocabulary.rooms.find((room) => room.id === item.roomId);
-      return room ? [item.alias, room.name, this.canonical(room)] : [item.alias];
-    })];
-  }
-
-  questionSubmitted(question) { this.lastSubmitted = question.trim(); }
 
   async startRecording() {
-    if (!this.documentId || this.recording || this.host.state().busy || !this.config.transcription_ready) return;
-    this.stopSpeech(false);
+    this.stopSpeech();
     this.error("");
-    this.el("voice-alias-preview").hidden = true;
-    const version = ++this.micVersion;
-    const draft = this.el("question").value.trim();
-    const mic = {version, documentId: this.documentId, base: draft === this.lastSubmitted ? "" : draft, finals: "", interim: "", completed: false};
+    const mic = {documentId: this.documentId, base: this.question.value, finals: "", interim: ""};
     this.mic = mic;
-    this.status("Connecting microphone and live transcription…", "connecting");
+    this.status("Starting the microphone…", "connecting");
     try {
-      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || !window.AudioWorkletNode) throw new Error("Microphone capture requires a supported browser on localhost or HTTPS. Type your question instead.");
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || !window.AudioWorkletNode) {
+        this.failRecording(mic, "Voice needs a supported browser on localhost or HTTPS.");
+        return;
+      }
       const context = new AudioContext();
       mic.context = context;
       await context.resume();
-      if (!this.isCurrent(mic)) return;
-      const stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true}, video: false});
-      if (!this.isCurrent(mic)) { stream.getTracks().forEach((track) => track.stop()); return; }
+      if (this.mic !== mic) return;
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true},
+        video: false,
+      });
+      if (this.mic !== mic) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       mic.stream = stream;
       await context.audioWorklet.addModule("/static/voice-worklet.js");
-      if (!this.isCurrent(mic)) return;
-      const socket = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/voice/transcribe`);
+      if (this.mic !== mic) return;
+
+      const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+      const socket = new WebSocket(`${scheme}//${location.host}/api/voice/transcribe`);
       mic.socket = socket;
-      socket.binaryType = "arraybuffer";
       socket.onopen = () => {
-        if (!this.isCurrent(mic)) { socket.close(); return; }
-        socket.send(JSON.stringify({type: "start", document_id: mic.documentId, custom_vocabulary: this.customTerms()}));
+        if (this.mic !== mic) { socket.close(); return; }
+        socket.send(JSON.stringify({type: "start", document_id: mic.documentId}));
       };
       socket.onmessage = (event) => {
-        if (!this.isCurrent(mic)) return;
+        if (this.mic !== mic) return;
         let message;
-        try { message = JSON.parse(event.data); } catch (_) { this.failRecording(mic, "The transcription service returned an unreadable message. Review the received text."); return; }
+        try { message = JSON.parse(event.data); } catch (_) {
+          this.failRecording(mic, "Transcription returned an unreadable message.");
+          return;
+        }
         if (message.type === "ready") this.capture(mic);
         else if (message.type === "transcript" && typeof message.text === "string") {
-          if (message.final) { mic.finals += message.text; mic.interim = ""; }
-          else mic.interim = message.text;
+          if (message.final) {
+            mic.finals += message.text;
+            mic.interim = "";
+          } else {
+            mic.interim = message.text;
+          }
           this.renderTranscript(mic);
-        } else if (message.type === "done") this.finishRecording(mic);
-        else if (message.type === "error") this.failRecording(mic, typeof message.message === "string" ? message.message : "Live transcription failed. Review the received text.");
+        } else if (message.type === "done") {
+          this.finishRecording(mic);
+        } else if (message.type === "error") {
+          this.failRecording(mic, message.message || "Live transcription failed.");
+        }
       };
-      socket.onerror = () => this.failRecording(mic, "Live transcription could not connect. You can edit the question and try again.");
-      socket.onclose = () => { if (this.isCurrent(mic)) this.failRecording(mic, "Transcription ended before completion. Review the received text before asking."); };
+      socket.onerror = () => this.failRecording(mic, "Could not connect to live transcription.");
+      socket.onclose = () => this.failRecording(mic, "The connection closed before transcription finished.");
     } catch (error) {
-      const message = error.name === "NotAllowedError" ? "Microphone permission was denied. Allow microphone access or type your question." : error.name === "NotFoundError" ? "No microphone was found. Type your question instead." : error.message.startsWith("Microphone capture requires") ? error.message : "The microphone could not start. Check browser permissions or type your question.";
-      this.failRecording(mic, message);
+      const messages = {
+        NotAllowedError: "Microphone permission was denied. Allow access or type your question.",
+        NotFoundError: "No microphone was found. You can still type your question.",
+      };
+      this.failRecording(mic, messages[error.name] || "The microphone could not start. Check browser permissions.");
     }
   }
-  isCurrent(mic) { return this.mic === mic && mic.version === this.micVersion && mic.documentId === this.documentId; }
-  join(a,b) { return [a.trim(),b.trim()].filter(Boolean).join(" "); }
-  renderTranscript(mic, includeInterim = true) {
-    const received = mic.finals + (includeInterim ? mic.interim : "");
-    this.el("question").value = this.join(mic.base, received);
-    this.showOriginal(received);
+
+  renderTranscript(mic) {
+    const received = (mic.finals + mic.interim).trim();
+    this.question.value = received ? [mic.base.trimEnd(), received].filter(Boolean).join(" ") : mic.base;
     this.host.updateControls();
   }
+
   capture(mic) {
-    if (!this.isCurrent(mic) || mic.node) return;
+    if (this.mic !== mic || !this.hold || mic.node) return;
     try {
-      mic.node = new AudioWorkletNode(mic.context, "blueprint-pcm", {numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1]});
+      mic.node = new AudioWorkletNode(mic.context, "blueprint-pcm", {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
       mic.source = mic.context.createMediaStreamSource(mic.stream);
       mic.node.port.onmessage = ({data}) => {
-        if (data.type === "flushed") { mic.flushResolve?.(); return; }
-        if (data.type === "audio" && this.isCurrent(mic) && mic.socket?.readyState === WebSocket.OPEN) mic.socket.send(data.buffer);
+        if (data.type === "flushed") mic.flushResolve?.();
+        if (data.type === "audio" && this.mic === mic && mic.socket.readyState === WebSocket.OPEN) {
+          mic.socket.send(data.buffer);
+        }
       };
       mic.source.connect(mic.node);
-      mic.node.connect(mic.context.destination); // Worklet outputs silence; microphone is never played back.
-      mic.stream.getAudioTracks().forEach((track) => track.addEventListener("ended", () => { if (this.isCurrent(mic) && this.mode === "listening") this.stopRecording(); }));
-      this.status("Listening… Press Stop when your question is complete.", "listening");
-    } catch (_) { this.failRecording(mic, "Audio capture could not start. Type your question instead."); }
+      mic.node.connect(mic.context.destination); // The worklet outputs silence.
+      mic.stream.getAudioTracks().forEach((track) => track.addEventListener("ended", () => {
+        if (this.mic === mic && this.mode === "listening") this.releaseHold();
+      }));
+      this.status("Listening. Release to finish.", "listening");
+    } catch (_) {
+      this.failRecording(mic, "Audio capture could not start. You can still type your question.");
+    }
   }
+
   async stopRecording() {
     const mic = this.mic;
-    if (!mic || this.mode !== "listening") return;
     this.status("Finalizing the transcript…", "finalizing");
+    this.stopCapture(mic);
+    let flushTimer;
+    // Flush frames already captured before release. The microphone has stopped
+    // even if the worklet takes too long to respond.
+    await new Promise((resolve) => {
+      mic.flushResolve = resolve;
+      flushTimer = setTimeout(resolve, 250);
+      mic.node.port.postMessage({type: "flush"});
+    });
+    clearTimeout(flushTimer);
+    if (this.mic !== mic) return;
+    this.releaseCapture(mic);
+    if (mic.socket.readyState === WebSocket.OPEN) {
+      mic.socket.send(JSON.stringify({type: "stop"}));
+    } else {
+      this.failRecording(mic, "The connection closed before transcription finished.");
+    }
+  }
+
+  stopCapture(mic) {
     mic.source?.disconnect();
-    if (mic.node) {
-      await new Promise((resolve) => { mic.flushResolve = resolve; mic.node.port.postMessage({type: "flush"}); });
-    }
-    if (!this.isCurrent(mic)) return;
-    this.releaseCapture(mic);
-    if (mic.socket?.readyState === WebSocket.OPEN) mic.socket.send(JSON.stringify({type: "stop"}));
-    else this.failRecording(mic, "The connection ended before the final transcript. Review the received text.");
-  }
-  releaseCapture(mic) {
-    mic.flushResolve?.(); mic.flushResolve = null;
+    mic.source = null;
     mic.stream?.getTracks().forEach((track) => track.stop());
-    mic.source?.disconnect(); mic.source = null;
-    mic.node?.disconnect(); mic.node = null;
-    if (mic.context) { mic.context.close().catch(() => {}); mic.context = null; }
+    mic.stream = null;
   }
-  releaseMic(mic, cancel = false) {
-    this.releaseCapture(mic);
-    if (mic.socket) {
-      mic.socket.onmessage = null; mic.socket.onerror = null; mic.socket.onclose = null;
-      if (mic.socket.readyState === WebSocket.OPEN && cancel) mic.socket.send(JSON.stringify({type: "cancel"}));
-      if (mic.socket.readyState < WebSocket.CLOSING) mic.socket.close();
-      mic.socket = null;
+
+  releaseCapture(mic) {
+    this.stopCapture(mic);
+    mic.flushResolve?.();
+    mic.flushResolve = null;
+    if (mic.node) {
+      mic.node.port.onmessage = null;
+      mic.node.disconnect();
+      mic.node = null;
+    }
+    if (mic.context) {
+      mic.context.close().catch(() => {});
+      mic.context = null;
     }
   }
+
+  releaseMic(mic, cancel = false) {
+    this.mic = null;
+    this.hold = null;
+    this.releaseCapture(mic);
+    if (!mic.socket) return;
+    const socket = mic.socket;
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onclose = null;
+    if (cancel && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({type: "cancel"}));
+    }
+    if (socket.readyState < WebSocket.CLOSING) socket.close();
+  }
+
   finishRecording(mic) {
-    if (!this.isCurrent(mic)) return;
-    this.renderTranscript(mic, false);
-    this.mic = null;
     this.releaseMic(mic);
-    this.previewAliases(this.el("question").value);
-    this.status("Transcript ready. Edit the question, then Ask the drawing.", "idle");
-    this.el("question").focus();
-  }
-  failRecording(mic, message) {
-    if (!this.isCurrent(mic)) return;
     this.renderTranscript(mic);
-    this.mic = null;
+    if (this.question.value.length > this.question.maxLength) {
+      this.error("Shorten the transcript before sending it.");
+    }
+    this.status("Transcript ready. Edit it in the prompt before sending.");
+  }
+
+  failRecording(mic, message) {
+    if (this.mic !== mic) return;
     this.releaseMic(mic, true);
-    this.error(`${message} Received text may be incomplete.`);
-    this.status("Transcription stopped. Review or type your question.", "error");
+    this.renderTranscript(mic);
+    this.error(message);
+    this.status("Transcription stopped.", "error");
   }
-  cancelRecording(message = "Recording cancelled.") {
+
+  cancelAll(message = "") {
+    this.stopSpeech();
     const mic = this.mic;
-    ++this.micVersion;
-    this.mic = null;
-    if (mic) { this.renderTranscript(mic); this.releaseMic(mic, true); }
-    this.status(message, "idle");
+    if (!mic) return;
+    this.releaseMic(mic, true);
+    this.renderTranscript(mic);
+    this.status(message);
   }
-  cancelAll() {
-    this.cancelRecording();
-    this.stopSpeech(false);
+
+  speechError(message) {
+    this.speechErrorMessage.textContent = message;
+    this.speechErrorMessage.hidden = !message;
   }
-  speechText(result) {
-    if (!result) return null;
-    const field = this.el("voice-technical-details").checked ? "spoken_answer_with_details" : "spoken_answer";
-    // Only genuinely older responses may use the written text. Explicit null
-    // means preparation failed; never bypass that failure with raw metadata.
-    const prepared = Object.hasOwn(result, "spoken_answer") || Object.hasOwn(result, "spoken_answer_with_details");
-    const text = prepared ? result[field] : result.answer;
-    return typeof text === "string" && text.trim() ? text : null;
-  }
-  answerReady() {
-    this.host.updateControls();
-    if (this.el("voice-auto-read").checked) this.readAnswer();
-  }
-  async readAnswer() {
-    const state = this.host.state();
-    if (!state.result?.answer || !this.documentId || !this.config.speech_ready) return;
-    const answer = this.speechText(state.result);
-    if (answer === null) {
-      this.error("Spoken answer preparation is unavailable. The written answer and evidence remain on screen.");
+
+  async answerReady(answer) {
+    if (!this.speechReady || !this.speechEnabled || !this.documentId || this.recording || this.host.state().busy === "upload" || window.chatUI?.isHome()) return;
+    this.stopSpeech();
+    // An explicit null records a preparation failure. Only legacy responses
+    // without either speech field can fall back to the written answer.
+    const hasPreparedText = Object.hasOwn(answer, "spoken_answer") || Object.hasOwn(answer, "spoken_answer_with_details");
+    const spoken = hasPreparedText ? answer.spoken_answer : answer.answer;
+    if (typeof spoken !== "string" || !spoken.trim()) {
+      this.speechError("Audio is unavailable for this answer.");
       return;
     }
-    this.cancelRecording();
-    this.stopSpeech(false);
-    this.error("");
-    const version = ++this.speechVersion;
-    const documentId = this.documentId;
-    const controller = new AbortController();
-    this.speechController = controller;
-    this.status("Generating answer audio…", "synthesizing");
+    const speech = {controller: new AbortController(), audio: null, url: null};
+    this.speech = speech;
+    this.speechFeedback.textContent = "Preparing answer audio.";
     try {
-      const response = await fetch("/api/voice/speech", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({document_id: documentId, text: answer}), signal: controller.signal});
+      const response = await fetch("/api/voice/speech", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({document_id: this.documentId, text: spoken}),
+        signal: speech.controller.signal,
+      });
       if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw new Error(typeof body?.detail === "string" ? body.detail : "Answer audio could not be generated. The text and evidence remain available.");
+        const error = await response.json().catch(() => null);
+        throw new Error(typeof error?.detail === "string" ? error.detail : "Could not prepare answer audio.");
       }
       const blob = await response.blob();
-      if (version !== this.speechVersion || documentId !== this.documentId) return;
-      if (!blob.size || !blob.type.startsWith("audio/")) throw new Error("The speech service returned no playable audio. The text remains available.");
-      this.speechController = null;
-      this.audioUrl = URL.createObjectURL(blob);
-      this.audio = new Audio(this.audioUrl);
-      this.audio.onended = () => { if (version === this.speechVersion) this.stopSpeech(); };
-      this.audio.onerror = () => {
-        if (version !== this.speechVersion) return;
-        this.stopSpeech(false);
-        this.error("The generated audio could not play. Read the answer and evidence below.");
-        this.status("Audio unavailable.", "error");
-      };
-      await this.playAudio(version);
+      if (this.speech !== speech) return;
+      if (!blob.size || !blob.type.startsWith("audio/")) throw new Error("Could not prepare playable answer audio.");
+      speech.url = URL.createObjectURL(blob);
+      speech.audio = new Audio(speech.url);
+      speech.audio.onended = () => { if (this.speech === speech) this.stopSpeech(); };
+      speech.audio.onerror = () => this.failSpeech(speech, "The answer audio could not play.");
+      await this.playSpeech(speech);
     } catch (error) {
-      if (version !== this.speechVersion || error.name === "AbortError") return;
-      this.speechController = null;
-      this.error(error instanceof TypeError ? "Could not reach the speech service. The text and evidence remain available." : error.message);
-      this.status("Answer audio unavailable.", "error");
+      this.failSpeech(speech, error instanceof TypeError ? "Could not reach the speech service." : error.message);
     }
   }
-  async playAudio(version) {
-    if (!this.audio || version !== this.speechVersion) return;
-    const audio = this.audio;
+
+  async playSpeech(speech) {
+    if (!speech?.audio || this.speech !== speech) return;
+    this.playAnswer.hidden = true;
     try {
-      await audio.play();
-      if (version !== this.speechVersion) { audio.pause(); return; }
-      this.el("voice-play").hidden = true;
-      this.status("Reading answer…", "speaking");
-    } catch (_) {
-      if (version !== this.speechVersion) return;
-      this.el("voice-play").hidden = false;
-      this.status("Audio is ready. Press Play audio to listen.", "idle");
+      await speech.audio.play();
+      if (this.speech === speech) this.speechFeedback.textContent = "Reading the answer aloud.";
+    } catch (error) {
+      if (this.speech !== speech) return;
+      if (error.name !== "NotAllowedError") {
+        this.failSpeech(speech, "The answer audio could not play.");
+        return;
+      }
+      this.playAnswer.hidden = false;
+      this.speechFeedback.textContent = "Answer audio is ready. Press Play answer audio.";
     }
   }
-  stopSpeech(announce = true) {
-    ++this.speechVersion;
-    this.speechController?.abort(); this.speechController = null;
-    if (this.audio) { this.audio.onended = null; this.audio.onerror = null; this.audio.pause(); this.audio.removeAttribute("src"); this.audio.load(); this.audio = null; }
-    if (this.audioUrl) URL.revokeObjectURL(this.audioUrl);
-    this.audioUrl = null;
-    this.el("voice-play").hidden = true;
-    if (announce) this.status("Answer audio stopped.", "idle");
-    else this.host.updateControls();
+
+  failSpeech(speech, message) {
+    if (this.speech !== speech) return;
+    this.stopSpeech();
+    this.speechError(message);
+  }
+
+  disableSpokenAnswers() {
+    if (!this.speechEnabled && !this.speech) return;
+    this.speechEnabled = false;
+    this.stopSpeech();
+    this.syncSpeechToggle();
+  }
+
+  stopSpeech() {
+    const speech = this.speech;
+    this.speech = null;
+    speech?.controller.abort();
+    if (speech?.audio) {
+      speech.audio.onended = null;
+      speech.audio.onerror = null;
+      speech.audio.pause();
+      speech.audio.removeAttribute("src");
+      speech.audio.load();
+    }
+    if (speech?.url) URL.revokeObjectURL(speech.url);
+    this.speechFeedback.textContent = "";
+    this.speechError("");
+    this.playAnswer.hidden = true;
   }
 };

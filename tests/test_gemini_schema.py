@@ -314,3 +314,26 @@ def test_numeric_bound_adaptation_only_visits_schema_nodes():
         assert 'minimum' not in node and 'maximum' not in node
     assert wire['properties']['minimum']['exclusiveMinimum']==-1
     assert wire['default']==literal and wire['enum']==[literal] and wire['const']==literal and wire['examples']==[literal]
+
+
+def test_hydrogen_debug_callback_captures_only_verbatim_answer_text(sdk_document):
+    provider, document = sdk_document
+    provider.model = "gemini-4-hydrogen"
+    raw_answer = json.dumps(ANSWER, indent=2) + "\n"
+    captured = []
+    provider.debug_answer_callback = captured.append
+
+    def handler(request):
+        return httpx2.Response(200, json={"candidates": [{"content": {"role": "model", "parts": [
+            {"text": "Internal thought fixture", "thought": True},
+            {"text": raw_answer[:20]}, {"text": raw_answer[20:]},
+        ]}, "finishReason": "STOP"}]})
+
+    provider.client._api_client._httpx_client = httpx2.Client(transport=httpx2.MockTransport(handler))
+    gate = GateResult(decision="sufficient")
+    provider.answer(document, "How many rooms?", gate)
+    provider.revise_answer(document, "How many rooms?", DraftAnswer.model_validate(ANSWER),
+                           gate, AnswerReview(decision="unsupported"))
+    provider.model = "gemini-3.8-flash"
+    provider.answer(document, "How many rooms?", gate)
+    assert captured == [raw_answer, raw_answer]
