@@ -1,5 +1,7 @@
 # Chat-first UI — verification and handoff
 
+**Historical checkpoint, not final acceptance.** The user reopened this delivery because factual routing, whole-blueprint navigation, navigation concurrency and visible provenance were inadequate. See the [corrective plan](CHAT_UI_CORRECTION_PLAN.md) and [correction verification](CHAT_UI_CORRECTION_VERIFICATION.md). Successful retries below do not diagnose the original failures or establish acceptance of the corrected workflow.
+
 Implemented in `/tmp/junction-chat-ui`, branch `feat/chat-first-ui`, from `fdfd4e3`. Plan, backend, viewer and integrated UI passed independent review, including direct Chromium interaction. No push or modification of another worktree. Reconstruction, refinement, QA, persistence and provider implementations remain owned by the main session.
 
 ## Delivery
