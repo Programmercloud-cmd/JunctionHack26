@@ -1,0 +1,51 @@
+[67] tool exec result: Script completed
+Wall time 10.1 seconds
+Output:
+
+{"chunk_id":"4a8431","wall_time_seconds":1.499544586,"exit_code":0,"original_token_count":1341,"output":"# First slice\n\nLocal-first single-process app. JPG/PNG and small PDFs are mandatory. FastAPI serves static UI and API. Render PDF pages with PDFium and send the rendered source images to Gemini/Decisions; always identify inspected pages. Persist bounded uploads only in ignored local runtime storage. No reference-building retrieval, CAD, 3D, auth, streaming, hosting or infrastructure expansion.\n\n1. Bootstrap environment and establish API contract.\n2. Independent plan/reliability review.\n3. Backend: upload normalization, provenance, Gemini provider adapter, one sufficiency decision, one bounded unclear inspection, evidence-linked structured answers.\n4. Frontend: source viewer, upload, ask, status, result/citation highlighting and clear operational errors.\n5. Integration and independent implementation review; meaningful tests for unsupported answers, unclear handling, missing credentials, bad uploads, citation bounds and API failures.\n6. Document and run the local workflow; live Gemini smoke test only when a Gemini credential is configured. No substitute provider without agreement.\n\nThe initial evidence gate is an experiment, not a correctness guarantee. Evaluate against standard Gemini using coverage, error among answered questions, unsupported answers, unnecessary abstention, latency and usage. Synthetic fixtures verify control flow, not model quality.\n# API contract v1\n\nRoot owns this contract; agents coordinate before changes. JSON uses snake_case.\n\n## Endpoints\n- `GET /api/health`: `{status:\"ok\",provider_ready:bool,model:str,decision_model:str,limits:{max_upload_mb:10,max_pages:5}}`. Readiness means credentials/config exist, not verified provider access. No secrets.\n- `POST /api/documents` multipart `file` (JPG/PNG/PDF, max 10 MiB, max 5 pages; reject larger documents rath<truncated omitted_approx_tokens="406" />rce pages + question. `unclear` allows one bounded targeted second inspection (a real crop/higher-resolution source view), then rerun the same gate with expanded evidence. Do not re-ask identical input and call it inspection. Standard Gemini explains limitations or generates a structured answer against original sources; never turn a negative gate into a factual answer. A positive gate does not force an answer when generation reveals missing evidence. Answer citations must validate; absent/invalid evidence cannot be silently accepted. Operational errors never silently fall back to a different gate/provider. No hidden live mocks or fixtures.\n\nProvider documentation verified 2026-11-14: https://aistudio.google.com/docs/decisions-api ; Python SDK requires >=3.2 for Decisions. REST endpoint https://generativelanguage.googleapis.com/v1beta/decisions. Latest selected stable answer model: gemini-3.8-flash, configurable. SDK/REST details must be verified, not invented.\n3.3.0\n(*args: 'Any', **kwargs: 'Any') -> 'Any'\n(*, model: str, contents: Union[google.genai.types.Content, google.genai.types.ContentDict, str, PIL.Image.Image, google.genai.types.File, google.genai.types.FileDict, google.genai.types.Part, google.genai.types.PartDict, list[Union[str, PIL.Image.Image, google.genai.types.File, google.genai.types.FileDict, google.genai.types.Part, google.genai.types.PartDict]], list[Union[google.genai.types.Content, google.genai.types.ContentDict, str, PIL.Image.Image, google.genai.types.File, google.genai.types.FileDict, google.genai.types.Part, google.genai.types.PartDict, list[Union[str, PIL.Image.Image, google.genai.types.File, google.genai.types.FileDict, google.genai.types.Part, google.genai.types.PartDict]]]], list[google.genai.types.Content], list[google.genai.types.ContentDict]], config: Union[google.genai.types.GenerateContentConfig, google.genai.types.GenerateContentConfigDict, NoneType] = None) -> google.genai.types.GenerateContentResponse\n"}
+
+[68] tool exec call: text(await tools.exec_command({cmd:"rg -n 'class Decisions|def create|def _create|class Choice|probabilities' .venv/lib/python3.12/site-packages/google/genai/decisions* | head -60; sed -n '1,220p' .venv/lib/python3.12/site-packages/google/genai/decisions.py","sandbox_permissions":"require_escalated","justification":"May I inspect the installed Decisions request and response implementation?","max_output_tokens":5000}));
+text(await tools.web__run({open:[{ref_id:"https://aistudio.google.com/docs/decisions-api",lineno:180},{ref_id:"https://aistudio.google.com/docs/decisions-api",lineno:480}],response_length:"long"}));
+
+[69] tool exec result: Script completed
+Wall time 5.0 seconds
+Output:
+
+{"chunk_id":"7e5305","wall_time_seconds":0.000018426,"exit_code":0,"original_token_count":749,"output":"# Copyright 2026 Google LLC\n#\n# Licensed under the Apache License, Version 2.0 (the \"License\");\n# you may not use this file except in compliance with the License.\n# You may obtain a copy of the License at\n#\n#     http://www.apache.org/licenses/LICENSE-2.0\n#\n# Unless required by applicable law or agreed to in writing, software\n# distributed under the License is distributed on an \"AS IS\" BASIS,\n# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n# See the License for the specific language governing permissions and\n# limitations under the License.\n#\n\"\"\"Expose Google GenAI decision types.\"\"\"\n\nfrom ._gaos.types.decisions.answer import Answer\nfrom ._gaos.types.decisions.choiceanswer import ChoiceAnswer\nfrom ._gaos.types.decisions.choicequestion import (\n    ChoiceQuestion,\n    ChoiceQuestionInstructions,\n    ChoiceQuestionInstructionsParam,\n    ChoiceQuestionParam,\n)\nfrom ._gaos.types.decisions.createdecisionrequest import (\n    CreateDecisionRequest,\n    CreateDecisionRequestParam,\n    CreateDecisionRequestParam as DecisionCreateParams,\n    Input,\n    InputParam,\n)\nfrom ._gaos.types.decisions.createdecisionresponse import (\n    CreateDecisionResponse,\n)\nfrom ._gaos.types.decisions.decisioninputcontent import (\n    DecisionInputContent,\n    DecisionInputContentParam,\n)\nfrom ._gaos.types.decisions.decisioninstructioncontent import (\n    DecisionInstructionContent,\n    DecisionInstructionContentParam,\n)\nfrom ._gaos.types.decisions.noulanswer import NoulAnswer\nfrom ._gaos.types.decisions.noulcriteria import (\n    NoulCriteria,\n    NoulCriteriaParam,\n)\nfrom ._gaos.types.decisions.noulquestion import (\n    NoulQuestion,\n    NoulQuestionInstructions,\n    NoulQuestionInstructionsParam,\n    NoulQuestionParam,\n)\nfrom ._gaos.ty<truncated omitted_approx_tokens="6810" />lse:
+L650:     route_to("human_review")
+L651: ```
+L652: 
+L653: {% callout type="note" %}
+L654:   Set thresholds using labeled examples from your own traffic. Weigh the cost
+L655:   of a false positive against a false negative.
+L656: 
+L657: {% /callout %}
+L658: ## Input  {% id="input" %}
+L659: 
+L660: The input field accepts text, image, audio, video, and PDF document blocks
+L661: using the same content block schema as the
+L662: [Interactions API](/docs/interactions-overview) (tool-call, tool-result, and
+L663: thought blocks aren't supported):
+L664: 
+L665: ```none
+L666: Input   = string | Content | Content[]
+L667: Content = TextContent | ImageContent | AudioContent | VideoContent | DocumentContent
+L668: ```
+L669: | Block | Fields | Supported MIME types |
+L670: | :--- | :--- | :--- |
+L671: | `text` | `text` | n/a |
+L672: | `image` | `data` or `uri`, `mime_type`, optional `resolution` | `image/png`, `image/jpeg`, `image/webp`, `image/heic`, `image/heif`, `image/gif`, `image/bmp`, `image/tiff` |
+L673: | `audio` | `data` or `uri`, `mime_type` | `audio/wav`, `audio/mp3`, `audio/mpeg`, `audio/aiff`, `audio/aac`, `audio/ogg`, `audio/flac`, `audio/m4a`, `audio/opus`, `audio/webm`, `audio/l16`, `audio/alaw`, `audio/mulaw` |
+L674: | `video` | `data` or `uri`, `mime_type`, optional `resolution` | `video/mp4`, `video/mpeg`, `video/mov`, `video/avi`, `video/webm`, `video/wmv`, `video/x-flv`, `video/3gpp` |
+L675: | `document` | `data` or `uri`, `mime_type` | `application/pdf` |
+L676: *   Inline data accepts base64-encoded bytes (up to 100 MB per request, or
+L677:   50 MB for PDFs).
+L678: *   URI inputs accept [Files API](/docs/files) URIs (`file.uri`) and public or
+L679:   signed HTTPS URLs (up to 15 MB per external URL).
+L680: *   Always set the MIME type to the real file format. The API rejects generic
+L681:   octet-stream types and content that doesn't match the block type.
+L682: *   The API concatenates adjacent text blocks in `input` and `instructions` in
+
+[70] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[71] tool send_message result: aborted before dispatch
