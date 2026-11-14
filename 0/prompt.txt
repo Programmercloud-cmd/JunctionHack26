@@ -1,0 +1,1 @@
+[42] tool spawn_agent call: {"task_name":"voice_reviewer","message":"REDACTED"}
