@@ -1,0 +1,11 @@
+[122] assistant: Agent message from /root/frontend:
+Message Type: FINAL_ANSWER
+Task name: /root
+Sender: /root/frontend
+Payload:
+Visual diagnosis confirms geometry issues:
+
+- **11397:** terraces become enclosed rooms; stairs become flat plates; cabinet edges become walls. Generated scene contains one door and no windows.
+- **1794:** invented walls close open circulation; duplicate room-boundary walls can block otherwise generated door openings.
+
+Recommend original-image comparison layers driven by actual mesh projections and wall cross-sections, plus source-linked unresolved features. Parent will provide the comparison contract. No files changed; awaiting approved implementation scope.
