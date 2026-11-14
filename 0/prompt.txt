@@ -1,0 +1,28 @@
+[234] assistant: I’ll use a valid source box as an explicitly approximate footprint when no feature polygon is provided. For stairs, I’ll add level symbol marks that indicate neither travel direction nor measured steps or rise.
+
+[235] tool exec call: text(await tools.apply_patch("*** Begin Patch\n*** Update File: /home/jcb/dev/github/JunctionHack26/app/ifc_generate.py\n@@\n-from shapely.geometry import Polygon, LineString\n+from shapely.geometry import Polygon, LineString, box\n@@\n-    def solid(self, points, z, height):\n+    def solid_item(self, points, z, height):\n@@\n-        solid = self.model.create_entity(\"IfcExtrudedAreaSolid\",SweptArea=profile,Position=position,\n+        return self.model.create_entity(\"IfcExtrudedAreaSolid\",SweptArea=profile,Position=position,\n             ExtrudedDirection=self.model.create_entity(\"IfcDirection\",DirectionRatios=[0.,0.,1.]),Depth=float(height))\n+\n+    def solid(self, points, z, height):\n+        solid = self.solid_item(points,z,height)\n@@\n         return self.model.create_entity(\"IfcProductDefinitionShape\",Representations=[shape])\n+\n+    def stair_symbol(self, entity, points, z, thickness):\n+        \"\"\"Flat, level graphic marks: no arrow, ascent, tread count or stair rise claim.\"\"\"\n+        footprint=Polygon(points)\n+        left,bottom,right,top=footprint.bounds\n+        vertical=top-bottom >= right-left\n+        span=top-bottom if vertical else right-left\n+        band=span*.025\n+        items=list(entity.Representation.Representations[0].Items)\n+        # These are graphic positions, never a limit on extracted features or source steps.\n+        for fraction in (.2,.4,.6,.8):\n+            position=(bottom if vertical else left)+span*fraction\n+            strip=box(left,position-band/2,right,position+band/2) if vertical else box(position-band/2,bottom,position+band/2,top)\n+            clipped=footprint.intersection(strip)\n+            pieces=[clipped] if clipped.geom_type==\"Polygon\" else list(getattr(clipped,\"geoms\",[]))\n+            for piece in pieces:\n+                if piece.geom_type==\"Polygon\" and piece.area>0:\n+                    items.append(self.solid_item(list(map(list,list(piece.exterior.<truncated omitted_approx_tokens="889" />]),max(geometry.verts[0::3])]==pytest.approx(sorted(p[0]for p in expected))\n+    assert [min(geometry.verts[1::3]),max(geometry.verts[1::3])]==pytest.approx(sorted(p[1]for p in expected))\n+\n+\n+def test_invalid_nonempty_feature_does_not_use_bbox_fallback(document):\n+    supplied=feature(polygon=[[.2,.3],[.4,.5],[.2,.5],[.4,.3]])\n+    model=build(document,floor(features=[supplied]))\n+    entry=next(e for e in manifest(model).scene.elements if e.semantic_type==\"table\")\n+    assert entry.representation==\"unresolved\" and model.by_guid(entry.id).Representation is None\n+    assert not any(a.property==\"footprint\" for a in entry.assumptions)\n+\n+\n+def test_stair_graphic_is_level_symbol_not_inferred_risers_or_direction(document):\n+    model=build(document,floor(features=[feature(\"stairs\")]))\n+    stairs=model.by_type(\"IfcStairFlight\")[0]\n+    items=list(stairs.Representation.Representations[0].Items)\n+    assert len(items)>1\n+    base,marks=items[0],items[1:]\n+    assert all(mark.Position.Location.Coordinates[2]==pytest.approx(base.Position.Location.Coordinates[2]+base.Depth)for mark in marks)\n+    assert len({mark.Depth for mark in marks})==1\n+    assert stairs.NumberOfRisers is None and stairs.NumberOfTreads is None\n+    entry=next(e for e in manifest(model).scene.elements if e.kind==\"stairs\")\n+    assumption=next(a for a in entry.assumptions if a.property==\"stair_symbol\")\n+    assert \"not a source step count or rise\" in assumption.reason and \"No stair travel direction\" in assumption.reason\n+    assert len(mesh(model,stairs).faces)>12\n*** End Patch"));
+text(await tools.exec_command({cmd:".venv/bin/python -m pytest tests/test_ifc_generate.py tests/test_ifc_artifact.py -q --tb=short",sandbox_permissions:"require_escalated",justification:"Verify explicit bounding-box feature schematics and direction-free stair symbols through IFC generation and portable artifact tests.",yield_time_ms:1000,max_output_tokens:3500}));
+
+[236] tool exec result: Script completed
+Wall time 6.3 seconds
+Output:
+
+{}
+{"chunk_id":"c42759","wall_time_seconds":1.00128123,"session_id":85511,"original_token_count":0,"output":""}
+
+[237] tool exec call: text(await tools.write_stdin({session_id:85511,chars:"",yield_time_ms:1000,max_output_tokens:3500}));
+
+[238] tool exec result: Script completed
+Wall time 0.0 seconds
+Output:
+
+{"chunk_id":"082441","wall_time_seconds":0.000019077,"exit_code":0,"original_token_count":25,"output":"...............................................................          [100%]\n63 passed in 5.00s\n"}
+
+[239] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[240] assistant: Implemented both fixes:
+
+- Empty feature polygons use the valid source box as an explicitly assumed footprint.
+- Stair meshes include level schematic marks, without implying direction, step count or rise.
+
+Malformed nonempty polygons remain unresolved. **63 generator/artifact tests pass.**
