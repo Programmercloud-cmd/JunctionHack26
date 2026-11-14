@@ -1,0 +1,1 @@
+Note that we should be able to process also the plans that dont ahve a lot of infomraiton such as just a simpel jpg of a floorplan, it shoudl still be able to answer quetsiosn that can be answered based on it, and if that cant be done, it shoudl recognize that and output its inability to confidently answer with a possible porposal if possible based on similar buildings
