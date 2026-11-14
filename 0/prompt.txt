@@ -1,0 +1,5 @@
+<image name=[Image #1] path="/home/jcb/Downloads/junction-dataset-preview/data/cubicasa5k/colorful-11397.png">
+
+</image>
+
+[Image #1]  causes "The building-description request failed or returned an invalid response. No model was saved; no conclusion about source quality was made." AND "INFO:     127.0.0.1:57168 - "POST /api/documents/71270278477949babfefdbdf9e9effaf/scene HTTP/1.1" 502 Bad Gateway"
