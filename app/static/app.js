@@ -22,7 +22,7 @@ function updateControls() {
   $("ask-progress").hidden = state.busy !== "ask" && !state.questionRequest?.pending;
   $("question-help").textContent = !state.document ? "Upload a drawing to get started." : !state.providerReady ? `You can preview the drawing. Configure ${state.health?.provider_label || "the selected provider"} to ask questions.` : "Answers are limited to the supplied drawing.";
   $("previous-page").disabled = !state.document || state.pageIndex === 0;
-  $("next-page").disabled = !state.document || state.pageIndex >= state.document.pages.length - 1;
+  $("next-page").disabled = !state.document || state.pageIndex >= displayPages().length - 1;
   $("character-count").textContent = `${$("question").value.length} / 2000`;
   $("question-form").setAttribute("aria-busy", String(state.busy === "ask"));
   $("source-heading").closest("section").setAttribute("aria-busy", String(state.busy === "upload"));
@@ -335,11 +335,15 @@ async function startReconstruction(mode) {
   finally{if(epoch===state.epoch){state.reconstructionSubmitting=false;if(state.busy==="scene")state.busy=null;updateControls();}}
 }
 
+function displayPages() {
+  const sourceView=window.chatUI?.sourceView();
+  return state.evidenceRevision&&sourceView?.revision_id===state.evidenceRevision?sourceView.pages:state.document?.pages||[];
+}
 function renderPage() {
-  if (!state.document?.pages.length) return;
-  const page = state.document.pages[state.pageIndex];
-  $("page-label").textContent = `${page.source_filename || state.document.filename} · page ${page.source_page || page.page} (${state.pageIndex+1}/${state.document.pages.length})${state.evidenceRevision?" · source revision":""}`;
-  $("page-image").alt = `${state.document.filename}, page ${page.page}`;
+  const pages=displayPages(),page=pages[state.pageIndex];
+  if (!page) return;
+  $("page-label").textContent = `${page.source_filename || state.document.filename} · page ${page.source_page || page.page} (${state.pageIndex+1}/${pages.length})${state.evidenceRevision?" · source revision":""}`;
+  $("page-image").alt = `${page.source_filename || "Original drawing"}, page ${page.source_page || page.page}`;
   // Only load normalized page previews from this application.
   const preview=state.evidenceRevision?`/api/buildings/${state.document.building_id}/revisions/${state.evidenceRevision}/pages/${page.page}`:page.image_url;
   const url = new URL(preview, window.location.origin);
@@ -356,7 +360,7 @@ function renderPage() {
 
 function renderOverlay() {
   const evidence = state.sourceSelection || (state.selectedEvidence === null ? null : state.result?.evidence?.[state.selectedEvidence]);
-  const page = state.document?.pages[state.pageIndex];
+  const page = displayPages()[state.pageIndex];
   const overlay = $("evidence-overlay");
   overlay.hidden = true;
   $("viewer-caption").textContent = "Select an evidence reference to locate it on the drawing.";
@@ -804,11 +808,11 @@ function selectComparison(id) {
 function renderComparison() {
   const overlay = $("comparison-overlay");
   overlay.replaceChildren();
-  const enabled = Boolean(state.scene?.derived && $("show-comparison").checked);
+  const enabled = Boolean(state.scene?.derived && $("show-comparison").checked && (!state.evidenceRevision||state.evidenceRevision===state.scene.revision_id));
   $("comparison-options").hidden = !enabled;
   overlay.toggleAttribute("hidden", !enabled);
   if (!enabled) return;
-  const page = state.document?.pages[state.pageIndex]?.page;
+  const page = displayPages()[state.pageIndex]?.page;
   const floor = $("comparison-floor-select").value;
   const layers = new Set([...document.querySelectorAll("[data-comparison-layer]:checked")].map((input) => input.dataset.comparisonLayer));
   const entries = (state.scene.comparison || []).filter((entry) => entry.page === page && (!floor || entry.floor_id === floor) && layers.has(entry.layer));
@@ -865,7 +869,7 @@ function renderInventory() {
   panel.hidden = !state.scene?.derived;
   if (panel.hidden) { $("unresolved-model-notice").hidden=true; return; }
   const floor = $(state.view === "drawing" ? "comparison-floor-select" : "floor-select").value;
-  const page = state.document?.pages[state.pageIndex]?.page;
+  const page = displayPages()[state.pageIndex]?.page;
   const elements = state.scene.elements.filter((element) => (!floor || element.storey_id === floor) && (state.view !== "drawing" || element.source.page === page));
   const modelUnresolved=state.scene.elements.filter((element)=>(element.representation === "unresolved" || !element.geometry) && (!$("floor-select").value || element.storey_id === $("floor-select").value));
   $("unresolved-model-notice").hidden=!modelUnresolved.length;
@@ -1060,7 +1064,7 @@ async function refreshAssumptions() {
     const payload=await request(`/api/buildings/${id}/assumptions`,{},15000);if(epoch!==state.epoch)return;
     // Keep unsent edits pinned to the revision the user actually inspected.
     if(!state.assumptionEdits.size)state.assumptionsRevision=payload.revision_id;
-    state.assumptionRows=payload.rows || [];renderAssumptions();setError("assumption-error");
+    state.assumptionDataRevision=payload.revision_id;state.assumptionRows=payload.rows || [];renderAssumptions();setError("assumption-error");window.dispatchEvent(new CustomEvent("blueprint:workspace"));
   }catch(error){if(epoch===state.epoch)setError("assumption-error",error.message);}
 }
 function renderAssumptions() {
@@ -1212,7 +1216,13 @@ sourcePanel.addEventListener("dragleave", (event) => { if (!sourcePanel.contains
 sourcePanel.addEventListener("drop", (event) => { event.preventDefault(); $("drop-zone").classList.remove("drag-over"); if (!state.busy) { uploadFile(event.dataTransfer.files); } });
 $("question").addEventListener("input", updateControls);
 suggestions.forEach((button) => button.addEventListener("click", () => { $("question").value = button.dataset.question; updateControls(); $("question").focus(); }));
-function changePage(direction) { if (!state.document) return; const index = state.pageIndex + direction; if (index < 0 || index >= state.document.pages.length) return; state.evidenceRevision=null; state.pageIndex = index; $("comparison-floor-select").value = ""; renderPage(); }
+function changePage(direction) {
+  if (!state.document) return;
+  const pages=displayPages(),index=state.pageIndex+direction;
+  if(index<0||index>=pages.length)return;
+  if(window.chatUI)return window.chatUI.execute({type:"browse_source",page:pages[index].page,source_revision_id:window.chatUI.sourceView().revision_id}).catch(error=>setError("upload-error",error.message));
+  state.evidenceRevision=null;state.pageIndex=index;$("comparison-floor-select").value="";renderPage();
+}
 $("previous-page").addEventListener("click", () => changePage(-1));
 $("next-page").addEventListener("click", () => changePage(1));
 $("viewer").addEventListener("keydown", (event) => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); changePage(event.key === "ArrowLeft" ? -1 : 1); } });
