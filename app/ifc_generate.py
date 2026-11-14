@@ -262,6 +262,31 @@ def _valid_polygon(points, box):
     return polygon if polygon.is_valid and polygon.area>0 else None
 
 
+
+def _feature_polygon(points, source_box, floor_box, page):
+    """Accept only subpixel own-citation rounding; all other geometry guards stay strict."""
+    suffix=" Source item retained without invented geometry."
+    if len(points)<3 or not all(_point(p) for p in points):
+        return None,"Invalid feature footprint coordinates or fewer than three vertices."+suffix,False
+    if not all(_inside(p,floor_box) for p in points):
+        return None,"Feature footprint is outside its floor source region."+suffix,False
+    shape=_valid_polygon(points,floor_box)
+    if shape is None:
+        return None,"Feature footprint is self-intersecting or has no positive area."+suffix,False
+    if all(_inside(p,source_box) for p in points):
+        return shape,"",False
+    dimensions=[getattr(page,"width",None),getattr(page,"height",None)]
+    if not all(type(dimension) is int and dimension>0 for dimension in dimensions):
+        return None,"Feature footprint is outside its source region; saved raster dimensions are unavailable."+suffix,False
+    # These are the saved citation raster dimensions, never provider/viewer image
+    # sizes or physical units. Do not move the polygon or expand its source box.
+    dx,dy=(.5/dimension for dimension in dimensions)
+    left,top,right,bottom=source_box
+    if all(left-dx<=p[0]<=right+dx and top-dy<=p[1]<=bottom+dy for p in points):
+        return shape,"",True
+    return None,"Feature footprint extends beyond its source region by more than half a saved source-page pixel."+suffix,False
+
+
 def _item_source(region, points, floor, page):
     """Return source and whether precise localization is trustworthy."""
     if region is not None:
@@ -526,9 +551,12 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings,wall_
         if fallback:
             left,top,right,bottom=source.bbox
             points=[[left,top],[right,top],[right,bottom],[left,bottom]]
-        shape=_valid_polygon(points,source.bbox) if localized and all(_point(p) and _inside(p,floor.source.bbox) for p in points) else None
-        reason="" if shape is not None else "Invalid feature footprint; source item retained without invented geometry."
-        if not localized:reason+=" Unlocalized: coarse floor source region only."
+        if localized:
+            shape,reason,rounded=_feature_polygon(points,source.bbox,floor.source.bbox,page)
+        else:
+            shape,reason,rounded=None,"Unlocalized feature footprint: coarse floor source region only; source item retained without invented geometry.",False
+        rounding_note=(" Feature footprint extends beyond its citation by at most half a saved source-page pixel per axis; "
+                       "accepted as raster-coordinate rounding. Supplied footprint and source citation are unchanged.") if rounded else ""
         world=[_transform(matrix,p) for p in list(shape.exterior.coords)[:-1]] if shape is not None else None
         ifc_type,kind=_feature_type(feature.kind)
         ratios={"table":.30,"chair":.20,"bed":.20,"sofa":.25,"cabinet":.50,"appliance":.40,
@@ -550,7 +578,7 @@ def _generate_floor(builder,floor,storey,page,matrix,known,prefix,warnings,wall_
             assumptions.append(_assumption('connectivity',connection['target'],None,'Source-supported floor relationship. Continuous schematic flight uses attributed display rise; its slope direction is a display convention, not a source travel direction.'))
             assumptions.append(_assumption('display_rise',connection['rise'],unit,'Difference between attributed building display levels; no measured risers or stair construction details.'))
         entity=add(ifc_type,feature.persistent_id or f"{prefix}:feature:{i}",feature.label,kind,feature.kind,source,world,plate,height,assumptions,
-            feature.basis,feature.note,reason,schematic=True)
+            feature.basis,feature.note+rounding_note,reason,schematic=True)
         if world:
             if connection and connection['rise']>0:
                 builder.connected_stair(entity,world,plate,connection['rise'],plate)

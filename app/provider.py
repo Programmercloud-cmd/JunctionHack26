@@ -5,12 +5,14 @@ from io import BytesIO
 import json
 import math
 import os
+import uuid
 from pathlib import Path
 from time import monotonic
 
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from pydantic import ValidationError
 
 from .documents import Document
 from .schemas import CropRequest, DraftAnswer, GateResult, Usage, QuestionIntent
@@ -42,6 +44,50 @@ def remaining_timeout(provider, seconds):
     return seconds
 
 
+def _begin_call(provider, schema, model, max_tokens, timeout_ms, thinking_level=None):
+    """Only allowlisted, content-free metadata leaves the provider boundary."""
+    provider.last_structured_output = None
+    provider.last_response_text = None
+    provider.last_response_call_id = None
+    record = {"call_id": uuid.uuid4().hex,
+        "stage": getattr(provider, "diagnostic_stage", lambda: "provider")(),
+        "schema": schema if isinstance(schema, str) else schema.__name__, "model": model,
+        "max_output_tokens": max_tokens, "timeout_ms": timeout_ms, "thinking_level": thinking_level,
+        "elapsed_ms": None, "finish_reason": None, "prompt_tokens": None,
+        "candidate_tokens": None, "thought_tokens": None, "outcome": "request_started"}
+    if not hasattr(provider, "provider_calls"): provider.provider_calls = []
+    provider.provider_calls.append(record)
+    return record, monotonic()
+
+
+def _finish_call(provider, record, started):
+    record["elapsed_ms"] = round((monotonic()-started)*1000)
+    callback = getattr(provider, "diagnostic_callback", None)
+    if callback: callback()
+
+
+def _source_catalog(document):
+    from .reasoning import source_catalog
+    return {"source_catalog": source_catalog(document), "warnings": list(document.warnings),
+        "coverage": {"catalog_complete": False, "property_complete": False, "relationship_complete": False,
+            "interpretation_status": document.interpretation_status},
+        "source_authority": "Original source pages are authoritative; descriptions and generated geometry are fallible derived interpretations."}
+
+
+def _patch_targets(review):
+    return [{"issue_id": issue.id, "category": issue.category, "actionable": issue.actionable,
+        "explicit_target_ids": issue.object_ids,
+        "target_scope": "listed_existing_ids_only" if issue.object_ids else "reviewed_source_region_subject_to_local_validation",
+        "source": issue.source.model_dump(mode="json")} for issue in review.issues]
+
+
+PATCH_EVIDENCE_INSTRUCTIONS = """Every operation.evidence and transform_updates[*].evidence is a contextual ORIGINAL-page AREA:
+0 <= left < right <= 1 and 0 <= top < bottom <= 1. It must cover the inspected feature/context.
+Boundary/opening record.source may be a positive-length line, but operation.evidence must have positive width AND height.
+Do not copy a zero-height/zero-width line into operation.evidence. Inspect and cite a real contextual area; never fabricate evidence or change the page frame.
+"""
+
+
 RECONSTRUCTION_REVIEW_INSTRUCTIONS="""Review the original drawing and ACTUAL reopened IFC overlays together with the interpretation JSON.
 The overlay is geometry evidence about what our generator drew, not factual building evidence. Original pages are authoritative.
 Find missing meaningful features, invented floors/walls, wrong connectivity/thickness/openings/hosts, indoor/outdoor enclosure errors,
@@ -52,7 +98,13 @@ it does not mean complete or verified accurate. For a first preview, report its 
 User-provided values may drive geometry with explicit user attribution; they are not facts observed in the original drawing.
 Check for conflicts with original dimensions/relationships, including facts missing from the interpretation. Absence of a drawing measurement alone does not invalidate an explicitly supplied user value.
 Preserve the difference between observed dimensions, user-provided inputs and display conventions; a supplied height never establishes horizontal scale.
-Use original-page coordinates and existing persistent IDs. Do not invent measurements, code, raw IFC or hidden floors."""
+Use original-page coordinates and existing persistent IDs. Do not invent measurements, code, raw IFC or hidden floors.
+Return concise concrete issues and a short summary; do not repeat the full inventory or narrate the inspection process.
+Each issues[*].source must cite a contextual ORIGINAL-page AREA: 0 <= left < right <= 1 and 0 <= top < bottom <= 1.
+Even for a line-shaped wall/opening, inspect and cite a real surrounding area with positive width AND height; do not copy a zero-area record.source line into the issue source.
+Use actual_geometry_inventory notes as deterministic generator diagnostics. Verify their cause against source coordinates before proposing extraction changes.
+List the exact existing object IDs a correction would need to change; an issue listing only openings does not authorize changes to their host walls.
+Do not classify a valid implicitly closed polygon as broken merely because its final coordinate does not repeat its first."""
 
 RECONSTRUCTION_PATCH_INSTRUCTIONS="""Propose a targeted data-only patch for supported actionable EXTRACTION issues in the supplied review.
 Read original pages/crops and actual IFC overlays. Preserve unrelated records exactly and retain their persistent IDs. Never output Python, raw IFC or application edits.
@@ -60,7 +112,10 @@ Use add/replace/remove operations on the named collections. New records must hav
 For replacements use the existing target_id. A floor replacement changes metadata only: copy its nested records unchanged; edit nested objects through separate operations.
 Never introduce unpictured floors or guessed factual heights. Ambiguous source features remain unresolved. Generation/display issues are not fixable by changing correct source interpretation.
 Do not change calibration/orientation implicitly. Explicit supported changes require transform_updates with original evidence. Return the exact supplied base_revision_id.
-Use source regions and reasons for every operation, tying them to issue IDs. No unrelated redesign, wholesale rewrite or lost doors/walls."""
+Use source regions and reasons for every operation, tying them to issue IDs. No unrelated redesign, wholesale rewrite or lost doors/walls.
+The supplied issue_target_scopes reflects existing validation: when an issue lists object IDs, replacements/removals must target those exact IDs.
+A door issue does not authorize replacing a neighboring wall unless that wall ID is listed in an applicable actionable extraction issue.
+Broad source boxes or issue prose do not grant authority to edit unlisted objects. Leave unsupported edits unapplied rather than inventing issue IDs.""" + PATCH_EVIDENCE_INSTRUCTIONS
 
 ANSWER_REVIEW_INSTRUCTIONS="""Does the inspected original evidence support this draft's answer to the user's question, including factual claims and derivations, without treating assumptions as facts?
 Inspect source pages for drawings and faithful original IFC records/coverage for native IFC. JSON interpretation is fallible; generated geometry and concept decoration are not source evidence.
@@ -78,8 +133,9 @@ def gemini_wire_schema(schema: dict) -> dict:
     """Adapt Gemini wire grammar while keeping exact local response validation.
 
     The current endpoint rejects these bounds for our reconstruction schema. Walk
-    schema locations, not arbitrary JSON values: a property named ``maxItems``
-    or an object inside a default/enum remains ordinary data.
+    schema locations, not arbitrary JSON values: keyword-named properties and
+    objects inside default/enum remain ordinary data. Numeric bounds rejected by
+    the live Gemini endpoint remain enforced by local validation and other wires.
     """
     result = deepcopy(schema)
 
@@ -89,6 +145,9 @@ def gemini_wire_schema(schema: dict) -> dict:
         kind = node.get("type")
         if kind == "array" or isinstance(kind, list) and "array" in kind:
             node.pop("maxItems", None)
+        if kind in ("number", "integer") or isinstance(kind,list) and any(value in ("number","integer") for value in kind):
+            node.pop("minimum", None)
+            node.pop("maximum", None)
         for keyword in ("$defs", "definitions", "properties", "patternProperties", "dependentSchemas"):
             for child in node.get(keyword, {}).values():
                 visit(child)
@@ -103,10 +162,15 @@ def gemini_wire_schema(schema: dict) -> dict:
     # Gemini rejects the combined typed-record union; an unconstrained object
     # accepts requests but generated empty objects in actual source runs. Encode
     # this one record as JSON text on the wire, then validate its exact type locally.
-    record=result.get("$defs",{}).get("RecordPatch",{}).get("properties",{}).get("record")
+    patch=result.get("$defs",{}).get("RecordPatch",{})
+    record=patch.get("properties",{}).get("record")
     if isinstance(record,dict) and "anyOf" in record:
         record.clear()
         record["anyOf"]=[{"type":"string","description":"JSON-encoded complete typed record matching the operation collection and supplied record schemas. Serialize the record object as a JSON string; never an empty object. Local validation enforces every original field and type."},{"type":"null"}]
+        # The local default supports old artifacts, but wire omission makes every
+        # add/replace unusable. Require the key; removal explicitly supplies null.
+        required=patch.setdefault("required",[])
+        if "record" not in required:required.append("record")
     return result
 
 
@@ -216,7 +280,7 @@ Register corresponding floors using supported stair/exterior anchors; same-page 
 Do not rescale floors independently or replace unequal footprints. Unknown heights remain explicit display assumptions.
 No unseen floors, invented dimensions, code or raw IFC. Unsupported relationships remain source-linked unresolved records.
 This is geometry enrichment, not a claim that a reviewer verified the interpretation. issue_ids may be empty.
-"""
+""" + PATCH_EVIDENCE_INSTRUCTIONS
 
 PROVENANCE_QA_INSTRUCTIONS = """
 For drawing questions, inspect original images even if extraction is incomplete or geometry failed.
@@ -272,9 +336,16 @@ If an association is uncertain leave highlight_ids empty and provide normal sour
 """
 
 
-GATE_INSTRUCTIONS += PROVENANCE_QA_INSTRUCTIONS
-ANSWER_INSTRUCTIONS += PROVENANCE_QA_INSTRUCTIONS
-ANSWER_REVIEW_INSTRUCTIONS += PROVENANCE_QA_INSTRUCTIONS
+IMAGE_DIRECTION_INSTRUCTIONS = """For drawing spatial descriptions, use image-relative left/right/top/bottom unless the supplied source explicitly establishes compass orientation.
+Image-up is not automatically north: do not turn a page position into north/south/east/west, northwest or another geographic bearing without source evidence such as a north arrow.
+A readable text orientation or viewer rotation does not establish compass direction. If geographic orientation is requested but not established, state that limitation while describing supported image-relative position.
+Preserve original labels such as 'North Wing' verbatim; a label alone does not establish compass orientation for other spaces or features.
+During answer review, treat unsupported geographic bearings as unsupported factual additions, even when the underlying image-relative relationship is visible.
+"""
+
+GATE_INSTRUCTIONS += PROVENANCE_QA_INSTRUCTIONS + IMAGE_DIRECTION_INSTRUCTIONS
+ANSWER_INSTRUCTIONS += PROVENANCE_QA_INSTRUCTIONS + IMAGE_DIRECTION_INSTRUCTIONS
+ANSWER_REVIEW_INSTRUCTIONS += PROVENANCE_QA_INSTRUCTIONS + IMAGE_DIRECTION_INSTRUCTIONS
 
 CROP_INSTRUCTIONS = (
     "Select ONE small source region most useful to inspect more closely to resolve the user's question. "
@@ -310,69 +381,93 @@ class GeminiProvider:
                              {"type": "image", "mime_type": "image/png", "data": base64.b64encode(png).decode()}])
         return contents
 
-    def gate(self, document, question, crop=None):
-        response = self.client.decisions.create(
-            model=self.decision_model,
-            timeout=remaining_timeout(self,45),
-            input=self._decision_input(document, question, crop),
-            questions={"sufficiency": {
-                "type": "choice", "instructions": GATE_INSTRUCTIONS,
-                "criteria": {
-                    "sufficient": "Essential evidence is present and interpretable; direct answers or supported calculations are possible without invented facts.",
-                    "insufficient": "Essential information is absent from the inspected material, so the question cannot be answered from it.",
-                    "unclear": "Legibility, ambiguity, contradictory evidence or uncertain scope/completeness prevents a determination; inspect further or clarify.",
-                },
-            }},
-        )
-        answer = response.answers["sufficiency"]
-        usage = getattr(response, "usage", None)
-        self.usage.input_tokens += getattr(usage, "total_input_tokens", 0) or 0
-        self.usage.output_tokens += getattr(usage, "total_output_tokens", 0) or 0
-        return GateResult(decision=answer.choice, confidence=answer.confidence)
+    def _decisions(self, contents, questions, schema_name):
+        record, started = _begin_call(self,schema_name,self.decision_model,None,45000)
+        try:
+            timeout = remaining_timeout(self,45);record["timeout_ms"] = round(timeout*1000)
+            response = self.client.decisions.create(model=self.decision_model,timeout=timeout,input=contents,questions=questions)
+            usage = getattr(response,"usage",None)
+            record["prompt_tokens"] = getattr(usage,"total_input_tokens",None)
+            record["reported_output_tokens"] = getattr(usage,"total_output_tokens",None)
+            self.usage.input_tokens += record["prompt_tokens"] or 0
+            self.usage.output_tokens += record["reported_output_tokens"] or 0
+            record["outcome"] = "validated_response"
+            return response
+        except Exception:
+            record["outcome"] = "provider_error"
+            raise
+        finally: _finish_call(self,record,started)
 
-    def _generate(self, document, question, instruction, schema, crop=None, *, thinking_level=None, timeout_ms=None, max_tokens=8192, model=None, extra_views=None, extra_data=None):
-        parts = [types.Part.from_text(text=json.dumps({"question": question}))]
-        if context := source_context(document, question):
-            parts.append(types.Part.from_text(text=context))
-        for label, png in views(document, crop):
-            parts.extend([types.Part.from_text(text=label), types.Part.from_bytes(data=png, mime_type="image/png")])
-        for label,png in extra_views or []:
-            parts.extend([types.Part.from_text(text=label),types.Part.from_bytes(data=png,mime_type="image/png")])
-        if extra_data is not None:parts.append(types.Part.from_text(text=json.dumps(extra_data,ensure_ascii=False)))
-        from .review_schema import DescriptionPatch
-        if schema is DescriptionPatch:
-            # These schemas guide generation as text without triggering the
-            # provider's rejected combined schema grammar. They are also enforced locally.
-            parts.append(types.Part.from_text(text=json.dumps({"record_schemas":schema.model_json_schema().get("$defs",{})})))
-            instruction += "\nWIRE FORMAT: operations[*].record is a JSON-encoded STRING containing the complete typed record object, or null for removal. Use the supplied record schemas and preserve replacement fields exactly. Do not return {} or code."
-        timeout_ms=round(remaining_timeout(self,(timeout_ms or 45000)/1000)*1000)
-        response = self.client.models.generate_content(
-            model=model or self.model, contents=parts,
-            config=types.GenerateContentConfig(system_instruction=instruction, temperature=0,
-                                               response_mime_type="application/json", response_json_schema=gemini_wire_schema(schema.model_json_schema()),
-                                               max_output_tokens=max_tokens,
-                                               http_options=types.HttpOptions(timeout=timeout_ms) if timeout_ms else None,
-                                               thinking_config=types.ThinkingConfig(thinking_level=thinking_level) if thinking_level is not None else None),
-        )
-        usage = response.usage_metadata
-        self.usage.input_tokens += getattr(usage, "prompt_token_count", 0) or 0
-        self.usage.output_tokens += (getattr(usage, "candidates_token_count", 0) or 0) + (getattr(usage, "thoughts_token_count", 0) or 0)
-        if any(candidate.finish_reason == types.FinishReason.MAX_TOKENS for candidate in response.candidates or []):
-            raise ProviderError("Gemini reached its output token limit before completing the response. No result was accepted; try again.")
-        # Caller may retain this structured response privately for deterministic
-        # validation replay. Never retain/log the request or provider exception.
-        try:self.last_structured_output=json.loads(response.text)
-        except (ValueError,TypeError):self.last_structured_output=None
-        if schema is DescriptionPatch and self.last_structured_output is not None:
-            decoded=deepcopy(self.last_structured_output)
-            operations=decoded.get("operations",[]) if isinstance(decoded,dict) else []
-            for operation in operations if isinstance(operations,list) else []:
-                if isinstance(operation,dict) and isinstance(operation.get("record"),str):
-                    operation["record"]=json.loads(operation["record"])
-                    if not isinstance(operation["record"],dict):
-                        raise ProviderError("The patch record must decode to a typed JSON object. No change was applied.")
-            return schema.model_validate(decoded)
-        return schema.model_validate_json(response.text)
+    def gate(self, document, question, crop=None):
+        response = self._decisions(self._decision_input(document,question,crop),{"sufficiency": {
+            "type":"choice","instructions":GATE_INSTRUCTIONS,"criteria": {
+                "sufficient":"Essential evidence is present and interpretable; direct answers or supported calculations are possible without invented facts.",
+                "insufficient":"Essential information is absent from the inspected material, so the question cannot be answered from it.",
+                "unclear":"Legibility, ambiguity, contradictory evidence or uncertain scope/completeness prevents a determination; inspect further or clarify."}}}, "GateResult")
+        answer = response.answers["sufficiency"]
+        return GateResult(decision=answer.choice,confidence=answer.confidence)
+
+    def _generate(self, document, question, instruction, schema, crop=None, *, thinking_level=None, timeout_ms=None, max_tokens=8192, model=None, extra_views=None, extra_data=None, include_qa_context=True):
+        record, started = _begin_call(self, schema, model or self.model, max_tokens, timeout_ms or 45000, thinking_level)
+        try:
+            parts = [types.Part.from_text(text=json.dumps({"question": question}))]
+            context = source_context(document, question) if include_qa_context else json.dumps(_source_catalog(document))
+            if context: parts.append(types.Part.from_text(text=context))
+            for label, png in views(document, crop):
+                parts.extend([types.Part.from_text(text=label), types.Part.from_bytes(data=png, mime_type="image/png")])
+            for label, png in extra_views or []:
+                parts.extend([types.Part.from_text(text=label), types.Part.from_bytes(data=png, mime_type="image/png")])
+            if extra_data is not None: parts.append(types.Part.from_text(text=json.dumps(extra_data,ensure_ascii=False)))
+            from .review_schema import DescriptionPatch
+            if schema is DescriptionPatch:
+                parts.append(types.Part.from_text(text=json.dumps({"record_schemas":schema.model_json_schema().get("$defs",{})})))
+                instruction += "\nWIRE FORMAT: operations[*].record is a JSON-encoded STRING containing the complete typed record object, or null for removal. Use the supplied record schemas and preserve replacement fields exactly. Do not return {} or code."
+            timeout_ms = round(remaining_timeout(self,(timeout_ms or 45000)/1000)*1000)
+            record["timeout_ms"] = timeout_ms
+            response = self.client.models.generate_content(model=model or self.model, contents=parts,
+                config=types.GenerateContentConfig(system_instruction=instruction, temperature=0,
+                    response_mime_type="application/json", response_json_schema=gemini_wire_schema(schema.model_json_schema()),
+                    max_output_tokens=max_tokens, http_options=types.HttpOptions(timeout=timeout_ms),
+                    thinking_config=types.ThinkingConfig(thinking_level=thinking_level) if thinking_level is not None else None))
+            usage = response.usage_metadata
+            for destination, source in (("prompt_tokens","prompt_token_count"),("candidate_tokens","candidates_token_count"),("thought_tokens","thoughts_token_count")):
+                record[destination] = getattr(usage,source,None)
+            self.usage.input_tokens += record["prompt_tokens"] or 0
+            self.usage.output_tokens += (record["candidate_tokens"] or 0)+(record["thought_tokens"] or 0)
+            candidates = response.candidates or []
+            first = candidates[0] if candidates else None
+            finish = getattr(first,"finish_reason",None)
+            record["finish_reason"] = getattr(finish,"value",None) or (str(finish) if finish is not None else None)
+            # Explicitly exclude private thought parts, including on truncated output.
+            content = getattr(first,"content",None)
+            self.last_response_text = "".join(part.text for part in getattr(content,"parts",[]) or []
+                if getattr(part,"text",None) is not None and not getattr(part,"thought",False))
+            self.last_response_call_id = record["call_id"]
+            try: self.last_structured_output = json.loads(self.last_response_text)
+            except (ValueError,TypeError): self.last_structured_output = None
+            if any(candidate.finish_reason == types.FinishReason.MAX_TOKENS for candidate in candidates):
+                record["outcome"] = "output_limit"
+                error = ProviderError("Gemini reached its output token limit before completing the response. No result was accepted; saved evidence and previous usable results remain available.")
+                error.category = "provider_output_limit"
+                raise error
+            if schema is DescriptionPatch and self.last_structured_output is not None:
+                decoded = deepcopy(self.last_structured_output)
+                operations = decoded.get("operations",[]) if isinstance(decoded,dict) else []
+                for operation in operations if isinstance(operations,list) else []:
+                    if isinstance(operation,dict) and isinstance(operation.get("record"),str):
+                        operation["record"] = json.loads(operation["record"])
+                        if not isinstance(operation["record"],dict):
+                            raise ProviderError("The patch record must decode to a typed JSON object. No change was applied.")
+                result = schema.model_validate(decoded)
+            else: result = schema.model_validate_json(self.last_response_text)
+            record["outcome"] = "validated_response"
+            return result
+        except Exception as error:
+            if record["outcome"] == "request_started":
+                record["outcome"] = ("response_json_rejected" if isinstance(error,json.JSONDecodeError) or isinstance(error,ValidationError) and any(e["type"]=="json_invalid" for e in error.errors(include_input=False)) else
+                    "response_schema_rejected" if isinstance(error,ValidationError) else "provider_error")
+            raise
+        finally: _finish_call(self,record,started)
 
     def choose_crop(self, document, question):
         return self._generate(document, question, CROP_INSTRUCTIONS, CropRequest)
@@ -393,7 +488,7 @@ class GeminiProvider:
                               "Describe every explicitly depicted floor across these original pages.",
                               BUILDING_PROMPT if include_geometry else INTERPRETATION_INSTRUCTIONS, BuildingDescription,
                               thinking_level="high", timeout_ms=round(configured_number("RECONSTRUCTION_CALL_SECONDS",300)*1000),
-                              max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True), model=self.reconstruction_model)
+                              max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True), model=self.reconstruction_model, include_qa_context=False)
 
     def reconstruct(self, document, page=None):
         return self.extract_interpretation(document, include_geometry=True)
@@ -405,7 +500,7 @@ class GeminiProvider:
         from .geometry_requirements import missing_geometry_requests
         return self._generate(document, "Fill only the listed missing source-supported geometry.", GEOMETRY_ENRICHMENT_INSTRUCTIONS,
             DescriptionPatch, thinking_level="high", timeout_ms=round(configured_number("RECONSTRUCTION_CALL_SECONDS",300)*1000),
-            max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True), model=self.reconstruction_model,
+            max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True), model=self.reconstruction_model, include_qa_context=False,
             extra_data={"base_revision_id":document.revision_id,"description":document.description.model_dump(mode="json"),
                         "missing_geometry_requests":missing_geometry_requests(document.description)})
 
@@ -414,7 +509,7 @@ class GeminiProvider:
         return self._generate(document,"Review supplied interpretation corrections against original sources.",
             GEOMETRY_ENRICHMENT_INSTRUCTIONS+"\nInspect the supplied user edits, retain their attribution, and correct only supported interpretations. User statements are not observations from the original drawing. Do not silently alter user-provided calibration or stair connectivity.",
             DescriptionPatch,thinking_level="high",timeout_ms=round(configured_number("RECONSTRUCTION_CALL_SECONDS",300)*1000),
-            max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True),model=self.reconstruction_model,
+            max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True),model=self.reconstruction_model, include_qa_context=False,
             extra_data={"base_revision_id":document.revision_id,"description":document.description.model_dump(mode="json"),"user_edits":edits})
 
     def review_reconstruction(self, document, description, scene, *, previous_description=None, previous_scene=None, previous_review=None):
@@ -428,24 +523,21 @@ class GeminiProvider:
               "previous_review":previous_review.model_dump(mode="json")if previous_review else None,
               "actual_geometry_inventory":[{"id":e.id,"name":e.name,"representation":e.representation,"has_geometry":e.geometry is not None,"note":e.note}for e in scene.elements]}
         return self._generate(document,"Review this source-grounded building reconstruction and any candidate regressions.",RECONSTRUCTION_REVIEW_INSTRUCTIONS,ReconstructionReview,
-          thinking_level="high",timeout_ms=round(configured_number("RECONSTRUCTION_REVIEW_SECONDS",120)*1000),max_tokens=configured_number("RECONSTRUCTION_REVIEW_TOKENS",16384,integer=True),model=self.reconstruction_model,extra_views=images,extra_data=data)
+          thinking_level="high",timeout_ms=round(configured_number("RECONSTRUCTION_REVIEW_SECONDS",120)*1000),max_tokens=configured_number("RECONSTRUCTION_REVIEW_TOKENS",16384,integer=True),model=self.reconstruction_model, include_qa_context=False,extra_views=images,extra_data=data)
 
     def patch_reconstruction(self, document, description, scene, review):
         from .review_schema import DescriptionPatch
         from .review_render import overlay_views,issue_crops
         return self._generate(document,"Propose only supported targeted description corrections.",RECONSTRUCTION_PATCH_INSTRUCTIONS,DescriptionPatch,
-          thinking_level="high",timeout_ms=round(configured_number("RECONSTRUCTION_CALL_SECONDS",300)*1000),max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True),model=self.reconstruction_model,
-          extra_views=overlay_views(document,scene)+issue_crops(document,review.issues),extra_data={"base_revision_id":document.revision_id,"description":description.model_dump(mode="json"),"user_values":document.user_values,"review":review.model_dump(mode="json")})
+          thinking_level="high",timeout_ms=round(configured_number("RECONSTRUCTION_CALL_SECONDS",300)*1000),max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True),model=self.reconstruction_model, include_qa_context=False,
+          extra_views=overlay_views(document,scene)+issue_crops(document,review.issues),extra_data={"base_revision_id":document.revision_id,"description":description.model_dump(mode="json"),"user_values":document.user_values,"review":review.model_dump(mode="json"),"issue_target_scopes":_patch_targets(review)})
 
     def review_answer(self, document, question, draft, gate, crop=None, *, validation=None):
         from .review_schema import AnswerReview
         contents=self._decision_input(document,question,crop)
         contents.append({"type":"text","text":json.dumps({"draft":draft.model_dump(mode="json"),"gate":gate.model_dump(mode="json"),"validation":validation or{}},ensure_ascii=False)})
-        response=self.client.decisions.create(model=self.decision_model,input=contents,timeout=remaining_timeout(self,45),questions={"support":{"type":"choice","instructions":ANSWER_REVIEW_INSTRUCTIONS,
-          "criteria":{"supported":"Inspected original evidence supports the scoped answer, derivations and limitations.","contradicted":"Inspected original evidence contradicts a claim, derivation or unjustified refusal.","unsupported":"The draft asserts something not established by inspected evidence or treats assumptions as facts.","unclear":"Evidence is ambiguous, conflicting or not adequately inspected to decide support."}}})
-        usage=getattr(response,"usage",None)
-        self.usage.input_tokens+=getattr(usage,"total_input_tokens",0)or 0
-        self.usage.output_tokens+=getattr(usage,"total_output_tokens",0)or 0
+        response=self._decisions(contents,{"support":{"type":"choice","instructions":ANSWER_REVIEW_INSTRUCTIONS,
+          "criteria":{"supported":"Inspected original evidence supports the scoped answer, derivations and limitations.","contradicted":"Inspected original evidence contradicts a claim, derivation or unjustified refusal.","unsupported":"The draft asserts something not established by inspected evidence or treats assumptions as facts.","unclear":"Evidence is ambiguous, conflicting or not adequately inspected to decide support."}}}, "AnswerReview")
         result=response.answers["support"]
         return AnswerReview(decision=result.choice,confidence=result.confidence)
 

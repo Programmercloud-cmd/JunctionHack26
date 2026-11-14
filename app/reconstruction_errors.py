@@ -80,7 +80,7 @@ def reconstruction_error(error, phase):
     status = status if type(status) is int and status in HTTP_STATUSES else None
     details = {}
     if known:
-        category = "application_rejection" if isinstance(error, DocumentError) else "provider_failure"
+        category = "application_rejection" if isinstance(error, DocumentError) else "provider_output_limit" if getattr(error,"category",None)=="provider_output_limit" else "provider_failure"
         error_type = "DocumentError" if isinstance(error, DocumentError) else "ProviderError"
     elif isinstance(error,json.JSONDecodeError):
         category="response_json"
@@ -110,6 +110,9 @@ def reconstruction_error(error, phase):
         # A logging handler failure must not replace the original operational error.
         pass
     if known:
+        error.diagnostic_id=diagnostic_id
+        error.category=category
+        error.phase=phase
         return error
     result = ProviderError(f"{MESSAGES[category]} [{phase}/{category}; reference {diagnostic_id}]")
     result.diagnostic_id = diagnostic_id

@@ -133,3 +133,28 @@ def test_missing_key_fails_before_network(monkeypatch):
         OpenAIProvider()
     assert error.value.status == 503
     assert "OPENAI_API_KEY" in error.value.message
+
+
+def test_actual_openai_sdk_keeps_normalized_geometry_bounds(provider,document):
+    from test_ifc_generate import description
+    calls=[]
+    def handler(request):
+        calls.append(json.loads(request.content))
+        return httpx2.Response(200,json=response(description().model_dump(mode='json')))
+    intercept(provider,handler)
+    provider.extract_interpretation(document)
+    wire=calls[0]['text']['format']['schema']
+    boxes=wire['$defs']['PageRegion']['properties']['bbox']['properties']
+    points=wire['$defs']['RoomDescription']['properties']['polygon']['items']['properties']
+    for coordinate in [*boxes.values(),*points.values()]:
+        assert coordinate['minimum']==0 and coordinate['maximum']==1
+    assert 'maximum' not in wire['$defs']['Calibration']['properties']['length_m']
+
+
+def test_drawing_direction_rule_is_shared_and_keeps_literal_labels():
+    from app.provider import GATE_INSTRUCTIONS,ANSWER_INSTRUCTIONS,ANSWER_REVIEW_INSTRUCTIONS,IMAGE_DIRECTION_INSTRUCTIONS
+    for instruction in [GATE_INSTRUCTIONS,ANSWER_INSTRUCTIONS,ANSWER_REVIEW_INSTRUCTIONS]:
+        assert IMAGE_DIRECTION_INSTRUCTIONS in instruction
+        assert 'image-relative left/right/top/bottom' in instruction
+        assert "'North Wing' verbatim" in instruction
+        assert 'unsupported geographic bearings' in instruction

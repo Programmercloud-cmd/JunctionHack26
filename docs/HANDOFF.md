@@ -1,3 +1,17 @@
+# Consolidation checkpoint — 2026-11-14
+
+Work is on `blueprint-qa-isolated`; focused commits are local only. Read [CONSOLIDATION_PLAN.md](CONSOLIDATION_PLAN.md) and [CONSOLIDATION_RESULTS.md](CONSOLIDATION_RESULTS.md) for the current diagnostic evidence and acceptance gaps. No new model, format, renderer, infrastructure or execution-budget increase was introduced.
+
+The exact34 failure was zero-area patch evidence;3181 attempted unauthorized wall targets and separately exposed subpixel feature/source-box rounding.11397 hit MAX_TOKENS, but its old diagnostic incorrectly captured a prior successful response. Fixes retain strict evidence/patch guards, isolate stage/call diagnostics, remove duplicated reconstruction request context, preserve private failed candidates, and tolerate at most half a saved-source pixel only for a feature's own citation box. Gemini-specific wire adaptation retains strict local validation. Live A/B rejected numeric wire bounds, so those remain canonical/local/OpenAI but are omitted from Gemini requests. Record patches now require their record field on the Gemini wire.
+
+Verification server: `http://127.0.0.1:8767`, store `.runtime/consolidation-verification`. Stop it before serving that same store elsewhere. User servers8000/8769 were not touched. Fresh originals and historical failed responses remain private. Neither `.env.local`, raw requests/responses nor dataset reference answers enter commits.
+
+All four requested plans have live source-only supported answers, follow-ups and refusals, checked by an independent reviewer directly in Chromium. Full reconstruction fidelity remains incomplete.1794's post-fix extraction timed out without response; no blind retry or token-limit increase followed, and fresh3D/input/export are unavailable.34 retains a partial preview after an overly conservative refinement review.11397 accepted an attributed relative display height while preserving unknown scale and refusing original-only actual height. The non-residential plan retained a partial preview after a safely rejected floor-metadata patch, then accepted an attributed relative display height. Its IFC portability and all four original-bundle restart/reupload checks passed without new inference. Consult the results report; full four-case acceptance remains unmet.
+
+Backend checks:536 passed,25 optional skipped; browser suite24 passed. Final results, stage timings/tokens, browser fidelity gaps and restart checks are recorded in the consolidation report. The historical handoffs below describe older stores/revisions and are not substitutes for these fresh acceptance runs.
+
+---
+
 # Agent handoff — 2026-11-14, source-first iteration
 
 Read [SOURCE_FIRST_SPEC.md](SOURCE_FIRST_SPEC.md), [SOURCE_FIRST_PLAN.md](SOURCE_FIRST_PLAN.md), [SOURCE_FIRST_CONTRACT.md](SOURCE_FIRST_CONTRACT.md) and [SOURCE_FIRST_VERIFICATION.md](SOURCE_FIRST_VERIFICATION.md) first. They supersede historical automatic-3D, single-source and new-format exclusions below. All twelve attached requirements were implemented through reviewed bounded work; source-fidelity limitations remain explicit.

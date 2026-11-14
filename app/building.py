@@ -16,15 +16,15 @@ def _named_coordinates(value, names):
 # Canonical application/artifact coordinates remain lists, with no guessed swapping.
 Point = Annotated[list[float], BeforeValidator(lambda v: _named_coordinates(v, ("x", "y"))),
     WithJsonSchema({"type":"object", "properties": {
-        "x":{"type":"number", "description":"Horizontal position / ORIGINAL PAGE WIDTH, from left (0) to right (1)."},
-        "y":{"type":"number", "description":"Vertical position / ORIGINAL PAGE HEIGHT, from top (0) to bottom (1)."}},
+        "x":{"type":"number", "minimum":0, "maximum":1, "description":"Horizontal position / ORIGINAL PAGE WIDTH, from left (0) to right (1)."},
+        "y":{"type":"number", "minimum":0, "maximum":1, "description":"Vertical position / ORIGINAL PAGE HEIGHT, from top (0) to bottom (1)."}},
         "required":["x","y"], "additionalProperties":False})]
 Box = Annotated[list[float], BeforeValidator(lambda v: _named_coordinates(v, ("left", "top", "right", "bottom"))),
     WithJsonSchema({"type":"object", "properties":{
-        "left":{"type":"number", "description":"Left edge / original page width."},
-        "top":{"type":"number", "description":"Top edge / original page height."},
-        "right":{"type":"number", "description":"Right edge / original page width."},
-        "bottom":{"type":"number", "description":"Bottom edge / original page height."}},
+        "left":{"type":"number", "minimum":0, "maximum":1, "description":"Left edge / original page width."},
+        "top":{"type":"number", "minimum":0, "maximum":1, "description":"Top edge / original page height."},
+        "right":{"type":"number", "minimum":0, "maximum":1, "description":"Right edge / original page width."},
+        "bottom":{"type":"number", "minimum":0, "maximum":1, "description":"Bottom edge / original page height."}},
         "required":["left","top","right","bottom"], "additionalProperties":False})]
 
 
