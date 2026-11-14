@@ -158,7 +158,9 @@ def sourcefirst_server(tmp_path,monkeypatch):
         def reconstruct(self,*args):raise AssertionError('Source-first uses extraction and explicit enrichment')
         def review_reconstruction(self,*args,**kwargs):
             self.review_calls+=1
-            return ReconstructionReview(candidate_supported=True,summary='Explicit fake review; not model-fidelity evidence')
+            return ReconstructionReview(candidate_supported=True,summary='Explicit fake review; not model-fidelity evidence',
+                candidate_assessment={'delta_support':'supported','source_conflicts':[],'new_regressions':[],
+                    'pre_existing_issue_ids':[],'unresolved':[],'issue_resolutions':[]} if kwargs.get('change_context') else None)
         def resolve_intent(self,document,question):
             if question=='How many spaces?':return QuestionIntent(action='clarify',clarification=Clarification(message='Which floor?',suggestions=['Assembly floor']))
             return QuestionIntent(action='answer',resolved_question=question)

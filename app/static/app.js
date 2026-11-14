@@ -199,6 +199,48 @@ function rememberJob(job) {
   if(job.building_id!==state.document?.building_id)return;
   state.jobs=[job,...state.jobs.filter(j=>j.id!==job.id)];renderBuildingStatus();renderJobs();updateControls();
 }
+function renderJobRecovery(row, job) {
+  for(const value of job.submitted_values || []){
+    const item=document.createElement("p");item.className="job-submitted-value";
+    const scope=[value.scope?.floor_id,value.scope?.object_id].filter(Boolean).join(" / ");
+    item.textContent=`Submitted input (user-provided; see outcome above): ${(value.property || "value").replaceAll("_"," ")}${scope?` · ${scope}`:""} = ${nativeValue(value.value)}${value.unit?` ${value.unit}`:""}${value.reason?`. ${value.reason}`:""}`;
+    row.append(item);
+  }
+  if(!job.recovery_events?.length)return;
+  const history=document.createElement("section"),title=document.createElement("strong");history.className="job-recovery";
+  title.textContent="Recovery history";history.append(title);
+  for(const event of job.recovery_events){
+    const item=document.createElement("div"),heading=document.createElement("p"),detail=document.createElement("p");item.className="job-recovery-event";
+    const labels={rejection:"Correction rejected",authorization:"Additional target review",stopped:"Recovery stopped"};
+    heading.textContent=`${event.attempt?`Attempt ${event.attempt} · `:""}${labels[event.kind] || "Recovery update"}`;
+    detail.textContent=event.message || "";item.append(heading,detail);
+    if(event.kind==="rejection"&&event.feedback){
+      const feedback=event.feedback,reason=document.createElement("p"),expected=document.createElement("p");
+      reason.textContent=[feedback.code,feedback.target_id?`Target ${feedback.target_id}`:"",feedback.explanation].filter(Boolean).join(" · ");
+      expected.textContent=feedback.expected_contract?`Required correction: ${feedback.expected_contract}`:"";item.append(reason,expected);
+    }
+    if(event.kind==="authorization"){
+      const sourceRevision=event.base_revision_id || job.base_revision_id;
+      for(const decision of event.decisions || []){
+        const entry=document.createElement("div"),outcome=document.createElement("p"),reason=document.createElement("p");entry.className="job-target-decision";
+        const labels={approved:"Approved correction target",denied:"Denied",unclear:"Unclear · not authorized"};
+        outcome.textContent=`${labels[decision.decision] || "Not authorized"} · target ${decision.target_id}${decision.issue_id?` · issue ${decision.issue_id}`:""}`;
+        reason.textContent=decision.reason || "";entry.append(outcome,reason);
+        if(decision.evidence&&typeof sourceRevision==="string"&&/^[a-f0-9]{32}$/i.test(sourceRevision)){
+          const source=document.createElement("button");source.type="button";source.className="text-button job-target-source";source.textContent="Inspect reviewed target in original source ↗";
+          source.addEventListener("click",()=>showSourceRegion(decision.evidence,`Reviewed target ${decision.target_id}`,sourceRevision));entry.append(source);
+        }
+        item.append(entry);
+      }
+      for(const request of event.requests || [])if(!(event.decisions || []).some(decision=>decision.request_id===request.request_id)){
+        const pending=document.createElement("p");pending.textContent=`Requested target ${request.target_id} · no authorization decision recorded`;item.append(pending);
+      }
+      const note=document.createElement("p");note.textContent="Target approval permits a proposed correction; it does not mean a change was applied or accepted.";item.append(note);
+    }
+    history.append(item);
+  }
+  row.append(history);
+}
 function renderJobs() {
   const open=new Set([...$("building-jobs").querySelectorAll("details[open]")].map(d=>d.dataset.jobId));
   const historyWasOpen=Boolean($("past-jobs")?.open);
@@ -222,6 +264,7 @@ function renderJobs() {
       // The server publishes a sanitized diagnostic separately from provider internals.
       diagnostic.textContent=`Failure detail: ${job.diagnostic_message}`;row.append(diagnostic);
     }
+    renderJobRecovery(row,job);
     for(const issue of job.issues || []){
       const item=document.createElement("div"),heading=document.createElement("strong"),detail=document.createElement("p"),source=document.createElement("button");item.className="job-issue";
       heading.textContent=`${issue.category} · ${issue.discrepancy}`;detail.textContent=[issue.evidence,issue.uncertainty,issue.proposed_action].filter(Boolean).join(" ");
@@ -290,7 +333,7 @@ async function startReconstruction(mode) {
 function renderPage() {
   if (!state.document?.pages.length) return;
   const page = state.document.pages[state.pageIndex];
-  $("page-label").textContent = `${page.source_filename || state.document.filename} · page ${page.source_page || page.page} (${state.pageIndex+1}/${state.document.pages.length})${state.evidenceRevision?" · answered revision":""}`;
+  $("page-label").textContent = `${page.source_filename || state.document.filename} · page ${page.source_page || page.page} (${state.pageIndex+1}/${state.document.pages.length})${state.evidenceRevision?" · source revision":""}`;
   $("page-image").alt = `${state.document.filename}, page ${page.page}`;
   // Only load normalized page previews from this application.
   const preview=state.evidenceRevision?`/api/buildings/${state.document.building_id}/revisions/${state.evidenceRevision}/pages/${page.page}`:page.image_url;
@@ -607,9 +650,9 @@ function revealEvidenceFloor(evidence) {
   if ($("comparison-floor-select").value) $("comparison-floor-select").value = id;
 }
 
-function showSourceRegion(source, label) {
+function showSourceRegion(source, label, revision=null) {
   if(!source||source.kind==="ifc")return;
-  state.evidenceRevision=null;
+  state.evidenceRevision=revision;
   const index = state.document?.pages.findIndex((page) => page.page === source.page) ?? -1;
   if (index < 0) return;
   revealEvidenceFloor(source);
