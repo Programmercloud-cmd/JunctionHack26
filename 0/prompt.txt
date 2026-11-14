@@ -1,0 +1,3 @@
+[120] assistant: The saved IFC confirms the enclosure problem: every room-polygon edge currently becomes a full-height wall, including terrace edges and open circulation boundaries. It also contains only one door, no windows, and no stairs or furnishing objects for `11397`. The diagonal walls I could verify follow outdoor footprint edges; I haven’t established that they came from door leaves.
+
+The next version will generate walls only from explicit wall records. Uncertain features will keep a visible source region and reason, while missing heights will use labeled display assumptions. That is our design choice to avoid invented geometry; it may leave some features schematic or unresolved.
