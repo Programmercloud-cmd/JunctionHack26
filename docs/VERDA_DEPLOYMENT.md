@@ -1,12 +1,14 @@
 # Verda deployment runbook
 
-Deployment is not yet live. Read [VERDA_DEPLOYMENT_PLAN.md](VERDA_DEPLOYMENT_PLAN.md) and [PUBLIC_DEMO_PLAN.md](PUBLIC_DEMO_PLAN.md). Use one CPU VM, one FastAPI process, a separate persistent NVMe data volume and Caddy HTTPS. Gemini credentials remain server-side. Cloud credentials stay on the operator's machine.
+The initial reviewed release is publicly deployed; final browser/live workflow acceptance remains in progress. Read [VERDA_DEPLOYMENT_PLAN.md](VERDA_DEPLOYMENT_PLAN.md) and [PUBLIC_DEMO_PLAN.md](PUBLIC_DEMO_PLAN.md). Use one CPU VM, one FastAPI process, a separate persistent NVMe data volume and Caddy HTTPS. Gemini credentials remain server-side. Cloud credentials stay on the operator's machine.
 
 ## Confirmed preflight
 
-Official Verda CLIv1.10.0 is installed at `/home/jcb/.local/bin/verda`; the release archive's SHA256 was verified. Authentication is now working. Authenticated checks found€200credit balance and no existing instance burn. FIN-01 stock disappeared before provisioning. FIN-03 lists `CPU-TURIN.4V.16G`; stock must be rechecked immediately before creating it. PlainUbuntu24.04 uses API image slug `24.04.base`.
+Official Verda CLI v1.10.0 is installed at `/home/jcb/.local/bin/verda`; its release archive's SHA256 was verified. Authenticated preflight confirmed €200 of redeemed credits and no existing instance burn. The deployed server is `CPU-TURIN.4V.16G` in FIN-03, running plain Ubuntu 24.04 (`24.04.base`), with 4 vCPU, 16 GiB RAM, a 50-GiB OS volume and a separate 50-GiB persistent data volume.
 
-For 4 vCPU/16 GiB, the initial 40-GiB OS + 20-GiB data quote was $0.0645/hour. The API rejected 40 GiB as too small. Both the official CLI wizard and Verda Console use a 50-GiB OS default; the revised 50+20-GiB quote is $0.0672/hour: $0.048 compute, $0.0137 OS, $0.0055 data. The catalog explicitly reportsUSD; CLI estimate omits its currency, so do not call this aEURquote. The direct API's FIN-03 `location_prices` confirmed$0.048/hour compute.36 hours totals $2.7144, approximately €2.43 using Verda's separately displayed currentEURrates; actual billing conversion can differ. This is far below the confirmed€200credit balance. Recheck balance, active resources, prices and availability before provisioning; never enable paid top-ups. Gemini API charges are separate.
+Actual resource records report EUR billing: €0.043/hour for compute and €0.012261575/hour for each volume. The combined cost is approximately **€0.06752315/hour, or €2.43084 for 36 hours**. The earlier USD catalog estimate for this same 50+50-GiB configuration was $0.0754/hour ($2.7144/36 hours); use the actual EUR resource records when reporting this deployment. Gemini API charges are separate. No paid top-up was enabled.
+
+Earlier 40+20-GiB and 50+20-GiB configurations were rejected as storage too small and created no resources. The final 50+50-GiB configuration follows the official OS default and demonstrated CPU data-volume size and succeeded. These outcomes establish compatibility of the deployed sizes, not an exact provider minimum. FIN-01 lost CPU stock before provisioning, so the same CPU shape was deployed in FIN-03. Recheck account balance, prices and stock before creating any additional resource; no additional server is needed for this demo.
 
 The CLI's SDK omits the new API `location_prices` field. Read the officialAPI directly if needed, loading local credentials only in process memory; never use debug logs or print tokens/credential files. Primary references: [CLI](https://docs.verda.com/cli/), [instance docs](https://docs.verda.com/cli/instances/), [API](https://api.verda.com/v1/docs), [pricing](https://verda.com/pricing?currency=eur).
 
@@ -64,6 +66,12 @@ The free hostname is `PUBLIC_IP.sslip.io` (or the correspondingnip.iohostname if
 
 Run the reviewed `deploy/verda/install-server.sh /opt/blueprint/releases/COMMIT HOSTNAME` as root. It installs locked dependencies and officialCaddy, configures the service, stops the previous app before switching release, and starts one worker. The installer does not create/format volumes, create cloud resources, delete data or install teardown timers. Caddy obtains and renews publicTLS; verify certificate and browser behavior before sharing theURL.
 
+## Updating application code while retaining live data
+
+Package only the exact integrated commit approved by the orchestrator with `scripts/verda_release.py`. Transfer its application archive, verify its SHA256 on the VM, and extract it to a new `/opt/blueprint/releases/COMMIT` directory. Keep the existing private environment, pinned example manifest and entire `/srv/blueprint-data` volume. **Do not reseed or replace runtime files during a code update.**
+
+Coordinate the brief restart with the orchestrator. Confirm there are no active jobs before stopping the service; do not interrupt live verification or visitors' paid processing. Record hashes of the current persistent files, including private uploads, original sources, revisions, CURRENT pointers and completed job records. Run the reviewed installer against the new release, then verify the previous release remains available for rollback, all recorded data hashes remain unchanged, private upload/current-revision/job counts agree, and no inference job was implicitly created. Repeat public HTTPS, access controls and the affected browser flow. A code rollback changes only the release symlink and retains current storage.
+
 ## Verification and restart
 
 An independent reviewer must directly use the publicHTTPSURL, both logged out and with the code. Verify all nine cached examples, orbit/floor/overlay controls, object-source links, assumptions and export. Anonymous paid/private calls must fail before provider use. Shared examples must resist direct API mutation, grouped/identical uploads and mutating chat actions. Public listings and example details must not expose private jobs/history/uploads.
@@ -79,3 +87,20 @@ Before a consistent data export, drain or explicitly stop jobs and stop the appl
 Keep the previous release path recorded in `/opt/blueprint/previous-release.txt`. Code rollback stops the app, switches the release symlink to the verified previous commit, checks data compatibility and restarts against the current volume. It does not restore an older data snapshot. Intentional data restore requires a separate recovery decision and an export of post-snapshot visitor state first; keep both copies.
 
 After judging and verified export, explicitly shut down/delete the named VM using its recordedID. Then inspect and separately delete the recordedOS and data volumes only when the user no longer needs them. Detached/OS/data volumes continue billing until deleted; CLIsoft-delete moves them to recoverabletrash for96hours. Recheck running costs and volume inventory afterward. Do not use bulk `--all`, permanently delete, removeSSHkeys used elsewhere or assumeVMdeletion includes storage. [Storage deletion behavior](https://docs.verda.com/cli/storage/) and [billing](https://docs.verda.com/welcome-to-verda/pricing-and-billing/) explain the separate charges.
+
+## Created resource ledger (2026-11-14)
+
+The 50+50-GiB request succeeded. Exactly one on-demand CPU VM was created at 16:28 UTC in FIN-03, with zero GPUs. The data disk was matched to the cloud volume's serial suffix before formatting and mounted by UUID. The API's successful creation response was a plain-text ID despite its JSON schema; inventory was used to resolve it without repeating creation.
+
+- VM: `94ac2a5f-56e7-4cfc-8770-55fbcf07b2b2` (`95.133.254.90`).
+- OS volume: `acc93d78-ea7a-4e50-8da8-d9b44a071bc1` (50 GiB).
+- Data volume: `477dacf2-ed37-4aa9-8d7b-3ae2e4aea4eb` (50 GiB).
+- HTTPS hostname: `95.133.254.90.sslip.io`; DNS resolved to the VM before deployment. Certificate/public acceptance remains to be recorded below.
+- Actual resource records: compute €0.043/hour; each volume €0.012261575/hour. Total approximately €0.06752315/hour or €2.43084 for 36 hours. No paid top-up was enabled.
+- Dedicated operator SSH key: `/home/jcb/.ssh/junction-verda-demo-20261114`; cloud key ID `b96846c3-2397-42a8-bb39-76c4f768ea23`. The private key stays local.
+- Prepared seed: nine exact revisions, 52,239,746 bytes before archive compression; eight derived IFCs reopened and one supplied IFC retained, zero provider calls. Loading all cached models in an isolated local process peaked at 116.8 MiB RSS; this is not a concurrent inference/tessellation peak guarantee.
+- Independent implementation review cleared the mount check, one local worker, secret handling, seed integrity/conflict refusal and rollback design. Four focused deployment tests passed.
+
+These identifiers support explicit export and teardown after judging; no automatic deletion is scheduled. The shared SVG and KIT examples retain negative review findings and must remain visibly partial, not described as accepted accurate reconstructions.
+
+The initial release `9a001f3da55ca292f079362333bdb36ebd328479` serves valid public HTTPS. Anonymous `/api/access` reports public demo with paid work locked. FastAPI listens only on loopback; Caddy owns public ports 80/443. A coordinated application restart verified all 436 seed-file hashes unchanged, nine public examples, zero jobs before/after, and the persistent data mount present. No provider calls were made for deployment/seed/restart. Initial app memory was about 117 MiB. The installer readiness probe was updated to retry connection refusal for up to 60 seconds after systemd start; this only bounds deployment verification, not user work or model processing. Fresh upload, paid QA/refusal and independent public browser acceptance still require the orchestrator’s final integrated checks.

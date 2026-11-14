@@ -53,5 +53,5 @@ systemctl enable caddy.service
 systemctl reload-or-restart caddy.service
 # Print no environment, credentials or application response bodies.
 systemctl is-active --quiet blueprint-qa.service
-curl --fail --silent --output /dev/null http://127.0.0.1:8000/api/health
+curl --fail --silent --show-error --retry 30 --retry-connrefused --retry-delay 1 --retry-max-time 60 --output /dev/null http://127.0.0.1:8000/api/health
 echo 'Service installed. Verify public HTTPS, access controls and persistent state before sharing the URL.'
