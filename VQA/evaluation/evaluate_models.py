@@ -1,13 +1,15 @@
-"""Evaluate vision models on ten randomly selected image-based counting questions."""
+"""Evaluate vision models on randomly selected image-based counting questions."""
 
 import json
 import random
 import sys
 from pathlib import Path
+from statistics import median
 from textwrap import fill
+from time import perf_counter
 
 if not __package__:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from VQA.api import count_objects
 from VQA.test import IMAGE_SUFFIXES, QUESTIONS_FILE
@@ -21,7 +23,7 @@ MODELS = {
     "kimi-k3-1-pro": "kimi",
     "unsloth/Qwen3-VL-4B-Instruct-bnb-4bit": "qwen",
 }
-QUESTION_COUNT = 25
+QUESTION_COUNT = 3
 
 
 def main() -> None:
@@ -40,6 +42,7 @@ def main() -> None:
 
     correct = dict.fromkeys(MODELS, 0)
     errors = dict.fromkeys(MODELS, 0)
+    timings = {model: [] for model in MODELS}
     for index, row in enumerate(questions, 1):
         question = row["question"]
         ground_truth = row["answer"]
@@ -58,25 +61,34 @@ def main() -> None:
 
         for axis, (model, provider) in zip(axes[1:], MODELS.items()):
             label = model.rsplit("/", 1)[-1]
+            started = perf_counter()
             try:
                 answer, boxes = count_objects(image_path, question, provider, model)
             except Exception as error:
+                elapsed = perf_counter() - started
+                timings[model].append(elapsed)
                 errors[model] += 1
-                print(f"  {model}: error ({error})", flush=True)
-                axis.set_title(f"{label} · Error")
+                print(f"  {model}: error after {elapsed:.2f} s ({error})", flush=True)
+                axis.set_title(f"{label} · Error · {elapsed:.2f} s")
                 continue
 
+            elapsed = perf_counter() - started
+            timings[model].append(elapsed)
             matches = answer == ground_truth
             correct[model] += matches
             status = "correct" if matches else "incorrect"
-            print(f"  {model}: {answer} ({status})", flush=True)
+            print(f"  {model}: {answer} ({status}) · {elapsed:.2f} s", flush=True)
             axis.imshow(draw_bounding_boxes(original, boxes))
-            axis.set_title(f"{label} · {answer} ({status})")
+            axis.set_title(f"{label} · {answer} ({status}) · {elapsed:.2f} s")
 
-    print("\nExact count accuracy")
+    print("\nExact count accuracy and latency (all attempts)")
     for model in MODELS:
         total = len(questions)
-        print(f"  {model}: {correct[model]}/{total} correct, {errors[model]} errors")
+        durations = timings[model]
+        print(
+            f"  {model}: {correct[model]}/{total} correct, {errors[model]} errors"
+            f" · {median(durations):.2f} s median · {sum(durations):.2f} s total"
+        )
     plt.show()
 
 

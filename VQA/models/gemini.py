@@ -22,7 +22,7 @@ _RESPONSE_SCHEMA = {
 }
 
 
-def complete(image_path: Path, prompt: str, model: str) -> str | None:
+def complete(image_path: Path, prompt: str, model: str, *, schema: dict = _RESPONSE_SCHEMA) -> str | None:
     from google import genai
     from google.genai import types
 
@@ -35,7 +35,7 @@ def complete(image_path: Path, prompt: str, model: str) -> str | None:
             contents=[image, prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_json_schema=_RESPONSE_SCHEMA,
+                response_json_schema=schema,
                 media_resolution=types.MediaResolution.MEDIA_RESOLUTION_HIGH,
             ),
         )
