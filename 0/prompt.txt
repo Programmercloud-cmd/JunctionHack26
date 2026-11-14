@@ -1,0 +1,63 @@
+[40] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[41] assistant: Proposed minimal implementation plan, based on current source and reviewed provider documentation:
+
+1. Root copies current uncommitted Blueprint source into the dedicated worktree, preserving the original workspace. Root owns `app/main.py`, configuration/dependencies, `.env.example`, and documentation.
+2. Backend owns new `app/voice*.py` and `tests/test_voice*.py`; frontend owns `app/static/app.js`, `index.html`, `styles.css`, new microphone/voice JS files, and `tests/test_voice_browser.py`. Independent reviewer remains read-only.
+3. Begin dependent implementation after reviewer accepts the contract below.
+
+**Contract**
+
+- `GET /api/voice/config` returns readiness booleans, transcription model, and configured language hints. Readiness reports configuration only, never verified service access. Voice remains available independently of the QA provider setting.
+- `GET /api/documents/{document_id}/voice-vocabulary` returns:
+  ```json
+  {
+    "terms": ["Talotekniikka"],
+    "rooms": [{"id": "...", "name": "Talotekniikka", "floor_label": "..."}],
+    "warnings": []
+  }
+  ```
+  Extract names from every `scene.elements` room, including geometry-less rooms, and available floor labels; normalize whitespace and deduplicate case-insensitively. No measurements/properties/assumptions go into recognition context. Generated names remain fallible hints, never factual QA evidence.
+
+  Current `Document` retains a scene, not the extracted `BuildingDescription`. Therefore drawings gain automatic room hints after model generation; before that, accept manually supplied vocabulary and explain this limitation. Native IFC names are available immediately. Do not add an OCR/model call solely for vocabulary.
+
+- WebSocket `/api/voice/transcribe`:
+  - Initial client message: `{"type":"start","document_id":"...","custom_vocabulary":["..."]}`.
+  - Server validates document and combines its current building vocabulary with manual terms and aliases.
+  - Server emits `{"type":"ready"}` only after Google session opens.
+  - Browser sends binary signed little-endian PCM16, mono, 16 kHz. An AudioWorklet must resample the actual browser sample rate rather than assuming 16 kHz.
+  - Server emits `{"type":"transcript","text":"...","final":false|true}`. Finals append; interim text replaces the current interim hypothesis.
+  - Client `{"type":"stop"}` ends input, flushes final recognition, then receives `{"type":"done"}`.
+  - Client `{"type":"cancel"}` or disconnect immediately cancels downstream tasks and closes the provider session.
+  - Safe `{"type":"error","message":"..."}` reports operational failures; never expose provider bodies, credentials, audio, vocabulary, or raw exceptions.
+
+  Use `gemini-3.5-transcribe-live`, `response_modalities=["TEXT"]`, `input_audio_transcription.custom_vocabulary`, and current SDK streaming fields. Provider maximum is 1,000 vocabulary phrases: validate and report excess explicitly, never silently truncate. Root should explain this external limit before implementation. No additional arbitrary phrase, recording-duration, or room limits.
+
+- `POST /api/voice/speech` accepts `{"document_id":"...","text":"..."}` and returns `audio/mpeg`; missing document remains 404, missing credentials 503, provider failures 502. Use ElevenLabs HTTP API via existing `httpx`, fixed server-configured voice/model, and MP3. Reuse the existing 6,000-character draft-answer bound. Browser sends the displayed `result.answer` verbatim, including insufficient/unclear answers; no answer rewrite or second LLM call.
+
+  For this slice, fetching a complete MP3 blob before playback is acceptable and simpler to verify. Document the resulting startup latency. Stop must abort pending fetch, pause playback, revoke its object URL, and invalidate delayed results. Server should cancel upstream work on disconnect where feasible; do not promise that cancellation reverses already billed generation.
+
+**User interaction and aliases**
+
+- Click microphone to start; click Stop to finalize; edit transcript; click existing Ask button. No automatic question submission.
+- Show connecting/listening/finalizing/synthesizing/speaking/error states separately from QA errors.
+- Provide “Read answers aloud” preference and explicit Read/Stop controls. Preserve text and citations when TTS fails or browser autoplay is blocked.
+- Add per-document custom terms and aliases. Alias maps a user-entered easy phrase to a selected room ID; use floor-qualified display labels for duplicated room names. Keep aliases in browser memory for this slice.
+- Include aliases and target names in speech hints. Apply alias normalization visibly before Ask; retain original recognized text in a preview, with the editable submitted question showing any substitution. Use exact, case-insensitive Unicode word boundaries, longest-match-first, no fuzzy room selection and no recursive replacements. Ambiguous alias definitions require correction.
+- Speech and recording must not run concurrently. Starting either stops the other.
+- New upload, new question, cancellation, navigation, or failed connection must stop microphone tracks, disconnect the worklet, close the AudioContext/socket, and invalidate late callbacks. Use a voice generation token alongside existing `state.requestVersion`.
+
+**Acceptance and verification**
+
+- Fake live provider sees native/derived room names, floors, custom terms, aliases, Unicode names, and geometry-less rooms correctly; vocabulary never enters answer evidence.
+- Missing scene still permits manual hints and ordinary transcription; generated IFC reopening restores name hints.
+- Provider wire tests confirm supported configuration fields, PCM framing, interim/final semantics, stop flushing, cancellation, and safe error mapping.
+- Alias tests cover duplicate room names/floors, Unicode boundaries, overlap/longest match, unknown targets, and no unintended substring replacement.
+- Real browser tests use injected speech/QA providers and fake microphone audio: visible partial → final → editable question → existing QA answer/citation/highlight flow; insufficient/unclear speech preserves meaning.
+- Browser tests verify permission denial, missing credentials, failed services, stopping while connecting/finalizing/synthesizing, upload replacement, late events, text fallback, and microphone cleanup. Include narrow-screen layout.
+- Existing backend/browser suite passes. Independent implementation review clears blocking findings.
+- Root performs live transcription and ElevenLabs smoke checks only when credentials are available, and records separate unverified integrations honestly. A/B recordings with and without vocabulary are needed before claiming recognition improvement.
+
+Existing `google-genai==3.3.0`, `httpx`, and `websockets==17.4` cover implementation; root should make `websockets` an explicit dependency only if used directly or required by uvicorn’s server transport.
+
+Defer continuous hands-free conversation, automatic submission, speech-driven model commands, voice cloning, persistence, and fuzzy entity resolution. These exclusions preserve the agreed explicit-submit flow rather than impose new input restrictions.
