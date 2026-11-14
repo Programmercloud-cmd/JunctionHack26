@@ -1,0 +1,5 @@
+[210] assistant: Final1794 remains visually unreliable: an extra wall bisects the balcony, the entry and living-room window are closed after unresolved mappings, the kitchen partition is oversized, and sink/stove labels remain swapped. The invented bedroom window was removed.
+
+Screenshots: `/tmp/junction-v3/final/1794-floor1-{comparison,model}.png`.
+
+Final11397 failed validation and produced no model, so its final fidelity is unverified. Repository unchanged.
