@@ -138,3 +138,21 @@ def test_floor_view_prefix_does_not_add_storey_from_matching_plan(tmp_path):
         doc=store.merge_interpretation(doc.id,source['source_id'],interpretation)
     assert len(doc.description.floors)==1
     assert doc.description.unresolved_views[0].label=='Grundriss: Erdgeschoss'
+
+
+def test_batch_initial_source_normalizes_once_and_reuses_exact_pixels(tmp_path,monkeypatch):
+    original_add=DocumentStore.add;calls=[]
+    def varying(self,data,name):
+        doc=original_add(self,data,name);calls.append(name)
+        page=doc.pages[0]
+        image=Image.new('RGB',(page.width,page.height),'white' if len(calls)==1 else 'red')
+        image.save(page.path)
+        for source in doc.sources:
+            for entry in source['pages']:entry['sha256']=hashlib.sha256(page.path.read_bytes()).hexdigest()
+        return doc
+    monkeypatch.setattr(DocumentStore,'add',varying)
+    store=BuildingStore(tmp_path);doc=store.add_many([(pixels('gray'),'drawing.png')])
+    assert calls==['drawing.png']
+    expected=doc.pages[0].path.read_bytes()
+    store.close();restored=BuildingStore(tmp_path).get(doc.id)
+    assert restored.pages[0].path.read_bytes()==expected

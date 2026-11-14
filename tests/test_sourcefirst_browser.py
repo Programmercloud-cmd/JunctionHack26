@@ -237,3 +237,22 @@ def test_queued_question_response_preserves_newly_typed_followup(static_server,s
         'request_id':submitted['request_id'],'question':submitted['question'],'status':'queued','phase':'queued','message':'Explicit delayed queue fixture','issues':[]})
     expect(page.locator('#ask-button')).to_be_enabled()
     expect(page.locator('#question')).to_have_value('A newly typed follow-up')
+
+
+def test_failed_job_exposes_only_sanitized_diagnostic_as_text(static_server,scene_page):
+    from playwright.sync_api import expect
+    page=scene_page;document,_,_=setup_routes(page)
+    diagnostic="Gemini reached its output token limit. <retry> explicitly when ready."
+    failed={"id":"failed-dxf","building_id":document["building_id"],"kind":"reconstruction","status":"failed",
+        "phase":"failed","message":"Source processing failed operationally; saved interpretation retained.",
+        "diagnostic_message":diagnostic,"issues":[],"internal_detail":"INTERNAL_ONLY_NOT_FOR_DISPLAY"}
+    page.route(f'**/api/buildings/{document["building_id"]}',lambda route:route.fulfill(json={**document,"jobs":[failed]}))
+    page.goto(static_server)
+    page.locator('#file-input').set_input_files({'name':'plan.png','mimeType':'image/png','buffer':source_bytes()})
+    row=page.locator('.job-row[data-job-id="failed-dxf"]')
+    row.locator('summary').click()
+    expect(row.locator('.job-diagnostic')).to_be_visible()
+    expect(row.locator('.job-diagnostic')).to_have_text(f"Failure detail: {diagnostic}")
+    expect(row).to_contain_text('saved interpretation retained')
+    expect(row).not_to_contain_text('INTERNAL_ONLY_NOT_FOR_DISPLAY')
+    assert row.locator('retry').count()==0

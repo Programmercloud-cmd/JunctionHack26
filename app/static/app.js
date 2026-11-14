@@ -217,6 +217,11 @@ function renderJobs() {
       stop.addEventListener("click",async event=>{event.preventDefault();stop.disabled=true;const epoch=state.epoch;try{const stopped=await request(`/api/jobs/${job.id}/stop`,{method:"POST"});if(epoch===state.epoch){rememberJob(stopped);schedulePoll(0);}}catch(error){if(epoch===state.epoch)setError("building-poll-error",error.message);}finally{stop.disabled=false;}});summary.append(stop);
     }
     row.append(summary,message);
+    if(["failed","budget_exhausted"].includes(job.status)&&typeof job.diagnostic_message==="string"&&job.diagnostic_message.trim()){
+      const diagnostic=document.createElement("p");diagnostic.className="job-diagnostic";
+      // The server publishes a sanitized diagnostic separately from provider internals.
+      diagnostic.textContent=`Failure detail: ${job.diagnostic_message}`;row.append(diagnostic);
+    }
     for(const issue of job.issues || []){
       const item=document.createElement("div"),heading=document.createElement("strong"),detail=document.createElement("p"),source=document.createElement("button");item.className="job-issue";
       heading.textContent=`${issue.category} · ${issue.discrepancy}`;detail.textContent=[issue.evidence,issue.uncertainty,issue.proposed_action].filter(Boolean).join(" ");

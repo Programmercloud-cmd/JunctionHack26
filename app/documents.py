@@ -219,7 +219,7 @@ class DocumentStore:
                     warnings.simplefilter("error", Image.DecompressionBombWarning)
                     with Image.open(BytesIO(data)) as image:
                         if image.format not in ("JPEG", "PNG"):
-                            raise DocumentError("Only JPG, PNG and PDF files are supported.", 415)
+                            raise DocumentError("Use JPG, PNG, PDF, SVG, DXF or IFC. DWG conversion is not available.", 415)
                         if getattr(image, "n_frames", 1) != 1:
                             raise DocumentError("Animated images are not supported.", 415)
                         if max(image.size) > MAX_EDGE:
@@ -230,7 +230,7 @@ class DocumentStore:
         except (Image.DecompressionBombWarning, Image.DecompressionBombError):
             raise DocumentError("Image exceeds the decoded pixel limit.", 413) from None
         except Exception:
-            raise DocumentError("Could not read this file. Use a valid, unencrypted JPG, PNG or PDF.") from None
+            raise DocumentError("Could not normalize this source. Use a valid JPG, PNG, unencrypted PDF, supported SVG or DXF.") from None
         document_id = uuid.uuid4().hex
         directory = self.root / document_id
         directory.mkdir()
@@ -252,7 +252,7 @@ class DocumentStore:
             page.source_id, page.source_page, page.source_filename = source_id, page.number, safe_name
         document.source_files = {source_id:data}
         document.sources = [{"source_id":source_id,"filename":safe_name,"filenames":[safe_name],
-            "kind":kind,"media_type":media,"pages":[{"page":p.number,"source_page":p.number,"width":p.width,"height":p.height,
+            "kind":kind,"media_type":media,"warnings":list(notes),"pages":[{"page":p.number,"source_page":p.number,"width":p.width,"height":p.height,
             "sha256":hashlib.sha256(p.path.read_bytes()).hexdigest()} for p in pages],"metadata":vector_metadata or {}}]
         self.documents[document_id] = document
         return document

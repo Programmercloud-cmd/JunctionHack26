@@ -82,7 +82,8 @@ class BuildingStore:
             with tempfile.TemporaryDirectory(prefix="normalize-",dir=self.root.parent) as tmp:
                 normalizer=DocumentStore(Path(tmp))
                 try:
-                    document=normalizer.add(data,filename)
+                    resource_ready=(self._resource_path(building_id)/"source.json").exists()
+                    document=self._resource(data,filename) if resource_ready and not data.lstrip().startswith(b"ISO-10303-21;") else normalizer.add(data,filename)
                     staged=self.root/(".pending-"+uuid.uuid4().hex)
                     staged.mkdir();(staged/"pages").mkdir();(staged/"revisions").mkdir();(staged/"jobs").mkdir()
                     (staged/"source.original").write_bytes(data)
@@ -186,7 +187,13 @@ class BuildingStore:
                 source_files[sid]=original
                 for item in entry.get("pages",[]):
                     path=resource/"pages"/f'{item["source_page"]}.png'
-                    if hashlib.sha256(path.read_bytes()).hexdigest()!=item["sha256"]:raise ValueError("Source page changed")
+                    if hashlib.sha256(path.read_bytes()).hexdigest()!=item["sha256"]:
+                        # A pre-fix double-normalized source may still have its
+                        # exact extraction pixels in the immutable original upload.
+                        pinned=directory/"pages"/f'{item["page"]}.png'
+                        if not pinned.exists() or hashlib.sha256(pinned.read_bytes()).hexdigest()!=item["sha256"]:
+                            raise ValueError("Source page changed")
+                        path=pinned
                     pages.append(Page(item["page"],item["width"],item["height"],path,sid,item["source_page"],entry["filename"]))
             for item in legacy_pages or []:
                 path=folder/f'legacy-page-{item["number"]}.png'
@@ -377,7 +384,7 @@ class BuildingStore:
                 finally:parser.close()
         metadata=json.loads((directory/"source.json").read_text())
         pages=[Page(p["page"],p["width"],p["height"],directory/"pages"/f'{p["source_page"]}.png',sid,p["source_page"],metadata["filename"])for p in metadata["pages"]]
-        return Document(sid,metadata["filename"],pages,source_bytes=data,sources=[metadata],source_files={sid:data},kind="ifc" if metadata["kind"]=="ifc"else"drawing")
+        return Document(sid,metadata["filename"],pages,warnings=metadata.get("warnings",[]),source_bytes=data,sources=[metadata],source_files={sid:data},kind="ifc" if metadata["kind"]=="ifc"else"drawing")
 
     def add_many(self, files, building_id=None):
         if not files:raise DocumentError("Choose at least one source file.")
