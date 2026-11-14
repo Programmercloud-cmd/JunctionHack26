@@ -1,0 +1,65 @@
+{
+  "cli_version": "0.13.4",
+  "checkpoint_id": "01M7DBZVMFXN5P9S6RZMRZGAJZ",
+  "session_id": "01a1daa0-ff86-78d0-94b9-5494d731b204",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-14T15:49:42.599303962Z",
+  "branch": "blueprint-qa-isolated",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "app/openai_provider.py",
+    "app/provider.py",
+    "docs/REVISION_RELIABILITY_PLAN.md",
+    "tests/test_revision_provider.py"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "cba079107cbf",
+  "checkpoint_transcript_start": 923,
+  "transcript_lines_at_start": 923,
+  "compact_transcript_start": 155,
+  "token_usage": {
+    "input_tokens": 34430,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 7022720,
+    "output_tokens": 11440,
+    "api_call_count": 36,
+    "subagent_tokens": {
+      "input_tokens": 119093,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 17599232,
+      "output_tokens": 37997,
+      "api_call_count": 96
+    },
+    "subagent_tokens_complete": true
+  },
+  "session_token_usage": {
+    "input_tokens": 206696,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 23242752,
+    "output_tokens": 40336,
+    "api_call_count": 164,
+    "subagent_tokens": {
+      "input_tokens": 724119,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 35755264,
+      "output_tokens": 107086,
+      "api_call_count": 241
+    },
+    "subagent_tokens_complete": true
+  },
+  "redaction": {
+    "replacements": 103,
+    "layers": {
+      "betterleaks": 37,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 80,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  }
+}
