@@ -1,0 +1,22 @@
+Implement the first interactive 3D version using the established subagent orchestration: planning, independent plan review, bounded implementation tasks, and independent implementation review.
+
+Begin with file-format support: add IFC import first, alongside the existing JPG/PNG/PDF support. Extract building elements, available properties and geometry while preserving stable IDs and source references. Validate this on one suitable IFC from the dataset. Establish a shared object/evidence representation that can also accommodate image-derived geometry. Defer DXF, SVG and DWG until the core flow works; supporting every format is not a prerequisite.
+
+The goal is an orbitable floor/building model linked to answers. When a question is answered, highlight the relevant rooms, walls, doors or windows and fade the remaining building to roughly 5–15% opacity. Clicking a highlighted object should reveal its source evidence.
+
+Keep the hackathon scope narrow:
+
+- Use Three.js in the existing browser UI; no remote rendering dependency.
+- First demonstrate IFC → orbitable model → answer highlighting. Then add reconstruction of one floor from a JPG/PNG or PDF page using the same viewer.
+- Give objects stable IDs and source references. Extend answers with validated highlight_ids; reuse the model across questions.
+- Support IFC evidence through element IDs/properties and image evidence through page regions.
+- Distinguish extracted geometry from inferred dimensions. Missing scale means an explicitly unscaled reconstruction. Assumed heights must never become factual evidence.
+- Keep “answer highlighting” and “show assumptions” as separate controls.
+- Preserve the provider switch, evidence-sufficiency gate, citations and refusal behavior. Gemini remains the final-demo provider.
+- If an answer cannot be reliably mapped to a 3D object, show its available source evidence without inventing a match.
+
+First acceptance flow: load a validated IFC → orbit the model → ask a supported element-count question → relevant objects remain highlighted while the surroundings fade → click an object to inspect its source evidence.
+
+Second acceptance flow: upload a simple floor-plan image → generate an approximate floor model → inspect assumptions → ask about rooms and highlight reliably associated objects.
+
+Defer inferred multi-storey reconstruction, photorealism, Blender/MCP and cloud/HPC rendering until these flows work.
