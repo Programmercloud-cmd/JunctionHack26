@@ -182,7 +182,7 @@ def test_reconstruction_budgets_are_scoped_and_qa_budgets_unchanged(sdk_document
             assert "generationConfig" not in body and "thinkingConfig" not in body
 
 
-def test_patch_record_wire_object_keeps_exact_local_types_strict():
+def test_patch_record_wire_string_keeps_exact_local_types_strict():
     from app.review_schema import DescriptionPatch
     from app.provider import gemini_wire_schema
     from pydantic import ValidationError
@@ -190,9 +190,47 @@ def test_patch_record_wire_object_keeps_exact_local_types_strict():
     wire=gemini_wire_schema(original)
     assert len(original['$defs']['RecordPatch']['properties']['record']['anyOf'])==7
     record=wire['$defs']['RecordPatch']['properties']['record']['anyOf'][0]
-    assert record['type']=='object' and 'properties' not in record
+    assert record['type']=='string' and 'properties' not in record
     assert 'Local validation' in record['description']
     import pytest
     with pytest.raises(ValidationError):
         DescriptionPatch.model_validate({'base_revision_id':'test','operations':[{'action':'add','collection':'rooms',
             'record':{'label':'Unsupported','execute_python':'forbidden'},'evidence':{'page':1,'bbox':[0,0,1,1]},'reason':'fixture'}]})
+
+
+def test_patch_string_record_decodes_typed_data_and_retains_exact_diagnostic(sdk_document):
+    from app.review_schema import DescriptionPatch
+    provider,document=sdk_document
+    record=room()
+    encoded=json.dumps(record)
+    output={'base_revision_id':'r1','operations':[{'action':'add','collection':'rooms','record':encoded,
+        'evidence':{'page':1,'bbox':[0,0,1,1]},'reason':'fixture'}]}
+    calls=intercept(provider,output)
+    patch=provider._generate(document,'fixture','fixture',DescriptionPatch)
+    assert patch.operations[0].record.label==record['label']
+    assert provider.last_structured_output==output and isinstance(provider.last_structured_output['operations'][0]['record'],str)
+    assert calls[0]['generationConfig']['responseJsonSchema']['$defs']['RecordPatch']['properties']['record']['anyOf'][0]['type']=='string'
+
+
+@pytest.mark.parametrize('record',['{broken','[]','{}','null',json.dumps({**room(),'execute_python':'forbidden'})])
+def test_invalid_patch_string_is_not_coerced_or_published(sdk_document,record):
+    from app.review_schema import DescriptionPatch
+    provider,document=sdk_document
+    output={'base_revision_id':'r1','operations':[{'action':'add','collection':'rooms','record':record,
+        'evidence':{'page':1,'bbox':[0,0,1,1]},'reason':'fixture'}]}
+    intercept(provider,output)
+    with pytest.raises((ValueError,ProviderError)):
+        provider._generate(document,'fixture','fixture',DescriptionPatch)
+    assert provider.last_structured_output==output
+    assert document.scene is None and document.description is None
+
+
+def test_missing_requests_do_not_retrace_valid_walls_or_request_reference_registration():
+    from app.geometry_requirements import missing_geometry_requests
+    from app.revisions import needs_geometry
+    d=description(floor('Ground',order=0,order_basis='Ground source label'),floor('Upper',order=1,order_basis='Upper source label'))
+    for i,f in enumerate(d.floors):f.persistent_id=str(i)
+    requests=missing_geometry_requests(d)
+    assert requests and needs_geometry(d)
+    assert all(request['fields']==['registration'] for request in requests)
+    assert all(request['target_id']=='1' for request in requests)

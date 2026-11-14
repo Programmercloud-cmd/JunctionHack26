@@ -63,6 +63,8 @@ def apply_patch(document,patch,review=None,*,enrichment=False):
     registry=candidate.identity_registry
     issues={issue.id:issue for issue in review.issues} if review else {}
     changed=set();removed=set();added=set()
+    base_floors={floor.persistent_id:floor for floor in document.description.floors}
+    declared_replacements=_declared_nested_replacements(patch)
     for operation in patch.operations:
         _evidence(document,operation.evidence)
         supported=[issues[i]for i in operation.issue_ids if i in issues and issues[i].actionable
@@ -119,8 +121,8 @@ def apply_patch(document,patch,review=None,*,enrichment=False):
         if operation.collection=="floors":
             if record.view_type!="floor_plan":
                 raise DocumentError("Unsupported views cannot be inserted as building floors.",422)
-            if old and any(getattr(record,name)!=getattr(old,name)for name in COLLECTIONS):
-                raise DocumentError("A floor metadata patch cannot rewrite unrelated nested objects.",422)
+            if old:
+                _retain_staged_floor_records(record,old,base_floors.get(old.persistent_id),declared_replacements)
             if not old and not any(getattr(record,name)for name in COLLECTIONS):
                 raise DocumentError("An empty proposed floor provides no supported reconstruction; retain it as unresolved source evidence.",422)
         if getattr(record,"source",None) is not None and record.source.page!=operation.evidence.page:
@@ -173,6 +175,46 @@ def apply_patch(document,patch,review=None,*,enrichment=False):
                       "transform_updates":[u.model_dump()for u in patch.transform_updates]}
 
 
+def _declared_nested_replacements(patch):
+    """Index redundant copies only; this does not approve or execute an operation."""
+    replacements={}
+    for operation in patch.operations:
+        if operation.action!="replace" or operation.collection not in COLLECTIONS or operation.record is None:
+            continue
+        try:record=TYPES[operation.collection].model_validate(operation.record.model_dump())
+        except Exception:continue  # The operation itself still fails normal typed validation.
+        if record.persistent_id not in (None,operation.target_id):continue
+        record.persistent_id=operation.target_id
+        key=(operation.floor_id,operation.collection,operation.target_id)
+        replacements.setdefault(key,[]).append(record)
+    return replacements
+
+
+def _retain_staged_floor_records(proposed,staged,base,replacements):
+    """A floor operation changes metadata, never nested records copied into its payload."""
+    if base is None:
+        raise DocumentError("A floor metadata patch requires its original floor identity.",422)
+    for collection in COLLECTIONS:
+        supplied=getattr(proposed,collection)
+        original=getattr(base,collection)
+        current=getattr(staged,collection)
+        identities=[record.persistent_id for record in supplied]
+        if identities not in ([record.persistent_id for record in original],
+                               [record.persistent_id for record in current]):
+            raise DocumentError("A floor metadata patch cannot change nested identity order or length.",422)
+        originals={record.persistent_id:record for record in original}
+        staged_records={record.persistent_id:record for record in current}
+        for record in supplied:
+            key=(staged.persistent_id,collection,record.persistent_id)
+            permitted=[originals.get(record.persistent_id),staged_records.get(record.persistent_id),
+                       *replacements.get(key,[])]
+            if not any(record==allowed for allowed in permitted if allowed is not None):
+                raise DocumentError("A floor metadata patch cannot rewrite unrelated nested objects.",422)
+        # Even an exact future replacement copy remains inert until its separately
+        # declared operation passes source, review, identity and conflict checks.
+        setattr(proposed,collection,current)
+
+
 def regression_findings(before,after,changes):
     """Local loss checks complement visual review; rendering success alone is insufficient."""
     findings=[]
@@ -217,17 +259,8 @@ def apply_enrichment(document,patch):
 
 
 def needs_geometry(description):
-    if description is None:return True
-    for floor in description.floors:
-        if not floor.boundaries and floor.rooms:return True
-        if len(description.floors)>1 and not floor.registration and not floor.alignment:return True
-        if len(description.floors)>1 and any(f.kind=="stairs" and not f.connection for f in floor.features):return True
-        if any(not item.polygon for item in floor.rooms):return True
-        if any(not item.segment and not getattr(item,"footprint",[]) for item in floor.boundaries):return True
-        if any(not item.segment for item in floor.openings):return True
-        if any(not item.polygon for item in floor.features):return True
-        if not any(getattr(floor,name) for name in COLLECTIONS):return True
-    return False
+    from .geometry_requirements import missing_geometry_requests
+    return bool(missing_geometry_requests(description))
 
 
 def _provided_fields(value,path=()):

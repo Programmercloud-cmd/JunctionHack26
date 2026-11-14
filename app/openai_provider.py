@@ -141,11 +141,12 @@ class OpenAIProvider:
 
     def enrich_geometry(self, document):
         from .review_schema import DescriptionPatch
+        from .geometry_requirements import missing_geometry_requests
         if document.description is None:
             raise ProviderError("Save a source interpretation before requesting geometry.")
         return self._parse(document,"Fill only missing source-supported geometry.",GEOMETRY_ENRICHMENT_INSTRUCTIONS,DescriptionPatch,
             max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True),timeout=configured_number("RECONSTRUCTION_CALL_SECONDS",300),
-            extra_data={"base_revision_id":document.revision_id,"description":document.description.model_dump(mode="json")})
+            extra_data={"base_revision_id":document.revision_id,"description":document.description.model_dump(mode="json"),"missing_geometry_requests":missing_geometry_requests(document.description)})
 
     def refine_user_inputs(self, document, edits):
         from .review_schema import DescriptionPatch

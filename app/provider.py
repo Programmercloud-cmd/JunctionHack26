@@ -75,7 +75,7 @@ Native calculation operands must reference original records/properties, not supp
 
 
 def gemini_wire_schema(schema: dict) -> dict:
-    """Relax array upper bounds only on Gemini's wire; validate the full model locally.
+    """Adapt Gemini wire grammar while keeping exact local response validation.
 
     The current endpoint rejects these bounds for our reconstruction schema. Walk
     schema locations, not arbitrary JSON values: a property named ``maxItems``
@@ -100,14 +100,13 @@ def gemini_wire_schema(schema: dict) -> dict:
             visit(node.get(keyword))
 
     visit(result)
-    # Live probes accept the floor/non-floor subsets separately but reject their
-    # combined record schema, including a merged-properties variant. Keep this
-    # one payload open on Gemini's wire; exact collection-specific types and
-    # source/identity validation remain mandatory locally before any mutation.
+    # Gemini rejects the combined typed-record union; an unconstrained object
+    # accepts requests but generated empty objects in actual source runs. Encode
+    # this one record as JSON text on the wire, then validate its exact type locally.
     record=result.get("$defs",{}).get("RecordPatch",{}).get("properties",{}).get("record")
     if isinstance(record,dict) and "anyOf" in record:
         record.clear()
-        record["anyOf"]=[{"type":"object","description":"Typed data record for the operation's collection. For replacements copy the existing record and change only supported fields; preserve all other fields. Local validation rejects missing, extra or wrongly typed fields."},{"type":"null"}]
+        record["anyOf"]=[{"type":"string","description":"JSON-encoded complete typed record matching the operation collection and supplied record schemas. Serialize the record object as a JSON string; never an empty object. Local validation enforces every original field and type."},{"type":"null"}]
     return result
 
 
@@ -204,6 +203,8 @@ Original source images remain authoritative; this JSON is a fallible interpretat
 
 GEOMETRY_ENRICHMENT_INSTRUCTIONS = """Extend the saved interpretation with only missing geometry and supported building relationships.
 Use the supplied originals and exact existing description. Return a DescriptionPatch for the exact base_revision_id.
+Address the supplied missing_geometry_requests. Existing valid segments do not need optional footprint polygons just because those arrays are empty.
+For inventory gaps inspect all meaningful source features; for individual field gaps preserve unrelated geometry and semantics exactly.
 Preserve existing persistent IDs, labels, sources and unrelated semantic records. Add newly inspected records with persistent_id=null.
 Use replace operations to fill geometry on existing records; do not remove an existing record merely because its geometry is unknown.
 A floor replacement changes floor metadata only and must preserve its nested records unchanged; patch objects separately.
@@ -338,6 +339,12 @@ class GeminiProvider:
         for label,png in extra_views or []:
             parts.extend([types.Part.from_text(text=label),types.Part.from_bytes(data=png,mime_type="image/png")])
         if extra_data is not None:parts.append(types.Part.from_text(text=json.dumps(extra_data,ensure_ascii=False)))
+        from .review_schema import DescriptionPatch
+        if schema is DescriptionPatch:
+            # These schemas guide generation as text without triggering the
+            # provider's rejected combined schema grammar. They are also enforced locally.
+            parts.append(types.Part.from_text(text=json.dumps({"record_schemas":schema.model_json_schema().get("$defs",{})})))
+            instruction += "\nWIRE FORMAT: operations[*].record is a JSON-encoded STRING containing the complete typed record object, or null for removal. Use the supplied record schemas and preserve replacement fields exactly. Do not return {} or code."
         timeout_ms=round(remaining_timeout(self,(timeout_ms or 45000)/1000)*1000)
         response = self.client.models.generate_content(
             model=model or self.model, contents=parts,
@@ -356,6 +363,15 @@ class GeminiProvider:
         # validation replay. Never retain/log the request or provider exception.
         try:self.last_structured_output=json.loads(response.text)
         except (ValueError,TypeError):self.last_structured_output=None
+        if schema is DescriptionPatch and self.last_structured_output is not None:
+            decoded=deepcopy(self.last_structured_output)
+            operations=decoded.get("operations",[]) if isinstance(decoded,dict) else []
+            for operation in operations if isinstance(operations,list) else []:
+                if isinstance(operation,dict) and isinstance(operation.get("record"),str):
+                    operation["record"]=json.loads(operation["record"])
+                    if not isinstance(operation["record"],dict):
+                        raise ProviderError("The patch record must decode to a typed JSON object. No change was applied.")
+            return schema.model_validate(decoded)
         return schema.model_validate_json(response.text)
 
     def choose_crop(self, document, question):
@@ -386,10 +402,12 @@ class GeminiProvider:
         from .review_schema import DescriptionPatch
         if document.description is None:
             raise ProviderError("Save a source interpretation before requesting geometry.")
-        return self._generate(document, "Fill only missing source-supported geometry.", GEOMETRY_ENRICHMENT_INSTRUCTIONS,
+        from .geometry_requirements import missing_geometry_requests
+        return self._generate(document, "Fill only the listed missing source-supported geometry.", GEOMETRY_ENRICHMENT_INSTRUCTIONS,
             DescriptionPatch, thinking_level="high", timeout_ms=round(configured_number("RECONSTRUCTION_CALL_SECONDS",300)*1000),
             max_tokens=configured_number("RECONSTRUCTION_MAX_TOKENS",65536,integer=True), model=self.reconstruction_model,
-            extra_data={"base_revision_id":document.revision_id,"description":document.description.model_dump(mode="json")})
+            extra_data={"base_revision_id":document.revision_id,"description":document.description.model_dump(mode="json"),
+                        "missing_geometry_requests":missing_geometry_requests(document.description)})
 
     def refine_user_inputs(self, document, edits):
         from .review_schema import DescriptionPatch

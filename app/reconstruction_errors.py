@@ -82,6 +82,9 @@ def reconstruction_error(error, phase):
     if known:
         category = "application_rejection" if isinstance(error, DocumentError) else "provider_failure"
         error_type = "DocumentError" if isinstance(error, DocumentError) else "ProviderError"
+    elif isinstance(error,json.JSONDecodeError):
+        category="response_json"
+        error_type="JSONDecodeError"
     elif isinstance(error, ValidationError):
         details["validation"] = _validation_summary(error)
         category = "response_json" if any(item["type"] == "json_invalid" for item in details["validation"]) else "response_schema"
