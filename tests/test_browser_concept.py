@@ -119,10 +119,10 @@ def test_concept_proposals_source_picking_footprints_and_export(concept_server,s
     expect(page.locator('#element-inspector')).to_be_visible()
     page.locator('#element-source').click();expect(page.locator('#evidence-overlay')).to_be_visible()
     page.locator('#show-concept').click()
-    page.locator('#concept-cutaway').uncheck()
-    assert page.evaluate('window.blueprintViewer.concept.cuts.every(c=>c.material.clippingPlanes.length===0)')
-    page.locator('#concept-cutaway').check()
-    assert page.evaluate('window.blueprintViewer.concept.cuts.every(c=>c.material.clippingPlanes.length===1)')
+    page.locator('#cutaway-percent').fill('100');page.locator('#cutaway-percent').dispatch_event('input')
+    assert page.evaluate('''()=>{const values=[];blueprintViewer.concept.floors.forEach(f=>f.group.traverse(m=>{if(m.material)values.push(m.material.clippingPlanes.length)}));return values.length>0&&values.every(n=>n===0)}''')
+    page.locator('#cutaway-percent').fill('38');page.locator('#cutaway-percent').dispatch_event('input')
+    assert page.evaluate('''()=>{const values=[];blueprintViewer.concept.floors.forEach(f=>f.group.traverse(m=>{if(m.material)values.push(m.material.clippingPlanes.length)}));return values.length>0&&values.every(n=>n===1)}''')
     assert page.evaluate('window.blueprintViewer.data')==data
     assert snapshot(page)['concept_build_count']==1
     assert requests==[]
@@ -137,7 +137,7 @@ def test_concept_proposals_source_picking_footprints_and_export(concept_server,s
 
 def test_atomic_revision_preserves_view_and_discards_failed_stale_candidates(concept_server,scene_page):
     page=scene_page;generate(page,concept_server);page.locator('#show-concept').click()
-    page.locator('#show-assumptions').check();page.locator('#concept-cutaway').uncheck()
+    page.locator('#show-assumptions').check();page.locator('#cutaway-percent').fill('100');page.locator('#cutaway-percent').dispatch_event('input')
     page.wait_for_timeout(250)
     result=page.evaluate('''() => {
       const v=window.blueprintViewer;v.data.building_id='fixture-building';v.data.revision_id='r1';v.data.revision_number=1;

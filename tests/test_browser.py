@@ -21,6 +21,21 @@ class FixtureProvider:
         from app.schemas import Usage
         self.usage = Usage()
 
+    def extract_interpretation(self, document, include_geometry=False):
+        from app.building import BuildingDescription
+        assert include_geometry is False
+        reconstruct=getattr(self,"reconstruct",None)
+        return reconstruct(document) if reconstruct else BuildingDescription(floors=[],limitations=["Explicit source-only QA fixture"])
+
+    def enrich_geometry(self, document):
+        from app.review_schema import DescriptionPatch
+        # This fixture has no additional source-supported geometry to supply.
+        return DescriptionPatch(base_revision_id=document.revision_id)
+
+    def review_reconstruction(self, *args, **kwargs):
+        from app.review_schema import ReconstructionReview
+        return ReconstructionReview(candidate_supported=True,summary="Injected browser review; not a live fidelity claim")
+
     def gate(self, document, question, crop=None):
         from app.schemas import GateResult
         from app.provider import ProviderError
@@ -120,7 +135,7 @@ def test_pdf_evidence_navigation_and_replacement(server, browser_page):
     ask(page, "Count rooms")
     expect(page.locator("#answer-text")).to_have_text("Fixture: one labeled room.")
     page.locator(".evidence-item").click()
-    expect(page.locator("#page-label")).to_have_text("Page 2 of 2")
+    expect(page.locator("#page-label")).to_contain_text("page 2 (2/2)")
     expect(page.locator("#evidence-overlay")).to_be_visible()
     assert page.locator("#evidence-overlay").evaluate("el => el.style.left") == "10%"
     page.locator("#previous-page").click()

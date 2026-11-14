@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const state = { document: null, pageIndex: 0, selectedEvidence: null, sourceSelection: null, result: null, busy: null, providerReady: false, health: null, requestVersion: 0, scene: null, viewer: null, selectedElement: null, selectedComparison: null, view: "drawing", epoch:0, jobs:[], savedBuildings:[], pollTimer:null, pollingEpoch:null, questionRequest:null, askSubmitting:false, reconstructionSubmitting:false };
+const state = { document: null, pageIndex: 0, selectedEvidence: null, sourceSelection: null, result: null, busy: null, providerReady: false, health: null, requestVersion: 0, scene: null, viewer: null, selectedElement: null, selectedComparison: null, view: "drawing", epoch:0, jobs:[], savedBuildings:[], pollTimer:null, pollingEpoch:null, questionRequest:null, askSubmitting:false, reconstructionSubmitting:false, uploadMode:"new", conversation:[], clarificationReply:null, assumptionRows:[], assumptionEdits:new Map(), evidenceRevision:null };
 const suggestions = Array.from(document.querySelectorAll("[data-question]"));
 
 function announce(message) { $("announcer").textContent = message; }
@@ -10,6 +10,8 @@ function updateControls() {
   const busy = Boolean(state.busy);
   $("file-input").disabled = busy;
   $("upload-label").disabled = busy;
+  $("append-sources").disabled=busy||!state.document;
+  $("retry-extraction").disabled=busy||!state.document||!state.providerReady;
   $("upload-label").classList.toggle("is-disabled", busy);
   $("drop-zone").setAttribute("aria-disabled", String(busy));
   $("question").disabled = !state.document || busy;
@@ -73,7 +75,7 @@ async function checkHealth() {
       $("provider-title").textContent = `${providerLabel} is not configured yet`;
       $("provider-message").textContent = `Upload and preview drawings now. To enable answers, set ${health.credential_env || "GEMINI_API_KEY"} in the server’s .env.local file and restart the server. Keep the key out of the browser.`;
     }
-    if (health.limits) $("upload-limits").textContent = `JPG, PNG, PDF · ${health.limits.max_upload_mb} MB / ${health.limits.max_pages} pages · IFC · ${health.limits.max_ifc_mb || 25} MB`;
+    if (health.limits) $("upload-limits").textContent = `JPG, PNG, SVG, DXF · ${health.limits.max_upload_mb} MB each · PDF ${health.limits.max_pages} pages per file · IFC ${health.limits.max_ifc_mb || 25} MB · DWG requires a converter`;
   } catch (error) {
     state.providerReady = false;
     $("connection-label").textContent = "Server unavailable";
@@ -98,32 +100,28 @@ function resetAnswer() {
   setError("ask-error");
 }
 
-async function uploadFile(file) {
-  if (!file || state.busy) return;
+async function uploadFile(input, append = false) {
+  const files=Array.from(input?.name ? [input] : input || []);
+  if (!files.length || state.busy) return;
   setError("upload-error");
-  const isIfc = /\.ifc$/i.test(file.name);
-  const maxMB = isIfc ? (state.health?.limits?.max_ifc_mb || 25) : (state.health?.limits?.max_upload_mb || 10);
-  if (file.size > maxMB * 1024 * 1024) { setError("upload-error", `This file is too large. Choose a file up to ${maxMB} MB.`); return; }
-  if (!/\.(jpe?g|png|pdf|ifc)$/i.test(file.name)) { setError("upload-error", "Choose a JPG, PNG, PDF floor plan, or IFC model."); return; }
-  state.busy = "upload";
-  const version = ++state.requestVersion;
-  updateControls();
-  const form = new FormData();
-  form.append("file", file);
-  try {
-    const result = await request("/api/documents", { method: "POST", body: form }, isIfc ? 180000 : 60000);
-    if (version !== state.requestVersion) return;
-    if (!result.document_id || !Array.isArray(result.pages) || (result.kind !== "ifc" && !result.pages.length)) throw new Error("The server did not return a usable source document.");
-    await activateDocument(result);
-    refreshSavedBuildings();
-    if(result.is_new_upload===true && result.review_status==="source_available" && !result.has_scene && result.kind!=="ifc" && state.providerReady)await startReconstruction("reconstruct");
-    announce(`Uploaded ${result.filename || file.name}. Source ready.`);
-  } catch (error) { setError("upload-error", error.message); }
-  finally {
-    state.busy = null;
-    $("file-input").value = "";
-    updateControls();
+  for(const file of files){
+    const maxMB=/\.ifc$/i.test(file.name)?(state.health?.limits?.max_ifc_mb||25):(state.health?.limits?.max_upload_mb||10);
+    if(file.size>maxMB*1024*1024){setError("upload-error",`${file.name} exceeds the ${maxMB} MB per-file limit.`);return;}
+    if(!/\.(jpe?g|png|pdf|ifc|svg|dxf|dwg)$/i.test(file.name)){setError("upload-error","Choose JPG, PNG, PDF, SVG, DXF or IFC. DWG needs an available converter.");return;}
   }
+  state.busy="upload";const version=++state.requestVersion;updateControls();
+  const form=new FormData();for(const file of files)form.append("files",file);
+  const path=append&&state.document?`/api/buildings/${state.document.building_id}/sources`:"/api/documents";
+  try{
+    const result=await request(path,{method:"POST",body:form});if(version!==state.requestVersion)return;
+    if(!result.document_id||!Array.isArray(result.pages))throw new Error("The server did not return a usable source document.");
+    if(append&&result.document_id===state.document?.document_id){
+      state.document=result;for(const job of result.extraction_jobs||[])rememberJob(job);
+      renderPage();renderSourceList();renderBuildingStatus();await refreshAssumptions();schedulePoll(0);
+    }else await activateDocument({...result,jobs:result.jobs||result.extraction_jobs||[]});
+    refreshSavedBuildings();announce("Original sources saved. Interpretation is independent of optional 3D generation.");
+  }catch(error){setError("upload-error",error.message);}
+  finally{state.busy=null;$("file-input").value="";state.uploadMode="new";updateControls();}
 }
 
 function terminalJob(job) {return ["complete","needs_attention","failed","budget_exhausted","stopped","interrupted"].includes(job.status);}
@@ -147,11 +145,11 @@ async function refreshSavedBuildings() {
 }
 async function activateDocument(result) {
   clearTimeout(state.pollTimer);state.epoch++;state.jobs=result.jobs || [];state.questionRequest=null;state.askSubmitting=false;state.reconstructionSubmitting=false;
-  clearScene();state.document=result;state.pageIndex=0;resetAnswer();setError("building-poll-error");
+  clearScene();state.document=result;state.pageIndex=0;state.conversation=[];state.clarificationReply=null;state.assumptionEdits.clear();state.evidenceRevision=null;resetAnswer();setError("building-poll-error");
   $("filename").textContent=result.filename;$("filename").title=result.filename;
   $("page-count").textContent=result.kind==="ifc"?"IFC model":`${result.pages.length} ${result.pages.length===1?"page":"pages"}`;
   $("document-warnings").textContent=(result.warnings || []).join(" ");$("document-warnings").hidden=!$("document-warnings").textContent;
-  $("drop-zone").hidden=true;$("document-view").hidden=false;$("upload-label").textContent="Replace file";$("zoom").value="100";$("image-stage").style.width="100%";
+  $("drop-zone").hidden=true;$("document-view").hidden=false;$("upload-label").textContent="Open other files";$("zoom").value="100";$("image-stage").style.width="100%";
   if(result.kind==="ifc"){
     setView("model");await loadScene(await request(result.scene_url || `/api/documents/${result.document_id}/scene`));
     suggestions[0].dataset.question="How many windows are in this IFC model?";suggestions[0].textContent="Count windows";
@@ -162,8 +160,8 @@ async function activateDocument(result) {
     suggestions[1].dataset.question="What dimensions are explicitly shown?";suggestions[1].textContent="Inspect dimensions";
     if(result.scene_url)await loadScene(await request(result.scene_url));
   }
-  renderBuildingStatus();renderJobs();updateControls();
-  if(progressiveDocument())schedulePoll(0);
+  renderSourceList();renderBuildingStatus();renderJobs();updateControls();
+  if(progressiveDocument()){await Promise.allSettled([refreshConversation(),refreshAssumptions()]);schedulePoll(0);}
 }
 async function openBuilding(id) {
   if(!id||state.busy)return;
@@ -176,9 +174,9 @@ async function openBuilding(id) {
 function renderBuildingStatus() {
   if(!progressiveDocument())return;
   const document=state.document,labels={source_available:"Source available",source_only:"Source only · no supported floor model",preview_unreviewed:"Preview · not yet reviewed",reviewing:"Preview · review in progress",preview_reviewing:"Preview · review in progress",reviewed_no_action:"Reviewed · no actionable finding",needs_attention:"Needs attention",available:"Model available"};
-  const latest=state.jobs.find(job=>job.kind==="reconstruction");
+  const latest=state.jobs.find(job=>["reconstruction","extraction","refinement"].includes(job.kind));
   let statusLabel=labels[document.review_status] || (document.review_status || "available").replaceAll("_"," ");
-  if(latest&&!terminalJob(latest))statusLabel=`${state.scene?"Model available":"Source available"} · ${latest.phase==="reviewing"||latest.phase==="checking_revision"?"review":"reconstruction"} in progress`;
+  if(latest&&!terminalJob(latest))statusLabel=`${state.scene?"Model available":"Source available"} · ${latest.kind==="extraction"?"source interpretation":latest.phase==="reviewing"||latest.phase==="checking_revision"?"review":"reconstruction"} in progress`;
   else if(latest&&latest.status!=="complete"&&document.review_status!=="source_only"){
     const terminalLabels={failed:"processing failed",stopped:"review stopped",budget_exhausted:"processing budget exhausted",interrupted:"processing interrupted",needs_attention:"needs attention"};
     statusLabel=`${state.scene?"Model retained":"Source retained"} · ${terminalLabels[latest.status] || latest.status}`;
@@ -186,7 +184,7 @@ function renderBuildingStatus() {
   $("building-review-status").textContent=`${statusLabel} · revision ${document.revision_number}`;
   if(state.scene&&document.has_scene&&state.scene.revision_number!==document.revision_number)$("building-review-status").textContent+=` · displayed model revision ${state.scene.revision_number}`;
   $("source-only-note").hidden=Boolean(state.scene);
-  $("source-only-note").textContent="Original source evidence is available for questions. A source-only record does not establish a floor model; use the explicit reconstruction action when appropriate.";
+  $("source-only-note").textContent="Original sources are available for questions, including while interpretation runs. Generate 3D is optional; it reuses saved interpretation.";
   $("unsupported-views").replaceChildren();
   for(const view of document.unresolved_views || []){
     const row=window.document.createElement("div");row.className="unsupported-view";
@@ -211,7 +209,7 @@ function renderJobs() {
   for(const job of state.jobs){
     const row=document.createElement("details"),summary=document.createElement("summary"),title=document.createElement("strong"),status=document.createElement("span"),message=document.createElement("p");
     row.className="job-row";row.dataset.jobId=job.id;row.dataset.status=job.status;row.open=open.has(job.id)||!terminalJob(job);
-    title.textContent=job.kind==="question"?`Question · ${job.question || "source inspection"}`:"Reconstruction";
+    title.textContent=job.kind==="question"?`Question · ${job.question || "source inspection"}`:({extraction:"Source interpretation",refinement:"Apply and refine",reconstruction:"Reconstruction"}[job.kind]||job.kind);
     status.className="job-status";status.textContent=`${job.status.replaceAll("_"," ")} · ${job.phase.replaceAll("_"," ")}`;
     message.textContent=job.message || "";summary.append(title,status);
     if(!terminalJob(job)){
@@ -233,7 +231,7 @@ function renderJobs() {
     $("ask-progress-label").textContent=question.message || "Inspecting the source";
     if(terminalJob(question)){
       state.questionRequest.pending=false;
-      if(question.status==="complete"&&question.answer){renderResult(question.answer,true);}
+      if(question.status==="complete"&&question.answer){renderResult(question.answer,true);refreshConversation();}
       else{setError("ask-error",question.message || "Question stopped without a confirmed answer.");$("answer-empty").hidden=false;}
     }
   }
@@ -250,13 +248,15 @@ async function refreshBuilding() {
     // until the server's next snapshot contains it, so polling cannot stop early.
     const jobs=result.jobs || [];
     state.jobs=[...jobs,...state.jobs.filter(j=>!terminalJob(j)&&!jobs.some(next=>next.id===j.id))];
-    if(result.has_scene&&(!state.scene || result.revision_number>state.scene.revision_number)){
+    if(result.has_scene&&(!state.scene || (result.geometry_revision_id || result.revision_id)!==state.scene.revision_id)){
       const scene=await request(result.scene_url || `/api/documents/${id}/scene`);
       if(epoch!==state.epoch||id!==state.document?.building_id)return;
       await loadScene(scene);
     }
     if(epoch!==state.epoch)return;
+    const revisionChanged=state.document.revision_id!==result.revision_id;
     state.document=result;
+    if(revisionChanged){renderSourceList();refreshAssumptions();if(!state.evidenceRevision)renderPage();}
     const savedOption=[...$("saved-building-select").options].find(option=>option.value===id);
     if(savedOption)savedOption.textContent=`${result.filename} · ${result.has_scene?"model available":"source available"}`;
     renderBuildingStatus();renderJobs();setError("building-poll-error");updateControls();
@@ -285,10 +285,11 @@ async function startReconstruction(mode) {
 function renderPage() {
   if (!state.document?.pages.length) return;
   const page = state.document.pages[state.pageIndex];
-  $("page-label").textContent = `Page ${page.page} of ${state.document.pages.length}`;
+  $("page-label").textContent = `${page.source_filename || state.document.filename} · page ${page.source_page || page.page} (${state.pageIndex+1}/${state.document.pages.length})${state.evidenceRevision?" · answered revision":""}`;
   $("page-image").alt = `${state.document.filename}, page ${page.page}`;
   // Only load normalized page previews from this application.
-  const url = new URL(page.image_url, window.location.origin);
+  const preview=state.evidenceRevision?`/api/buildings/${state.document.building_id}/revisions/${state.evidenceRevision}/pages/${page.page}`:page.image_url;
+  const url = new URL(preview, window.location.origin);
   if (url.origin !== window.location.origin) { setError("upload-error", "The page preview URL is invalid."); return; }
   $("page-image").width = page.width;
   $("page-image").height = page.height;
@@ -324,6 +325,7 @@ function selectEvidence(index) {
   if (!evidence || !state.document) return;
   const pageIndex = state.document.pages.findIndex((page) => page.page === evidence.page);
   if (pageIndex === -1) return;
+  state.evidenceRevision=state.result?.answered_revision_id || null;
   state.selectedEvidence = index;
   state.sourceSelection = null;
   state.pageIndex = pageIndex;
@@ -345,7 +347,7 @@ function addDetail(label, value) {
 }
 
 function answerForDisplayedRevision(result) {
-  if(result.display_revision_id && state.scene?.revision_id && result.display_revision_id!==state.scene.revision_id && result.highlight_ids?.length)return {...result,highlight_ids:[],review_note:[result.review_note,"The model has advanced since this answer was mapped. Original citations remain available; object highlights await a new source check."].filter(Boolean).join(" ")};
+  if(result.display_revision_id && state.scene?.revision_id && result.display_revision_id!==state.scene.revision_id && result.highlight_ids?.length)return {...result,highlight_ids:[],review_note:[result.review_note,"The displayed model belongs to a different revision from this answer’s mapping. Original citations remain available; object highlights await a new source check."].filter(Boolean).join(" ")};
   return result;
 }
 function renderResult(result, preserveView = false) {
@@ -355,14 +357,36 @@ function renderResult(result, preserveView = false) {
   state.sourceSelection = null;
   $("answer-empty").hidden = true;
   $("result").hidden = false;
-  const labels = { answered: "Supported by the inspected source", insufficient: "Missing information", unclear: "Unable to resolve confidently" };
-  const headings = { answered: "Answer", insufficient: "The supplied drawing is not enough", unclear: "This needs a closer look" };
+  const labels = { clarification:"Clarify your question", answered: "Supported by the inspected source", insufficient: "Missing information", unclear: "Unable to resolve confidently" };
+  const headings = { clarification:"A quick clarification", answered: "Answer", insufficient: "The supplied drawing is not enough", unclear: "This needs a closer look" };
   $("result-status").textContent = labels[result.status] || "Inspection result";
-  $("result-status").className = `result-status ${["answered", "insufficient", "unclear"].includes(result.status) ? result.status : "unclear"}`;
+  $("result-status").className = `result-status ${["answered", "insufficient", "unclear", "clarification"].includes(result.status) ? result.status : "unclear"}`;
   $("result-heading").textContent = headings[result.status] || "Inspection result";
   const pages = Array.isArray(result.inspected_pages) ? result.inspected_pages : [];
   $("result-scope").textContent = state.document?.kind === "ifc" ? "Supplied IFC source records" : `Inspected ${pages.length === 1 ? "page" : "pages"} ${pages.join(", ") || "not reported"}`;
-  $("answer-text").textContent = result.answer || "No answer was returned.";
+  $("answer-text").textContent = result.clarification?.message || result.answer || "No answer was returned.";
+  $("clarification-options").replaceChildren();
+  if(result.status==="clarification")for(const suggestion of result.clarification?.suggestions||[]){
+    const button=document.createElement("button");button.type="button";button.textContent=suggestion;
+    button.addEventListener("click",()=>{$("question").value=suggestion;updateControls();$("question-form").requestSubmit();});
+    $("clarification-options").append(button);
+  }
+  $("support-summary").textContent=result.support_summary || (result.status==="clarification"?"Clarifying intent; no source-sufficiency judgment has been made.":"");
+  $("supported-calculations").replaceChildren();
+  for(const calculation of result.calculation_results || result.calculations || []){
+    const line=document.createElement("p");
+    line.textContent=typeof calculation==="string"?calculation:`${calculation.method || calculation.operation || "Supported calculation"}: ${calculation.value ?? "unresolved"}${calculation.unit?` ${calculation.unit}`:""}`;
+    $("supported-calculations").append(line);
+    for(const operand of calculation.operands || []){
+      const input=document.createElement("p");input.className="calculation-input";input.textContent=`Input: ${operand.value} ${operand.unit || ""}${operand.label?` · ${operand.label}`:""}`;
+      if(Number.isInteger(operand.evidence_index)){const link=document.createElement("button");link.type="button";link.className="text-button";link.textContent="Inspect input source ↗";link.addEventListener("click",()=>selectEvidence(operand.evidence_index));input.append(link);}
+      $("supported-calculations").append(input);
+    }
+  }
+  for(const value of result.user_value_attributions || []){
+    const line=document.createElement("p");line.textContent=`Provided by user: ${(value.property||"value").replaceAll("_"," ")} = ${typeof value.value==="object"?JSON.stringify(value.value):value.value}${value.unit?` ${value.unit}`:""}. This value is not observed in the original drawing.`;$("supported-calculations").append(line);
+  }
+  $("evidence-checks").open=result.status!=="clarification";
   $("evidence-list").replaceChildren();
   const evidence = Array.isArray(result.evidence) ? result.evidence : [];
   $("evidence-section").hidden = evidence.length === 0;
@@ -405,7 +429,8 @@ function renderResult(result, preserveView = false) {
   addDetail("Source support decision", result.gate?.decision || "Not reported");
   addDetail("Provider", state.health?.provider_label || "Gemini");
   addDetail("Evidence check", state.health?.gate_kind === "structured_classification" ? "Structured classification (no confidence score)" : "Gemini Decisions");
-  addDetail("Inspection passes", String(result.inspection_passes || 1));
+  addDetail("Inspection passes", String(result.inspection_passes ?? 0));
+  if(result.answered_revision_id)addDetail("Answered revision",result.answered_revision_id);
   if (state.health?.model) addDetail("Answer model", state.health.model);
   if (Number.isFinite(result.usage?.latency_ms)) addDetail("Time", `${(result.usage.latency_ms / 1000).toFixed(1)} s`);
   if (Number.isFinite(result.usage?.input_tokens)) addDetail("Input tokens", result.usage.input_tokens.toLocaleString());
@@ -457,7 +482,7 @@ function clearScene() {
 function syncViewerControls(snapshot) {
   if(!snapshot)return;
   $("floor-select").value=snapshot.floor_filter || "";$("explode-floors").checked=snapshot.exploded;
-  $("concept-cutaway").checked=snapshot.cutaway;updateLayoutNote();renderFloorDetails();renderInventory();
+  $("cutaway-percent").value=snapshot.cutaway_percent ?? 100;updateCutawayNote();updateLayoutNote();renderFloorDetails();renderInventory();
   const selected=$("concept-proposal-select").value;
   $("concept-proposal-select").replaceChildren(new Option("Select a proposal", ""));
   for(const record of snapshot.concept_records || [])if(record.kind==="proposal")$("concept-proposal-select").append(new Option(`Proposal · ${record.label}`,record.id));
@@ -561,6 +586,7 @@ function setFloorFilter(id) {
   $("floor-select").value = id;
   state.viewer?.setFloorFilter(id);
   renderFloorDetails();
+  updateCutawayNote();
   renderInventory();
 }
 
@@ -572,11 +598,13 @@ function revealEvidenceFloor(evidence) {
     return floor.source.page === evidence.page && l >= fl && t >= ft && r <= fr && b <= fb;
   });
   const id = matches.length === 1 ? matches[0].id : "";
-  if (state.viewer?.mode !== "concept" && $("floor-select").value) setFloorFilter(id);
+  // Source navigation leaves the 3D camera and selected floor unchanged.
   if ($("comparison-floor-select").value) $("comparison-floor-select").value = id;
 }
 
 function showSourceRegion(source, label) {
+  if(!source||source.kind==="ifc")return;
+  state.evidenceRevision=null;
   const index = state.document?.pages.findIndex((page) => page.page === source.page) ?? -1;
   if (index < 0) return;
   revealEvidenceFloor(source);
@@ -600,6 +628,7 @@ function renderFloors() {
   $("explode-control").hidden = floors.length < 2;
   for (const floor of floors) {
     $("floor-select").append(new Option(floor.label, floor.id));
+    if(floor.source?.kind!=="image"&&!floor.source?.page)continue;
     const button = document.createElement("button");
     button.type = "button";
     button.className = "floor-source-link";
@@ -608,6 +637,8 @@ function renderFloors() {
     button.addEventListener("click", () => showSourceRegion(floor.source, floor.label));
     $("floor-source-links").append(button);
   }
+  $("floor-source-links").hidden=!$("floor-source-links").childElementCount;
+  updateCutawayNote();
   $("download-ifc").hidden = true;$("download-ifc").textContent=scene.derived?"Download derived IFC ↗":"Download source IFC ↗";
   if (scene.ifc_url) {
     const url = new URL(scene.ifc_url, window.location.origin);
@@ -626,7 +657,7 @@ function updateLayoutNote() {
   const schematic = scene.layout === "schematic" || (scene.floors || []).some((floor) => floor.alignment_status !== "supported");
   const lines = [];
   if (scene.derived && schematic) lines.push("Schematic floor arrangement — source alignment is unknown. This is not an aligned building.");
-  if ($("explode-floors").checked) lines.push("Vertical separation is for viewing only; it is not storey elevation.");
+  if ($("explode-floors").checked) lines.push("Exploded view adds display spacing to the model’s storey elevations. It does not change source geometry.");
   $("layout-note").textContent = lines.join(" ");
   $("layout-note").hidden = !lines.length;
 }
@@ -639,7 +670,9 @@ function renderFloorDetails() {
   for (const floor of floors) {
     const title = document.createElement("h4"), facts = document.createElement("dl");
     title.textContent = floor.label;
-    inspectorRow(facts, "Scale", floor.scale_status === "known" ? "Source-calibrated footprint" : "Unknown · relative display units");
+    inspectorRow(facts, "Scale", !state.scene.derived?"Supplied IFC units":floor.scale_status === "known" ? "Source-calibrated footprint" : "Unknown · relative display units");
+    inspectorRow(facts,"Base elevation",`${floor.base_elevation ?? 0} · ${floor.elevation_basis || "display reference"}`);
+    inspectorRow(facts,"Cutaway height reference",`${floor.reference_height ?? "Unavailable"} · ${floor.reference_height_basis || "not supplied"}`);
     inspectorRow(facts, "Floor order", floor.order ?? "Unknown · diagram order is display only");
     inspectorRow(facts, "Display rotation", `${floor.rotation_degrees}° · original source unchanged`);
     inspectorRow(facts, "Alignment", floor.alignment_status === "supported" ? "Supported by a source anchor" : "Unknown · schematic arrangement");
@@ -903,6 +936,151 @@ function renderModelEvidence(items) {
   }
 }
 
+function renderSourceList() {
+  $("source-list").replaceChildren();
+  $("page-count").textContent=state.document?.kind==="ifc"?"IFC model":`${state.document?.pages.length||0} pages`;
+  for(const source of state.document?.sources || []){
+    const row=document.createElement("div");row.className="source-file";
+    const label=document.createElement("strong"),note=document.createElement("span");
+    label.textContent=source.filename;note.textContent=`${source.kind || "source"} · ${source.pages?.length || 0} pages · ${source.interpretation_status || "original preserved"}`;
+    row.append(label,note);
+    const pageIndex=state.document.pages.findIndex(page=>page.source_id===source.source_id);
+    if(pageIndex>=0){const open=document.createElement("button");open.type="button";open.className="text-button";open.textContent="Open source ↗";open.addEventListener("click",()=>{state.pageIndex=pageIndex;state.evidenceRevision=null;state.sourceSelection=null;state.selectedEvidence=null;setView("drawing");renderPage();});row.append(open);}
+    const original=document.createElement("a");original.className="text-button";original.textContent="Download original";original.download=source.filename;original.href=`/api/buildings/${state.document.building_id}/sources/${encodeURIComponent(source.source_id)}/original`;row.append(original);
+    $("source-list").append(row);
+  }
+}
+
+function updateCutawayNote() {
+  const percent=Number($("cutaway-percent").value);$("cutaway-value").textContent=`${percent}%`;
+  const scene=state.scene;if(!scene){$("cutaway-note").textContent="";return;}
+  const floors=(scene.floors||[]).filter(f=>!$("floor-select").value||f.id===$("floor-select").value);
+  const references=floors.map(f=>`${f.label}: ${Number.isFinite(f.reference_height)?f.reference_height:"unavailable"} ${scene.units==="m"?"m":"display units"} (${f.reference_height_basis || "display extent; not a source measurement"})`);
+  $("cutaway-note").textContent=`0% clips at the storey base; 100% shows full geometry. ${$("floor-select").value?"Selected floor":"All floors: the same percentage applies separately to each storey"}. ${references.join("; ")}${scene.uncontained_reference&&!$("floor-select").value?` Uncontained geometry uses a separate scene reference: ${scene.uncontained_reference.basis}.`:""}`;
+}
+
+async function refreshConversation() {
+  if(!progressiveDocument())return;
+  const epoch=state.epoch,id=state.document.building_id;
+  try{
+    const payload=await request(`/api/buildings/${id}/conversation`,{},15000);if(epoch!==state.epoch)return;
+    state.conversation=payload.messages || [];renderConversation();setError("conversation-error");
+  }catch(error){if(epoch===state.epoch)setError("conversation-error",`Conversation history is unavailable: ${error.message}`);}
+}
+function renderConversation() {
+  const container=$("conversation");container.replaceChildren();
+  const latestAssistant=[...state.conversation].reverse().find(m=>m.answer);
+  state.clarificationReply=latestAssistant?.answer?.status==="clarification"?latestAssistant.id:null;
+  for(const message of state.conversation){
+    const item=document.createElement("article");item.className=`chat-message ${message.role==="user"?"chat-user":"chat-assistant"}`;item.dataset.messageId=message.id;
+    const name=document.createElement("strong"),text=document.createElement("p");name.textContent=message.role==="user"?"You":message.answer?.status==="clarification"?"Clarification":"Blueprint QA";
+    text.textContent=message.answer?.clarification?.message || message.answer?.answer || message.question || message.content || "";item.append(name,text);
+    if(message.answer){
+      const open=document.createElement("button");open.type="button";open.className="text-button";open.textContent="Evidence and checks ↗";
+      open.addEventListener("click",()=>{renderResult(message.answer,true);state.clarificationReply=message.answer.status==="clarification"?message.id:null;$("result").scrollIntoView({block:"nearest",behavior:"smooth"});});item.append(open);
+      for(const [i,evidence] of (message.answer.evidence||[]).entries()){
+        const link=document.createElement("button");link.type="button";link.className="chat-citation";link.textContent=`${evidence.label} · p. ${evidence.source_page || evidence.page} ↗`;
+        link.addEventListener("click",()=>{renderResult(message.answer,true);selectEvidence(i);});item.append(link);
+      }
+      if(message.answer.status==="clarification")for(const suggestion of message.answer.clarification?.suggestions||[]){
+        const button=document.createElement("button");button.type="button";button.className="chat-citation";button.textContent=suggestion;
+        button.addEventListener("click",()=>{state.clarificationReply=message.id;$("question").value=suggestion;updateControls();$("question-form").requestSubmit();});item.append(button);
+      }
+    }
+    container.append(item);
+  }
+  if(state.conversation.length)$("answer-empty").hidden=true;
+}
+
+async function refreshAssumptions() {
+  if(!progressiveDocument())return;
+  const epoch=state.epoch,id=state.document.building_id;
+  try{
+    const payload=await request(`/api/buildings/${id}/assumptions`,{},15000);if(epoch!==state.epoch)return;
+    // Keep unsent edits pinned to the revision the user actually inspected.
+    if(!state.assumptionEdits.size)state.assumptionsRevision=payload.revision_id;
+    state.assumptionRows=payload.rows || [];renderAssumptions();setError("assumption-error");
+  }catch(error){if(epoch===state.epoch)setError("assumption-error",error.message);}
+}
+function renderAssumptions() {
+  const container=$("assumption-rows");container.replaceChildren();
+  const groups=["observed","inferred","display_assumption","unknown","user_provided"];
+  for(const provenance of [...groups,...new Set(state.assumptionRows.map(r=>r.provenance).filter(p=>!groups.includes(p)))]){
+    const rows=state.assumptionRows.filter(r=>r.provenance===provenance);if(!rows.length)continue;
+    const section=document.createElement("section"),title=document.createElement("h4");title.textContent=provenance.replaceAll("_"," ");section.append(title);
+    for(const row of rows){
+      const item=document.createElement("div");item.className="assumption-row";item.dataset.assumptionId=row.id;
+      const label=document.createElement("label"),reason=document.createElement("small");label.textContent=row.label || row.property;reason.textContent=row.reason || "";item.append(label,reason);
+      if(row.source){const source=document.createElement("button");source.type="button";source.className="text-button";source.textContent="Locate source ↗";source.addEventListener("click",()=>{if(row.scope?.object_id&&state.scene?.elements.some(e=>e.id===row.scope.object_id))state.viewer?.select(row.scope.object_id);showSourceRegion(row.source,row.label || row.property);});item.append(source);}
+      if(row.editable&&["calibration","stair_connection"].includes(row.property)){
+        item.append(structuredAssumptionEditor(row));
+      }else if(row.editable){
+        const input=document.createElement("input"),unit=document.createElement("input");input.id=`assumption-${row.id}`;label.htmlFor=input.id;
+        const edit=state.assumptionEdits.get(row.id);const current=edit?edit.value:row.value;
+        input.value=current==null?"":typeof current==="object"?JSON.stringify(current):String(current);
+        input.type=["floor_height","display_height"].includes(row.property)?"number":"text";
+        if(input.type==="number"){input.step="any";input.min="0";}
+        input.placeholder=row.property==="calibration"?'{"length": 5, "segment": [[0.1,0.1],[0.5,0.1]]}':row.property==="stair_connection"?'{"target_floor_id":"…"}':"Provide missing value";
+        unit.value=edit?.unit ?? row.unit ?? "";unit.setAttribute("aria-label",`${row.label || row.property} units`);unit.placeholder="units";unit.className="assumption-unit";
+        const update=()=>{state.assumptionEdits.set(row.id,{property:row.property,scope:row.scope||{},value:input.value,unit:unit.value||null,source:row.source||null,reason:"Provided through assumptions panel"});updateAssumptionButton();};
+        input.addEventListener("input",update);unit.addEventListener("input",update);item.append(input,unit);
+      }else{const value=document.createElement("span");value.textContent=`${row.value==null?"Unknown":typeof row.value==="object"?JSON.stringify(row.value):row.value}${row.unit?` ${row.unit}`:""}`;item.append(value);}
+      section.append(item);
+    }
+    container.append(section);
+  }
+  if(!state.assumptionRows.length)container.textContent="Source interpretation has not supplied any grouped inputs yet. Originals remain available for questions.";
+  const selected=new Set([...$("assumption-support").selectedOptions].map(o=>o.value));
+  $("assumption-support").replaceChildren();
+  for(const source of state.document?.sources||[]){const option=new Option(source.filename,source.source_id);option.selected=selected.has(source.source_id);$("assumption-support").append(option);}
+  updateAssumptionButton();
+}
+function structuredAssumptionEditor(row) {
+  const group=document.createElement("div");group.className="structured-input";
+  const saved=state.assumptionEdits.get(row.id),current=saved?.value || row.value || {};
+  const base={property:row.property,scope:row.scope||{},source:row.source||null,reason:"Provided through assumptions panel"};
+  if(row.property==="stair_connection"){
+    const select=document.createElement("select");select.setAttribute("aria-label",`${row.label}: destination floor`);select.append(new Option("Choose destination floor", ""));
+    for(const floor of state.assumptionRows.filter(r=>r.property==="floor_height"&&r.scope?.floor_id!==row.scope?.floor_id&&r.provenance!=="user_provided"))select.append(new Option(floor.label.replace(/: storey height$/, ""),floor.scope.floor_id));
+    select.value=current.target_floor_id || "";
+    const target=document.createElement("input");target.placeholder="Target stair ID (optional)";target.setAttribute("aria-label","Target stair ID (optional)");target.value=current.target_feature_id||"";
+    const update=()=>{state.assumptionEdits.set(row.id,{...base,value:{target_floor_id:select.value,...(target.value?{target_feature_id:target.value}:{})},unit:null});updateAssumptionButton();};select.addEventListener("change",update);target.addEventListener("input",update);group.append(select,target);
+  }else{
+    const inputs=[];
+    for(const [i,name] of ["Known distance","Start X (0–1)","Start Y (0–1)","End X (0–1)","End Y (0–1)"].entries()){
+      const label=document.createElement("label"),input=document.createElement("input");label.textContent=name;input.type="number";input.step="any";input.setAttribute("aria-label",`${row.label}: ${name}`);
+      input.value=(i===0?current.length:current.segment?.[Math.floor((i-1)/2)]?.[(i-1)%2])??"";inputs.push(input);label.append(input);group.append(label);
+    }
+    const unit=document.createElement("input");unit.value=saved?.unit??row.unit??"m";unit.setAttribute("aria-label",`${row.label} units`);group.append(unit);
+    const note=document.createElement("small");note.textContent="Endpoints use original page coordinates: 0 at the left/top, 1 at the right/bottom. A known vertical height does not calibrate this distance.";group.append(note);
+    const update=()=>{const values=inputs.map(i=>i.value===""?null:Number(i.value));state.assumptionEdits.set(row.id,{...base,value:{length:values[0],segment:[[values[1],values[2]],[values[3],values[4]]]},unit:unit.value});updateAssumptionButton();};
+    for(const input of [...inputs,unit])input.addEventListener("input",update);
+  }
+  return group;
+}
+function updateAssumptionButton() {
+  $("apply-assumptions").disabled=!state.assumptionEdits.size||state.applyingAssumptions;
+  $("assumption-edit-count").textContent=state.assumptionEdits.size?`${state.assumptionEdits.size} pending edits · supplied values retain user provenance`:"";
+}
+async function applyAssumptions() {
+  if(!state.document||!state.assumptionEdits.size||state.applyingAssumptions)return;
+  const epoch=state.epoch;state.applyingAssumptions=true;updateAssumptionButton();setError("assumption-error");
+  try{
+    const edits=[...state.assumptionEdits.values()].map(edit=>{
+      const copy={...edit};
+      if(["floor_height","display_height"].includes(edit.property)){copy.value=Number(edit.value);if(!Number.isFinite(copy.value)||copy.value<=0)throw new Error("Heights must be positive finite values with explicit units.");}
+      if(["calibration","stair_connection"].includes(edit.property)&&typeof edit.value==="string"){try{copy.value=JSON.parse(edit.value);}catch{throw new Error("Complete the source-linked input fields before applying.");}}
+      return copy;
+    });
+    const job=await request(`/api/buildings/${state.document.building_id}/refinements`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({base_revision_id:state.assumptionsRevision,edits,supporting_source_ids:[...$("assumption-support").selectedOptions].map(o=>o.value)})});
+    if(epoch!==state.epoch)return;state.assumptionEdits.clear();rememberJob(job);schedulePoll(0);
+  }catch(error){if(epoch===state.epoch)setError("assumption-error",error.message);}
+  finally{state.applyingAssumptions=false;updateAssumptionButton();}
+}
+$("append-sources").addEventListener("click",()=>{state.uploadMode="append";$("file-input").click();});
+$("retry-extraction").addEventListener("click",async()=>{const epoch=state.epoch;try{const payload=await request(`/api/buildings/${state.document.building_id}/extraction`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({retry:true})});if(epoch===state.epoch){for(const job of payload.jobs||[])rememberJob(job);schedulePoll(0);}}catch(error){if(epoch===state.epoch)setError("building-poll-error",error.message);}});
+$("apply-assumptions").addEventListener("click",applyAssumptions);
+
 $("generate-scene").addEventListener("click",()=>startReconstruction("reconstruct"));
 $("refine-building").addEventListener("click",()=>startReconstruction("refine"));
 $("reconstruct-building").addEventListener("click",()=>startReconstruction("reconstruct"));
@@ -913,7 +1091,7 @@ $("open-building").addEventListener("click",()=>openBuilding($("saved-building-s
 $("show-drawing").addEventListener("click", () => setView("drawing"));
 $("show-model").addEventListener("click", () => setView("model"));
 $("show-concept").addEventListener("click",()=>setView("concept"));
-$("concept-cutaway").addEventListener("change",()=>state.viewer?.setCutaway($("concept-cutaway").checked));
+$("cutaway-percent").addEventListener("input",()=>{state.viewer?.setCutawayPercent(Number($("cutaway-percent").value));updateCutawayNote();});
 $("concept-proposal-select").addEventListener("change",()=>{const record=state.viewer?.concept?.records.get($("concept-proposal-select").value);if(record){state.viewer.selectedProposalId=record.id;state.viewer.applyAppearance();inspectProposal(record);}});
 $("concept-support-source").addEventListener("click",()=>{const host=state.scene?.elements.find(e=>e.id===state.selectedProposal?.host_id);if(host)showSourceRegion(host.source,`Supporting area for proposal: ${state.selectedProposal.label}`);});
 $("highlight-answer").addEventListener("change", updateHighlights);
@@ -950,8 +1128,8 @@ $("question-form").addEventListener("submit", async (event) => {
   if(state.document.building_id&&state.document.revision_id){
     const requestId=crypto.randomUUID();state.questionRequest={id:requestId,building,pending:true};state.askSubmitting=true;updateControls();
     try {
-      const job=await request("/api/questions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({document_id:building,question,revision_id:state.scene?.revision_id||state.document.revision_id,request_id:requestId})});
-      if(epoch===state.epoch&&state.questionRequest?.id===requestId){rememberJob(job);schedulePoll(0);}
+      const job=await request("/api/questions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({document_id:building,question,revision_id:state.document.revision_id,request_id:requestId,conversation_id:state.document.building_id,reply_to:state.clarificationReply,clarification_response:state.clarificationReply?question:null})});
+      if(epoch===state.epoch&&state.questionRequest?.id===requestId){rememberJob(job);if($("question").value.trim()===question)$("question").value="";state.clarificationReply=null;refreshConversation();schedulePoll(0);}
     }catch(error){if(epoch===state.epoch&&state.questionRequest?.id===requestId){state.questionRequest.pending=false;setError("ask-error",error.message);$("answer-empty").hidden=false;}}
     finally{if(epoch===state.epoch){state.askSubmitting=false;updateControls();}}
     return;
@@ -962,17 +1140,17 @@ $("question-form").addEventListener("submit", async (event) => {
   finally{state.busy=null;updateControls();}
 });
 
-$("file-input").addEventListener("change", (event) => uploadFile(event.target.files[0]));
-$("upload-label").addEventListener("click", () => { if (!state.busy) $("file-input").click(); });
-$("drop-zone").addEventListener("click", () => { if (!state.busy) $("file-input").click(); });
+$("file-input").addEventListener("change", (event) => uploadFile(event.target.files,state.uploadMode==="append"));
+$("upload-label").addEventListener("click", () => { if (!state.busy) {state.uploadMode="new";$("file-input").click();} });
+$("drop-zone").addEventListener("click", () => { if (!state.busy) {state.uploadMode="new";$("file-input").click();} });
 $("drop-zone").addEventListener("keydown", (event) => { if ((event.key === "Enter" || event.key === " ") && !state.busy) { event.preventDefault(); $("file-input").click(); } });
 const sourcePanel = $("source-heading").closest("section");
 sourcePanel.addEventListener("dragover", (event) => { event.preventDefault(); if (!state.busy) $("drop-zone").classList.add("drag-over"); });
 sourcePanel.addEventListener("dragleave", (event) => { if (!sourcePanel.contains(event.relatedTarget)) $("drop-zone").classList.remove("drag-over"); });
-sourcePanel.addEventListener("drop", (event) => { event.preventDefault(); $("drop-zone").classList.remove("drag-over"); if (!state.busy) { if (event.dataTransfer.files.length > 1) setError("upload-error", "Choose one drawing file at a time."); else uploadFile(event.dataTransfer.files[0]); } });
+sourcePanel.addEventListener("drop", (event) => { event.preventDefault(); $("drop-zone").classList.remove("drag-over"); if (!state.busy) { uploadFile(event.dataTransfer.files); } });
 $("question").addEventListener("input", updateControls);
 suggestions.forEach((button) => button.addEventListener("click", () => { $("question").value = button.dataset.question; updateControls(); $("question").focus(); }));
-function changePage(direction) { if (!state.document) return; const index = state.pageIndex + direction; if (index < 0 || index >= state.document.pages.length) return; state.pageIndex = index; $("comparison-floor-select").value = ""; renderPage(); }
+function changePage(direction) { if (!state.document) return; const index = state.pageIndex + direction; if (index < 0 || index >= state.document.pages.length) return; state.evidenceRevision=null; state.pageIndex = index; $("comparison-floor-select").value = ""; renderPage(); }
 $("previous-page").addEventListener("click", () => changePage(-1));
 $("next-page").addEventListener("click", () => changePage(1));
 $("viewer").addEventListener("keydown", (event) => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); changePage(event.key === "ArrowLeft" ? -1 : 1); } });

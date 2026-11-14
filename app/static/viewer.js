@@ -10,7 +10,7 @@ export class BlueprintViewer {
     this.onSelect = onSelect;
     this.onUnresolvedSelect = onUnresolvedSelect;
     this.onProposalSelect = onProposalSelect;
-    this.mode = 'inspection'; this.modeStates = {}; this.cutaway = true;
+    this.mode = 'inspection'; this.modeStates = {}; this.cutaway = false; this.cutawayPercent = 100;
     this.conceptBuildCount = 0; this.needsRender = true; this.renderCount = 0;
     this.annotations = [];
     this.elements = new Map();
@@ -117,7 +117,7 @@ export class BlueprintViewer {
       let index=Math.max(-1,...candidate.floorIndices.values())+1;
       for(const floor of data.floors || [])if(!candidate.floorIndices.has(floor.id))candidate.floorIndices.set(floor.id,index++);
       if(this.concept || this.mode==='concept')candidate.concept=new ConceptLayer(data,candidate.meshes,this.concept?.placements || {});
-      candidate.concept?.setCutaway(this.cutaway);
+      candidate.concept?.setCutawayPercent(this.cutawayPercent);
       return candidate;
     } catch(error) {this.disposeRevision(candidate);throw error;}
   }
@@ -166,7 +166,7 @@ export class BlueprintViewer {
     if(!['inspection','concept'].includes(mode)||!this.data||mode===this.mode)return this.getSnapshot();
     const damping=this.controls.enableDamping;this.controls.enableDamping=false;this.controls.update();this.controls.enableDamping=damping;
     this.modeStates[this.mode]=this.captureView();
-    if(mode==='concept'&&!this.concept){this.concept=new ConceptLayer(this.data,this.meshes);this.concept.setCutaway(this.cutaway);this.scene.add(this.concept.group);this.conceptBuildCount++;}
+    if(mode==='concept'&&!this.concept){this.concept=new ConceptLayer(this.data,this.meshes);this.concept.setCutawayPercent(this.cutawayPercent);this.scene.add(this.concept.group);this.conceptBuildCount++;}
     this.mode=mode;const saved=this.modeStates[mode];
     this.floorFilter=saved?.floorFilter ?? this.floorFilter;
     this.exploded=saved?.exploded ?? this.exploded;
@@ -174,11 +174,40 @@ export class BlueprintViewer {
     if(saved){this.camera.position.copy(saved.position);this.controls.target.copy(saved.target);this.camera.near=saved.near;this.camera.far=saved.far;this.controls.minDistance=saved.minDistance;this.controls.maxDistance=saved.maxDistance;this.camera.updateProjectionMatrix();this.controls.update();}
     this.render();return this.getSnapshot();
   }
-  setCutaway(enabled) {this.cutaway=Boolean(enabled);this.concept?.setCutaway(this.cutaway);this.renderer.shadowMap.needsUpdate=true;this.render();}
+  setCutaway(enabled) {this.setCutawayPercent(enabled?38:100);}
+  setCutawayPercent(percent) {
+    if(!Number.isFinite(percent))return;
+    this.cutawayPercent=Math.max(0,Math.min(100,percent));this.cutaway=this.cutawayPercent<100;
+    this.updateClipping();this.renderer.shadowMap.needsUpdate=true;this.render();
+  }
+  clippingReference(floorId) {
+    const floor=(this.data?.floors||[]).find(f=>f.id===floorId);
+    if(Number.isFinite(floor?.base_elevation)&&Number.isFinite(floor?.reference_height)&&floor.reference_height>0)return {base:floor.base_elevation,height:floor.reference_height,basis:floor.reference_height_basis};
+    const explicit=!floorId?this.data?.uncontained_reference:null;
+    if(Number.isFinite(explicit?.base_elevation)&&Number.isFinite(explicit?.reference_height)&&explicit.reference_height>0)return {base:explicit.base_elevation,height:explicit.reference_height,basis:explicit.basis};
+    const bounds=new THREE.Box3();
+    for(const [id,mesh]of this.meshes)if((this.elements.get(id).storey_id||'')===(floorId||'')){
+      const box=new THREE.Box3().setFromObject(mesh);box.translate(new THREE.Vector3(0,0,-(mesh.position.z-mesh.userData.baseZ)));bounds.union(box);
+    }
+    return bounds.isEmpty()?null:{base:bounds.min.z,height:bounds.max.z-bounds.min.z,basis:'Geometry extent display reference; not measured storey height'};
+  }
+  updateClipping() {
+    const references=new Map();
+    for(const [id,mesh] of this.meshes){
+      const floorId=this.elements.get(id).storey_id||'';
+      if(!references.has(floorId))references.set(floorId,this.clippingReference(floorId));
+      const reference=references.get(floorId);
+      const offset=this.exploded?(this.floorIndices.get(floorId)||0)*this.floorSeparation:0;
+      const planes=this.cutawayPercent<100&&reference?[new THREE.Plane(new THREE.Vector3(0,0,-1),reference.base+reference.height*this.cutawayPercent/100+offset)]:[];
+      for(const object of [mesh,...mesh.children])if(object.material){object.material.clippingPlanes=planes;object.material.clipShadows=true;object.material.needsUpdate=true;}
+    }
+    this.concept?.setCutawayPercent(this.cutawayPercent);
+    this.renderer.domElement.dataset.cutawayPercent=String(this.cutawayPercent);
+  }
   syncOffsets() {
     for(const [id,mesh]of this.meshes){const index=this.floorIndices.get(this.elements.get(id).storey_id)||0;mesh.position.z=mesh.userData.baseZ+(this.exploded?index*this.floorSeparation:0);}
     this.group.updateMatrixWorld(true);this.concept?.syncVisibility(this.floorFilter,this.exploded,this.floorSeparation,this.floorIndices);
-    this.renderer.shadowMap.needsUpdate=true;this.renderer.domElement.dataset.exploded=String(this.exploded);
+    this.updateClipping();this.renderer.shadowMap.needsUpdate=true;this.renderer.domElement.dataset.exploded=String(this.exploded);
   }
 
   setHighlights(ids, enabled = true) {
@@ -224,7 +253,9 @@ export class BlueprintViewer {
       if (!Array.isArray(matrix) || matrix.length !== 3 || matrix.some((row) => !Array.isArray(row) || row.length !== 3 || !row.every(Number.isFinite))) return;
       const u=(bbox[0]+bbox[2])/2, v=(bbox[1]+bbox[3])/2;
       const z=floorTops.get(floor.id) || 0;
-      const anchor=new THREE.Vector3(matrix[0][0]*u+matrix[0][1]*v+matrix[0][2],matrix[1][0]*u+matrix[1][1]*v+matrix[1][2],z+.08);
+      const localX=matrix[0][0]*u+matrix[0][1]*v+matrix[0][2],localY=matrix[1][0]*u+matrix[1][1]*v+matrix[1][2];
+      const placement=floor.building_transform||[[1,0,0],[0,1,0],[0,0,1]];
+      const anchor=new THREE.Vector3(placement[0][0]*localX+placement[0][1]*localY+placement[0][2],placement[1][0]*localX+placement[1][1]*localY+placement[1][2],z+.08);
       const button=document.createElement('button');
       button.type='button';
       button.className=`unresolved-annotation${floorLevel ? ' floor-annotation' : ''}`;
@@ -356,7 +387,7 @@ export class BlueprintViewer {
     if(this.mode==='concept'){const record=this.concept?.pick(this.raycaster);if(record?.kind==='source')this.select(record.source_id);else if(record){this.selectedProposalId=record.id;this.applyAppearance();this.onProposalSelect(record);}return;}
     const active = this.highlightsEnabled && this.highlightIds.size > 0;
     const meshes = [...this.meshes.values()].filter((mesh) => mesh.visible && (!active || this.highlightIds.has(mesh.userData.elementId)));
-    const hit = this.raycaster.intersectObjects(meshes, false)[0];
+    const hit = this.raycaster.intersectObjects(meshes, false).find(hit=>!hit.object.material.clippingPlanes?.some(plane=>plane.distanceToPoint(hit.point)<0));
     if (hit) this.select(hit.object.userData.elementId);
   }
 
@@ -370,7 +401,7 @@ export class BlueprintViewer {
   }
   render() {this.needsRender=true;this.camera.updateMatrixWorld();this.positionAnnotations();}
   getSnapshot() {
-    return {mode:this.mode,cutaway:this.cutaway,concept_build_count:this.conceptBuildCount,concept_records:[...(this.concept?.records.values() || [])],concept_placements:this.concept?.placements || {},render_info:{calls:this.renderer.info.render.calls,triangles:this.renderer.info.render.triangles,frames:this.renderCount},camera_target:this.controls.target.toArray(),revision_changes:this.revisionChanges,building_id:this.data?.building_id,revision_id:this.data?.revision_id,revision_number:this.data?.revision_number,document_id:this.data?.document_id, mesh_count:this.meshes.size, element_count:this.elements.size, selected_id:this.selectedId, highlight_ids:[...this.highlightIds], highlights_enabled:this.highlightsEnabled, show_assumptions:this.showAssumptions, floor_filter:this.floorFilter, exploded:this.exploded, camera_position:this.camera.position.toArray(), up_axis:this.camera.up.toArray(), annotations:this.annotations.map((item)=>({element_ids:item.elementIds,floor_id:item.floorId,floor_level:item.floorLevel,visible:!item.button.hidden})), elements:[...this.meshes].map(([id,mesh])=>({id,visible:mesh.visible,opacity:mesh.material.opacity,display_offset_z:mesh.position.z-mesh.userData.baseZ}))};
+    return {mode:this.mode,cutaway:this.cutaway,cutaway_percent:this.cutawayPercent,clipping_references:(this.data?.floors||[]).map(f=>({id:f.id,...this.clippingReference(f.id)})),concept_build_count:this.conceptBuildCount,concept_records:[...(this.concept?.records.values() || [])],concept_placements:this.concept?.placements || {},render_info:{calls:this.renderer.info.render.calls,triangles:this.renderer.info.render.triangles,frames:this.renderCount},camera_target:this.controls.target.toArray(),revision_changes:this.revisionChanges,building_id:this.data?.building_id,revision_id:this.data?.revision_id,revision_number:this.data?.revision_number,document_id:this.data?.document_id, mesh_count:this.meshes.size, element_count:this.elements.size, selected_id:this.selectedId, highlight_ids:[...this.highlightIds], highlights_enabled:this.highlightsEnabled, show_assumptions:this.showAssumptions, floor_filter:this.floorFilter, exploded:this.exploded, camera_position:this.camera.position.toArray(), up_axis:this.camera.up.toArray(), annotations:this.annotations.map((item)=>({element_ids:item.elementIds,floor_id:item.floorId,floor_level:item.floorLevel,visible:!item.button.hidden})), elements:[...this.meshes].map(([id,mesh])=>({id,visible:mesh.visible,opacity:mesh.material.opacity,clipping_planes:(mesh.material.clippingPlanes||[]).map(p=>p.constant),display_offset_z:mesh.position.z-mesh.userData.baseZ}))};
   }
   clearGeometry() {
     if(this.concept){this.scene.remove(this.concept.group);this.concept.dispose();this.concept=null;}

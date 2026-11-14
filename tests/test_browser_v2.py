@@ -113,7 +113,7 @@ def test_multifloor_original_regions_explosion_and_ifc_roundtrip(building_server
     page.locator("#explode-floors").check()
     assert any(e["display_offset_z"]>0 for e in snapshot(page)["elements"])
     assert page.evaluate("window.sourceGeometry===JSON.stringify(window.blueprintViewer.data.elements)")
-    expect(page.locator("#layout-note")).to_contain_text("not storey elevation")
+    expect(page.locator("#layout-note")).to_contain_text("adds display spacing")
     page.locator("#floor-select").select_option(floors[0]["id"])
     first_ids={e["id"] for e in scene["elements"] if e["storey_id"]==floors[0]["id"]}
     assert all(e["visible"]==(e["id"] in first_ids) for e in snapshot(page)["elements"])
@@ -122,7 +122,7 @@ def test_multifloor_original_regions_explosion_and_ifc_roundtrip(building_server
     assert snapshot(page)["floor_filter"]==room3["storey_id"]
     expect(page.locator("#element-origin")).to_contain_text("inferred")
     page.locator("#element-source").click()
-    expect(page.locator("#page-label")).to_have_text("Page 2 of 2")
+    expect(page.locator("#page-label")).to_contain_text("page 2 (2/2)")
     expect(page.locator("#evidence-overlay")).to_be_visible()
     assert page.locator("#evidence-overlay").evaluate("e=>e.style.left")=="10%"
     page.locator("#show-model").click()
@@ -138,7 +138,7 @@ def test_multifloor_original_regions_explosion_and_ifc_roundtrip(building_server
     page.locator("#highlight-answer").uncheck()
     assert snapshot(page)["show_assumptions"] and snapshot(page)["exploded"]
     page.locator(".floor-source-link").filter(has_text="Upper floor").click()
-    expect(page.locator("#page-label")).to_have_text("Page 1 of 2")
+    expect(page.locator("#page-label")).to_contain_text("page 1 (1/2)")
     expect(page.locator("#evidence-overlay")).to_be_visible()
     assert page.locator("#evidence-overlay").evaluate("e=>e.style.left")=="52%"
     page.locator("#show-model").click()
@@ -157,7 +157,7 @@ def test_multifloor_original_regions_explosion_and_ifc_roundtrip(building_server
     assert page.evaluate("window.blueprintViewer.data.elements.map(e=>e.id)")==[e["id"] for e in scene["elements"]]
     assert BuildingFixtureProvider.calls==1
     page.locator("#element-select").select_option(room3["id"]); page.locator("#element-source").click()
-    expect(page.locator("#page-label")).to_have_text("Page 2 of 2")
+    expect(page.locator("#page-label")).to_contain_text("page 2 (2/2)")
     expect(page.locator("#evidence-overlay")).to_be_visible()
     ask(page,"What is the ceiling height?")
     expect(page.locator("#result-status")).to_have_text("Missing information")

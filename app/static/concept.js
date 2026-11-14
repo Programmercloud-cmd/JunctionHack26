@@ -13,12 +13,15 @@ export class ConceptLayer {
     this.geometries = new Set();
     this.textures = new Set();
     this.cuts = [];
-    this.cutaway = true;
+    this.cutaway = false; this.cutawayPercent = 100;
     this.decorations = 0;
     this.records = new Map();
     this.placements = structuredClone(placements);
     this.sourceRings = new Map();
-    const frames = new Map((data.floors || []).map(f => [f.id,f.transform]));
+    const frames = new Map((data.floors || []).map(f => {
+      const a=f.building_transform||[[1,0,0],[0,1,0],[0,0,1]],b=f.transform;
+      return [f.id,b?a.map(row=>[0,1,2].map(j=>row.reduce((sum,v,k)=>sum+v*b[k][j],0))):null];
+    }));
     for (const entry of data.comparison || []) {
       const matrix=frames.get(entry.floor_id);
       if (!matrix) continue;
@@ -33,7 +36,7 @@ export class ConceptLayer {
       if (!this.floors.has(key)) {
         const group = new THREE.Group();
         this.group.add(group);
-        this.floors.set(key, {group, bounds:new THREE.Box3(), elements:[], plane:null});
+        this.floors.set(key, {id:key,group, bounds:new THREE.Box3(), elements:[], plane:null});
       }
       const floor = this.floors.get(key);
       const box = this.originalBounds(mesh);
@@ -221,7 +224,11 @@ export class ConceptLayer {
     const u=floor.unit;
     floor.base=Math.min(...floor.elements.map(x=>x.box.min.z));
     const floorZ=floor.elements.find(x=>['room','outdoor'].includes(x.element.kind))?.box.max.z ?? floor.base;
-    floor.cutHeight=floorZ+wallHeight*.38;
+    const metadata=(this.data.floors||[]).find(f=>f.id===floor.id);
+    const reference=metadata || (!floor.id?this.data.uncontained_reference:null);
+    floor.referenceBase=Number.isFinite(reference?.base_elevation)?reference.base_elevation:bounds.min.z;
+    floor.referenceHeight=Number.isFinite(reference?.reference_height)?reference.reference_height:size.z;
+    floor.cutHeight=floor.referenceBase+floor.referenceHeight;
     floor.plane=new THREE.Plane(new THREE.Vector3(0,0,-1),floor.cutHeight);
     const occupied=floor.elements.filter(x=>!['room','outdoor','open_edge'].includes(x.element.kind)).map(x=>x.box.clone());
     floor.occupied=occupied;
@@ -254,13 +261,6 @@ export class ConceptLayer {
       clone.userData.sourceElementId=element.id;
       clone.userData.conceptRecord=record.id;
       clone.castShadow=element.kind!=='window';clone.receiveShadow=true;floor.group.add(clone);
-      const farPerimeter=box.min.y>bounds.max.y-Math.max(.14*u,size.y*.06) || box.max.x<bounds.min.x+Math.max(.14*u,size.x*.035);
-      if(this.data.derived && ['wall','door','window','railing'].includes(element.kind) && !farPerimeter) {
-        const clipped=material.clone();this.materials.add(clipped);clipped.clippingPlanes=[floor.plane];clipped.clipShadows=true;clipped.side=THREE.DoubleSide;clone.material=clipped;
-        const cap=element.kind==='wall'?this.sectionCap(clone,floor.cutHeight,p.cap):null;
-        if(cap){cap.userData.conceptRecord=record.id;floor.group.add(cap);}
-        this.cuts.push({material:clipped,plane:floor.plane,cap});
-      }
       // Glazing uses its exact source mesh; unsupported frame profiles are not added.
       // Keep existing level stair/bench schematics. Concept mode cannot establish ascent or facing.
     }
@@ -449,6 +449,18 @@ export class ConceptLayer {
     this.group.updateMatrixWorld(true);
     return bounds;
   }
-  setCutaway(enabled) {this.cutaway=enabled;for(const cut of this.cuts){cut.material.clippingPlanes=enabled?[cut.plane]:[];cut.material.needsUpdate=true;if(cut.cap)cut.cap.visible=enabled;}}
+  setCutaway(enabled) {this.setCutawayPercent(enabled?38:100);}
+  setCutawayPercent(percent) {
+    this.cutawayPercent=percent;this.cutaway=percent<100;
+    for(const floor of this.floors.values()){
+      floor.cutHeight=floor.referenceBase+floor.referenceHeight*percent/100;
+      floor.plane.constant=floor.cutHeight+floor.group.position.z;
+      floor.group.traverse(mesh=>{
+        if(!mesh.material)return;
+        if(!mesh.userData.clippingMaterial){mesh.material=mesh.material.clone();this.materials.add(mesh.material);mesh.userData.clippingMaterial=true;}
+        mesh.material.clippingPlanes=percent<100?[floor.plane]:[];mesh.material.clipShadows=true;mesh.material.needsUpdate=true;
+      });
+    }
+  }
   dispose() {for(const g of this.geometries)g.dispose();for(const m of this.materials)m.dispose();for(const t of this.textures)t.dispose();this.sun?.shadow.dispose();this.group.clear();}
 }

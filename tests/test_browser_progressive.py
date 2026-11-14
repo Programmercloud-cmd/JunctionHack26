@@ -58,6 +58,10 @@ def test_preview_review_stop_saved_reopen_and_current_question(progressive_serve
     url,provider,app=progressive_server;page=scene_page
     provider.review_release.clear();page.goto(url);expect(page.locator('#connection-label')).to_have_text('Gemini configured')
     upload(page)
+    page.wait_for_function("state.document?.interpretation_status==='complete'",timeout=15000)
+    assert page.evaluate('window.blueprintViewer===null')
+    assert provider.review_calls==0
+    page.locator('#generate-scene').click()
     page.wait_for_function('window.blueprintViewer?.data.derived===true',timeout=30000)
     assert provider.review_entered.is_set()
     expect(page.locator('#building-review-status')).to_contain_text('review in progress')
@@ -99,7 +103,8 @@ def test_preview_review_stop_saved_reopen_and_current_question(progressive_serve
     provider.answer_entered.clear();provider.answer_release.clear()
     ask(page,'slow question for old building');assert provider.answer_entered.wait(10)
     upload(page,pdf=True,name='elevation.pdf')
-    expect(page.locator('#building-review-status')).to_contain_text('Source only',timeout=15000)
+    page.wait_for_function("state.document?.interpretation_status==='complete'",timeout=15000)
+    expect(page.locator('#source-only-note')).to_be_visible()
     provider.answer_release.set()
     for future in list(app.state.jobs.futures.values()):future.result(10)
     page.locator('#refresh-building').click()
@@ -113,21 +118,23 @@ def test_source_only_views_reopen_without_automatic_restart(progressive_server,s
     url,provider,_=progressive_server;page=scene_page;page.goto(url)
     expect(page.locator('#connection-label')).to_have_text('Gemini configured')
     upload(page,name='elevation.png')
-    expect(page.locator('#building-review-status')).to_contain_text('Source only',timeout=15000)
-    assert page.evaluate('window.blueprintViewer===null')
+    page.wait_for_function("state.document?.interpretation_status==='complete'",timeout=15000)
     expect(page.locator('#source-only-note')).to_be_visible()
+    assert page.evaluate('window.blueprintViewer===null')
     expect(page.locator('#unsupported-views')).to_contain_text('elevation')
     page.locator('#unsupported-views button').click();expect(page.locator('#evidence-overlay')).to_be_visible()
     building=page.evaluate('state.document.building_id');calls=provider.reconstruction_calls
     page.reload();page.locator('#saved-building-select').select_option(building);page.locator('#open-building').click()
-    expect(page.locator('#building-review-status')).to_contain_text('Source only')
+    expect(page.locator('#source-only-note')).to_be_visible()
     upload(page,name='elevation.png')
-    expect(page.locator('#building-review-status')).to_contain_text('Source only')
+    expect(page.locator('#source-only-note')).to_be_visible()
     assert provider.reconstruction_calls==calls
     revision=page.evaluate('state.document.revision_number')
     page.locator('#reconstruct-building').click()
-    page.wait_for_function('number=>state.document.revision_number>number',arg=revision,timeout=15000)
-    assert provider.reconstruction_calls==calls+1
+    page.wait_for_function("state.jobs.some(j=>j.kind==='reconstruction'&&j.status==='needs_attention')",timeout=15000)
+    assert page.evaluate('state.document.revision_number')==revision, 'A no-floor interpretation remains saved without fabricating a geometry revision'
+    expect(page.locator('#building-jobs')).to_contain_text('no floor-plan geometry')
+    assert provider.reconstruction_calls==calls, 'Explicit geometry reuses the saved source-only interpretation'
     assert page.evaluate('window.blueprintViewer===null')
     page.screenshot(path='/tmp/product-progressive-source-only.png',full_page=True)
 

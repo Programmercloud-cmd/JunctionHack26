@@ -80,7 +80,7 @@ def test_unresolved_annotations_preserve_geometry_highlights_and_source(annotati
     localized=page.locator('.unresolved-annotation[data-annotation-kind="source-region"]:visible')
     expect(localized).to_have_attribute("aria-label",re.compile("not model geometry"))
     localized.click()
-    expect(page.locator("#page-label")).to_have_text("Page 1 of 2")
+    expect(page.locator("#page-label")).to_contain_text("page 1 (1/2)")
     expect(page.locator("#comparison-selection-detail")).to_contain_text("Symbol is too ambiguous")
     expect(page.locator("#evidence-overlay")).to_be_visible()
     assert page.locator("#evidence-overlay").evaluate("el=>el.style.left")=="70%"

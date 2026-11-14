@@ -87,8 +87,9 @@ def snapshot(page):
 
 
 def generate_scene(page):
-    """Accept automatic first preview, or explicitly start a legacy/manual run."""
+    """Wait for automatic interpretation, then explicitly request optional 3D."""
     page.wait_for_function("window.blueprintViewer?.data.derived || (state.document && !state.busy && !state.reconstructionSubmitting)")
+    page.wait_for_function("!state.jobs.some(j=>j.kind==='extraction'&&!terminalJob(j))",timeout=30000)
     if not page.evaluate("Boolean(window.blueprintViewer?.data.derived) || state.jobs.some(j=>j.kind==='reconstruction'&&!terminalJob(j))"):
         page.locator('#generate-scene').click()
     page.wait_for_function("window.blueprintViewer?.data.derived===true",timeout=30000)
