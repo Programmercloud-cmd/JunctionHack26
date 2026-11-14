@@ -1,0 +1,3 @@
+[291] assistant: I’m keeping the speech formatter deterministic, with no extra model call. It will remove technical annotations from the validated answer while retaining its prose and measurements, and include missing-information and next-step text. A “Read technical details” option will let users request the full version aloud.
+
+[292] tool send_message call: {"target":"voice_planner","message":"REDACTED"}
