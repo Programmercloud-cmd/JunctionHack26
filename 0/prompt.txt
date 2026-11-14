@@ -1,0 +1,64 @@
+sorry wrong session, ignore that prompt
+
+---
+
+PROCEED
+
+---
+
+Reopen the chat UI work. The preview has significant correctness and usability problems, so do not treat the previous handoff as final acceptance.
+
+Coordinate with session 01a1d692-ec24-7e63-9086-ebd31318f8e5. Keep its reconstruction/refinement reliability work independent: reuse its pipelines and agreed contracts, and coordinate integration rather than replacing its files.
+
+The UI implementation is in /tmp/junction-chat-ui, branch feat/chat-first-ui, through commit 9b20a0b. First establish whether those commits have already been integrated and work from the appropriate current state. Do not overwrite another session’s uncommitted work.
+
+Address these observed problems:
+
+1. Basic factual questions fail
+“How many windows does this building have?” produced:
+“Chat interpretation failed operationally. No action was executed; your saved sources and usable model remain available.”
+
+Diagnose the actual failure with credential-safe diagnostics. Do not dismiss it because later retries succeed. Route factual questions into the existing source-grounded QA pipeline, retaining sufficiency checks, citations and refusals. A modeled-window count must not be presented as the number of windows in the original building.
+
+2. Original blueprints do not open reliably
+“Show the original blueprint” should open the supplied drawing without requiring a selected object. Distinguish whole-document navigation from “show this object in its original blueprint.” For multiple drawings, provide discoverable page/source choices and clarify only genuine ambiguity. Preserve exact stored coordinates and revision-pinned evidence.
+
+3. The interface is too sparse and unintuitive
+Revise the earlier restriction against visible controls: chat-first does not mean chat-only.
+
+Provide persistent, compact controls for switching between Blueprints and 3D model, navigating supplied pages, and returning to the current selection. These operations should work immediately without a Gemini call. Preserve camera, selection and tour context across view switches.
+
+Keep Chronicle’s actual light/dark themes and avoid sprawling settings panels, but prioritize discoverability over minimalism.
+
+4. Orbiting incorrectly interrupts pending questions
+The current controller invalidates a shared navigation epoch on pointer/wheel interaction and then discards the entire pending intent response.
+
+Separate factual-question execution from workspace navigation. Users must be able to orbit, zoom, pan and switch views while a question completes. Preserve the document/revision and “this object” context captured at submission. Prevent stale navigation from unexpectedly moving the camera, without cancelling a valid question or displaying a generic interruption error.
+
+Keep genuine cross-document and stale-mutation protections.
+
+5. Restore visible provenance and direct evidence linkage
+The redesign has hidden essential distinctions between source-supported information, interpretations, user-provided values, display assumptions and decorative proposals.
+
+Provide:
+- Discoverable assumption markers, a clear legend and a manual toggle.
+- A persistent compact evidence summary for the selected object.
+- Direct “Show in original” navigation to exact stored evidence.
+- Property-level distinctions: an object’s presence may be supported while its height or placement is assumed.
+- Clear labels for supported observations, derivations, user-provided values, display assumptions, unresolved items and non-factual proposals.
+- Independent control of answer highlighting, navigation selection and assumption overlays.
+
+A generic footer saying geometry is an interpretation is insufficient. Hiding an overlay must not hide the selected object’s provenance. Do not fabricate source matches or regions, and do not imply that a source link validates every property of a generated object.
+
+Workflow and acceptance:
+- Read the existing UI contract, plan, verification handoff and current main-session documentation.
+- Use a bounded revised plan, independent plan review, focused implementation and independent implementation review.
+- Reviewers must directly interact with the browser.
+- Test ordinary language and combined interactions, not only isolated features or deterministic intent fixtures.
+- Explicitly exercise the exact window-count question; whole-blueprint navigation with no selection; manual source/model switching; a question while orbiting; switching views while processing; captured “this object”; visible provenance; both themes; and recoverable failures.
+- Use actual saved models and original sources. Separately label fixture evidence and live Gemini evidence.
+- Verify that no reconstruction is triggered merely by navigation or source QA.
+- Preserve the existing reliability, persistence, provider-switch and public-access contracts.
+- Make focused commits, do not push, and report remaining failures plainly.
+
+Do not declare completion solely because automated tests pass. Demonstrate that these reported failures and usability gaps are resolved in the actual browser workflow.

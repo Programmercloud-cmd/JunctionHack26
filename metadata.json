@@ -1,0 +1,57 @@
+{
+  "cli_version": "0.13.4",
+  "checkpoint_id": "01M7DF7CDMND912DKTXQCMPRV4",
+  "strategy": "manual-commit",
+  "branch": "blueprint-qa-isolated",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "app/static/chat-workspace.js",
+    "tests/test_browser.py",
+    "tests/test_browser_3d.py",
+    "tests/test_browser_concept.py",
+    "tests/test_browser_progressive.py",
+    "tests/test_browser_schematics.py",
+    "tests/test_browser_v2.py",
+    "tests/test_browser_v3.py",
+    "tests/test_revision_recovery_browser.py",
+    "tests/test_sourcefirst_browser.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 150573,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 5145984,
+    "output_tokens": 17750,
+    "api_call_count": 59,
+    "subagent_tokens": {
+      "input_tokens": 343660,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 7779584,
+      "output_tokens": 19589,
+      "api_call_count": 67
+    },
+    "subagent_tokens_complete": true
+  },
+  "redaction": {
+    "replacements": 141,
+    "layers": {
+      "betterleaks": 37,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 118,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  }
+}
