@@ -1,0 +1,7 @@
+[234] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[235] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[236] assistant: No blocker to the V3 evidence-region change with the stated anchor, page and host checks. Keep source boxes unchanged and preserve V2 behavior.
+
+The two-call locator/detail experiment is also reasonable. Preserve full-page context, explicitly track coordinate frames, and test inverse mapping for every geometry/evidence field—including rotated, off-center crops. Visual coverage still needs independent verification.
