@@ -33,7 +33,7 @@ class ReconstructionFixture:
         assessment={"delta_support":"unsupported" if self.regression else "supported","source_conflicts":[],
             "new_regressions":[],"pre_existing_issue_ids":[],"unresolved":[],"unresolved_delta":[],"issue_resolutions":[]} if kwargs.get("change_context") is not None else None
         return ReconstructionReview(candidate_supported=not self.regression,summary="Fixture review",issues=issues,candidate_assessment=assessment)
-    def patch_reconstruction(self,document,description,scene,review):
+    def patch_reconstruction(self,document,description,scene,review,**kwargs):
         f=description.floors[0];wall=f.boundaries[0];record=wall.model_dump();record["segment"]=[[.1,.2]]
         return DescriptionPatch(base_revision_id=document.revision_id,operations=[{
             "action":"replace","collection":"boundaries","floor_id":f.persistent_id,"target_id":wall.persistent_id,
