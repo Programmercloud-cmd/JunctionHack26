@@ -1,0 +1,36 @@
+[104] tool exec call: text(await tools.exec_command({cmd:".venv/bin/python - <<'PY'\nfrom pathlib import Path\np=Path('app/static/voice.js'); s=p.read_text().replace('    this.aliases = [];\\n    this.mic = null;', '    this.aliases = [];\\n    this.lastSubmitted = null;\\n    this.mic = null;')\ns=s.replace('  async startRecording() {','  questionSubmitted(question) { this.lastSubmitted = question.trim(); }\\n\\n  async startRecording() {')\ns=s.replace('    const mic = {version, documentId: this.documentId, base: this.el(\"question\").value.trim(), finals:', '    const draft = this.el(\"question\").value.trim();\\n    const mic = {version, documentId: this.documentId, base: draft === this.lastSubmitted ? \"\" : draft, finals:')\np.write_text(s)\np=Path('app/static/app.js'); s=p.read_text().replace('  voice?.cancelAll();\\n  resetAnswer();', '  voice?.cancelAll();\\n  voice?.questionSubmitted(question);\\n  resetAnswer();'); p.write_text(s)\np=Path('tests/test_voice_browser.py'); s=p.read_text()+'''\\n\\ndef test_second_spoken_question_starts_fresh_but_preserves_unsent_draft(voice_server, voice_page):\n    from playwright.sync_api import expect\n    url, state = voice_server; page = voice_page\n    ready(page, url)\n    for _ in range(2):\n        page.locator(\"#voice-record\").click()\n        expect(page.locator(\"#question\")).to_have_value(\"Where is plant room?\")\n        page.locator(\"#voice-stop-recording\").click()\n        expect(page.locator(\"#voice-status\")).to_contain_text(\"Transcript ready\")\n        page.locator(\"#ask-button\").click()\n        expect(page.locator(\"#answer-text\")).to_have_text(\"Fixture: one labeled room.\")\n        expect(page.locator(\"#voice-record\")).to_be_enabled()\n    assert state.questions == [\"Where is plant room?\", \"Where is plant room?\"]\n    page.locator(\"#question\").fill(\"On the upper floor:\")\n    page.locator(\"#voice-record\").click()\n    expect(page.locator(\"#question\")).to_have_value(\"On the upper floor: Where is plant room?\")\n    page.locator(\"#voice-stop-recording\").click()\n    expect(page.locator(\"#voice-status\")).to_contain_text(\"Transcript ready\")\n    microphone_stopped(page)\n'''; p.write_text(s)\nPY","workdir":"/home/jcb/dev/github/JunctionHack26-voice","max_output_tokens":800,"sandbox_permissions":"require_escalated","justification":"May I fix repeat voice questions so submitted text is not accidentally included in the next question, while preserving unsent drafts?"}));
+text(await tools.write_stdin({session_id:22324,chars:"","yield_time_ms":1000,"max_output_tokens":1600}));
+
+>>> TRANSCRIPT DELTA END
+
+Reviewed Codex session id: 01a1d7cb-2046-7233-b08c-db3559a85247
+
+>>> PARENT TURN PERMISSION CONTEXT START
+
+The active permission profile for environment "local" has no explicit denied-read paths/globs.
+
+>>> PARENT TURN PERMISSION CONTEXT END
+
+The Codex agent has requested the following next action:
+
+>>> APPROVAL REQUEST START
+
+Assess the exact planned action below. Use read-only tool checks when local state matters.
+
+Planned action JSON:
+
+{
+  "command": [
+    "/bin/bash",
+    "-lc",
+    ".venv/bin/python - <<'PY'\nfrom pathlib import Path\np=Path('app/static/voice.js'); s=p.read_text().replace('    this.aliases = [];\\n    this.mic = null;', '    this.aliases = [];\\n    this.lastSubmitted = null;\\n    this.mic = null;')\ns=s.replace('  async startRecording() {','  questionSubmitted(question) { this.lastSubmitted = question.trim(); }\\n\\n  async startRecording() {')\ns=s.replace('    const mic = {version, documentId: this.documentId, base: this.el(\"question\").value.trim(), finals:', '    const draft = this.el(\"question\").value.trim();\\n    const mic = {version, documentId: this.documentId, base: draft === this.lastSubmitted ? \"\" : draft, finals:')\np.write_text(s)\np=Path('app/static/app.js'); s=p.read_text().replace('  voice?.cancelAll();\\n  resetAnswer();', '  voice?.cancelAll();\\n  voice?.questionSubmitted(question);\\n  resetAnswer();'); p.write_text(s)\np=Path('tests/test_voice_browser.py'); s=p.read_text()+'''\\n\\ndef test_second_spoken_question_starts_fresh_but_preserves_unsent_draft(voice_server, voice_page):\n    from playwright.sync_api import expect\n    url, state = voice_server; page = voice_page\n    ready(page, url)\n    for _ in range(2):\n        page.locator(\"#voice-record\").click()\n        expect(page.locator(\"#question\")).to_have_value(\"Where is plant room?\")\n        page.locator(\"#voice-stop-recording\").click()\n        expect(page.locator(\"#voice-status\")).to_contain_text(\"Transcript ready\")\n        page.locator(\"#ask-button\").click()\n        expect(page.locator(\"#answer-text\")).to_have_text(\"Fixture: one labeled room.\")\n        expect(page.locator(\"#voice-record\")).to_be_enabled()\n    assert state.questions == [\"Where is plant room?\", \"Where is plant room?\"]\n    page.locator(\"#question\").fill(\"On the upper floor:\")\n    page.locator(\"#voice-record\").click()\n    expect(page.locator(\"#question\")).to_have_value(\"On the upper floor: Where is plant room?\")\n    page.locator(\"#voice-stop-recording\").click()\n    expect(page.locator(\"#voice-status\")).to_contain_text(\"Transcript ready\")\n    microphone_stopped(page)\n'''; p.write_text(s)\nPY"
+  ],
+  "cwd": "/home/jcb/dev/github/JunctionHack26-voice",
+  "environment_id": "local",
+  "justification": "May I fix repeat voice questions so submitted text is not accidentally included in the next question, while preserving unsent drafts?",
+  "sandbox_permissions": "require_escalated",
+  "tool": "exec_command",
+  "tty": false
+}
+
+>>> APPROVAL REQUEST END
