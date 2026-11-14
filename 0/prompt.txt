@@ -1,0 +1,7 @@
+[140] tool send_message call: {"target":"/root/voice_planner","message":"REDACTED"}
+
+[141] tool send_message call: {"target":"/root","message":"REDACTED"}
+
+[142] assistant: Revised speech-formatting plan accepted with no remaining blockers.
+
+Required preservation rule: spoken output retains every missing-information entry and next action, even when their wording overlaps the answer. Metadata removal stays narrow; ordinary measurements, window labels, uncertainty, and unrecognized prose remain intact.
