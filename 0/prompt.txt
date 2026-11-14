@@ -1,0 +1,9 @@
+Heres some info from a side converstaion: We discussed using the Gemini Decisions API alongside standard Gemini to help the system recognize when construction documents lack enough information to answer a question.
+
+The proposed starting point is one evidence-sufficiency gate: give Decisions the user’s question and actual source material, then classify it as sufficient, insufficient, or unclear. The prompt should allow answers derived through calculation, while checking that essential facts do not need to be assumed. “Insufficient” applies only to the material inspected; “unclear” should trigger further inspection or clarification rather than automatic refusal.
+
+An optional later stage is standard Gemini generates candidate answers and evidence references → Decisions evaluates their support. However, selecting confidently among candidates does not establish that any candidate is correct. Include an unsupported/insufficient option and evaluate against original evidence, not just Gemini’s explanation. Verification should also cover confidently generated answers.
+
+We rejected making many checks independent vetoes: false rejections would accumulate and suppress answer coverage. Start with one overall decision; add targeted checks only for demonstrated failure modes.
+
+Treat confidence scores as signals to validate on this dataset, not guaranteed probabilities of correctness. Compare the gated pipeline against ordinary Gemini using answer coverage and error rate among answered questions, including deliberately incomplete drawings. The goal is fewer unsupported answers without excessive abstention.
