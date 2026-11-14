@@ -12,6 +12,8 @@ from time import monotonic
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from google.genai.errors import APIError
+from httpx2 import TimeoutException
 from pydantic import ValidationError
 
 from .documents import Document
@@ -466,6 +468,12 @@ class GeminiProvider:
             if record["outcome"] == "request_started":
                 record["outcome"] = ("response_json_rejected" if isinstance(error,json.JSONDecodeError) or isinstance(error,ValidationError) and any(e["type"]=="json_invalid" for e in error.errors(include_input=False)) else
                     "response_schema_rejected" if isinstance(error,ValidationError) else "provider_error")
+            if schema is DraftAnswer and (
+                isinstance(error, (TimeoutException, TimeoutError))
+                or isinstance(error, APIError) and error.code in {408, 504}
+            ):
+                record["outcome"] = "provider_timeout"
+                raise ProviderError("Gemini timed out while drafting the answer. Please retry. No evidence conclusion was made.", 504) from None
             raise
         finally: _finish_call(self,record,started)
 
@@ -475,7 +483,9 @@ class GeminiProvider:
     def answer(self, document, question, gate, crop=None):
         return self._generate(document, question, ANSWER_INSTRUCTIONS +
                               "\nNative IFC numeric calculations must use native_calculation with original object/property references and {result}; code resolves all numeric inputs. Claims may split factual assertions for targeted removal; their IDs are assigned server-side. " +
-                              f"\nOverall evidence decision: {gate.decision}.", DraftAnswer, crop)
+                              f"\nOverall evidence decision: {gate.decision}.", DraftAnswer, crop,
+                              thinking_level="low" if self.model == "gemini-3.8-flash" else None,
+                              timeout_ms=round(configured_number("GEMINI_DRAFT_SECONDS", 90)*1000))
 
     def resolve_intent(self, document, question):
         return self._generate(document, question, INTENT_INSTRUCTIONS, QuestionIntent)
@@ -543,4 +553,6 @@ class GeminiProvider:
 
     def revise_answer(self, document, question, draft, gate, review, crop=None, *, validation=None):
         return self._generate(document,question,ANSWER_INSTRUCTIONS+"\n"+ANSWER_REPAIR_INSTRUCTIONS+f"\nOverall sufficiency decision: {gate.decision}.",DraftAnswer,crop,
+          thinking_level="low" if self.model == "gemini-3.8-flash" else None,
+          timeout_ms=round(configured_number("GEMINI_DRAFT_SECONDS", 90)*1000),
           extra_data={"previous_draft":draft.model_dump(mode="json"),"review":review.model_dump(mode="json"),"validation":validation or{}})

@@ -144,7 +144,7 @@ def test_token_limit_rejects_even_locally_valid_json(sdk_document, mode, output)
     assert document.scene is None
 
 
-def test_reconstruction_budgets_are_scoped_and_qa_budgets_unchanged(sdk_document):
+def test_reconstruction_and_qa_timeouts_are_scoped(sdk_document):
     provider, document = sdk_document
     requests = []
     endpoints = []
@@ -170,12 +170,14 @@ def test_reconstruction_budgets_are_scoped_and_qa_budgets_unchanged(sdk_document
     assert endpoints[0].endswith(f"models/{provider.reconstruction_model}:generateContent")
     assert all(path.endswith(f"models/{provider.model}:generateContent") for path in endpoints[1:3])
     for index, (body, timeout) in enumerate(requests):
-        assert timeout["read"] == (300 if index == 0 else 45)
+        assert timeout["read"] == (300, 90, 45, 45)[index]
         if index < 3:
             assert body["generationConfig"]["maxOutputTokens"] == (65536 if index == 0 else 8192)
             assert "httpOptions" not in body["generationConfig"]
             if index == 0:
                 assert body["generationConfig"]["thinkingConfig"] == {"thinking_level": "HIGH"}
+            elif index == 1 and provider.model == "gemini-3.8-flash":
+                assert body["generationConfig"]["thinkingConfig"] == {"thinking_level": "LOW"}
             else:
                 assert "thinkingConfig" not in body["generationConfig"]
         else:
