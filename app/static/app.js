@@ -5,7 +5,7 @@ const state = { document: null, pageIndex: 0, selectedEvidence: null, sourceSele
 const suggestions = Array.from(document.querySelectorAll("[data-question]"));
 
 function announce(message) { $("announcer").textContent = message; }
-function setError(id, message = "") { $(id).textContent = message; $(id).hidden = !message; }
+function setError(id, message = "") { $(id).textContent = message; $(id).hidden = !message; window.chatUI?.onError(id,message); }
 function updateControls() {
   const busy = Boolean(state.busy);
   $("file-input").disabled = busy;
@@ -37,6 +37,7 @@ function updateControls() {
   $("show-concept").disabled = !state.viewer || !state.scene?.elements.some(e=>e.geometry);
   $("show-drawing").hidden = state.document?.kind === "ifc";
   $("scene-progress").hidden = state.busy !== "scene";
+  window.chatUI?.syncControls();
 }
 
 async function request(path, options = {}, timeout = 180000) {
@@ -110,6 +111,7 @@ async function uploadFile(input, append = false) {
     if(!/\.(jpe?g|png|pdf|ifc|svg|dxf|dwg)$/i.test(file.name)){setError("upload-error","Choose JPG, PNG, PDF, SVG, DXF or IFC. DWG needs an available converter.");return;}
   }
   state.busy="upload";const version=++state.requestVersion;updateControls();
+  window.chatUI?.onUpload(files,append);
   const form=new FormData();for(const file of files)form.append("files",file);
   const path=append&&state.document?`/api/buildings/${state.document.building_id}/sources`:"/api/documents";
   try{
@@ -161,6 +163,7 @@ async function activateDocument(result) {
     if(result.scene_url)await loadScene(await request(result.scene_url));
   }
   renderSourceList();renderBuildingStatus();renderJobs();updateControls();
+  window.chatUI?.onDocument(result);
   if(progressiveDocument()){await Promise.allSettled([refreshConversation(),refreshAssumptions()]);schedulePoll(0);}
 }
 async function openBuilding(id) {
@@ -283,6 +286,7 @@ function renderJobs() {
       else{setError("ask-error",question.message || "Question stopped without a confirmed answer.");$("answer-empty").hidden=false;}
     }
   }
+  window.chatUI?.onJobs(state.jobs);
 }
 async function refreshBuilding() {
   if(!progressiveDocument())return;
@@ -308,6 +312,7 @@ async function refreshBuilding() {
     const savedOption=[...$("saved-building-select").options].find(option=>option.value===id);
     if(savedOption)savedOption.textContent=`${result.filename} · ${result.has_scene?"model available":"source available"}`;
     renderBuildingStatus();renderJobs();setError("building-poll-error");updateControls();
+    window.chatUI?.onDocument(state.document);
   }catch(error){if(epoch===state.epoch)setError("building-poll-error",`${error.message} The displayed model remains available. Use Refresh status to retry.`);}
   finally{
     if(state.pollingEpoch===epoch)state.pollingEpoch=null;
@@ -364,7 +369,7 @@ function renderOverlay() {
   overlay.style.height = `${(bottom - top) * 100}%`;
   $("overlay-number").textContent = state.sourceSelection ? "Source" : String(state.selectedEvidence + 1);
   overlay.hidden = false;
-  $("viewer-caption").textContent = `${state.sourceSelection ? "Model source region" : `Reference ${state.selectedEvidence + 1}`} · Page ${evidence.page} · ${evidence.label}`;
+  $("viewer-caption").textContent = `${state.sourceSelection ? "Saved source region" : `Reference ${state.selectedEvidence + 1}`} · Page ${evidence.page} · ${evidence.label}`;
   $("viewer").scrollTo({ left: Math.max(0, overlay.offsetLeft + overlay.offsetWidth / 2 - $("viewer").clientWidth / 2), top: Math.max(0, overlay.offsetTop + overlay.offsetHeight / 2 - $("viewer").clientHeight / 2), behavior: "instant" });
 }
 
@@ -485,6 +490,7 @@ function renderResult(result, preserveView = false) {
   if (Number.isFinite(result.usage?.output_tokens)) addDetail("Output tokens", result.usage.output_tokens.toLocaleString());
   renderOverlay();
   announce(`${labels[result.status] || "Inspection complete"}. ${result.answer || ""}`);
+  window.chatUI?.syncHighlights();
 }
 
 function clearScene() {
@@ -559,6 +565,7 @@ async function loadScene(scene) {
   if (scene.document_id !== state.document?.document_id) return;
   const updating=Boolean(state.viewer&&state.scene?.document_id===scene.document_id);
   if(updating&&(!scene.revision_id||scene.revision_id===state.scene.revision_id))return;
+  const oldSceneRevision=state.scene?.revision_id;
   const oldView=state.view, oldSelected=state.selectedElement, oldProposal=state.selectedProposal, oldComparison=$("comparison-floor-select").value;
   let prepared=null;
   if(updating){try{prepared=state.viewer.prepareRevision(scene);state.viewer.commitRevision(prepared);}catch(error){setError("scene-error","The model update could not be published. The previous usable revision remains available.");return;}}
@@ -600,7 +607,7 @@ async function loadScene(scene) {
       const changes=state.viewer.getSnapshot().revision_changes;
       $("revision-notice").hidden=false;
       $("revision-notice").textContent=changes.removed_selection||changes.unresolved_selection?"Model updated. The selected object was removed or is now unresolved; its previous source evidence remains available below.":"Model updated. Your view is preserved; use Fit updated model if you want new framing.";
-      if(oldSelected){const current=scene.elements.find(e=>e.id===oldSelected.id);inspectElement(current || oldSelected);if(!current)$("element-geometry-note").textContent="Removed in the current revision. Original source evidence retained; no replacement object was selected.";}
+      if(oldSelected){const current=scene.elements.find(e=>e.id===oldSelected.id);inspectElement(current || oldSelected,{automatic:true,source_revision_id:current?scene.revision_id:oldSceneRevision});if(!current)$("element-geometry-note").textContent="Removed in the current revision. Original source evidence retained; no replacement object was selected.";}
       if(oldProposal){const record=state.viewer.concept?.records.get(oldProposal.id);if(record)inspectProposal(record);else{$("concept-selection").hidden=true;state.selectedProposal=null;}}
       setView(oldView);
     }
@@ -617,9 +624,11 @@ async function loadScene(scene) {
     window.blueprintViewer = null;
   }
   updateControls();
+  window.chatUI?.onScene(scene);
 }
 
 function updateHighlights(preserveView = false) {
+  if(window.chatUI){window.chatUI.syncHighlights();return;}
   const ids = Array.isArray(state.result?.highlight_ids) ? state.result.highlight_ids : [];
   if (!preserveView && state.viewer?.mode !== "concept" && $("floor-select").value && ids.some((id) => state.scene?.elements.some((element) => element.id === id && element.storey_id !== $("floor-select").value))) setFloorFilter("");
   state.viewer?.setHighlights(ids, $("highlight-answer").checked);
@@ -663,6 +672,7 @@ function showSourceRegion(source, label, revision=null) {
   setView("drawing");
   renderPage();
   announce(`Showing original source region for ${label}, page ${source.page}.`);
+  window.chatUI?.openWorkspace("source");
 }
 
 function renderFloors() {
@@ -885,7 +895,7 @@ function renderInventory() {
   }
 }
 
-function inspectElement(element) {
+function inspectElement(element, options = {}) {
   state.selectedProposal=null;$("concept-selection").hidden=true;
   state.selectedElement = element;
   if (state.viewer && $("floor-select").value !== state.viewer.floorFilter) { $("floor-select").value = state.viewer.floorFilter; renderFloorDetails(); renderInventory(); }
@@ -923,6 +933,7 @@ function inspectElement(element) {
   $("element-assumptions-section").hidden = !element.assumptions?.length && !conceptRecord;
   $("element-source").hidden = element.source.kind !== "image";
   announce(`Selected ${element.name || element.id}. Source properties are available below the model.`);
+  window.chatUI?.onSelection(element, options);
 }
 
 function selectModelElement(id) {
@@ -937,8 +948,8 @@ function ifcReference(reference) {
   return [reference.ifc_type,reference.global_id?`GlobalId ${reference.global_id}`:null,reference.step_id?`STEP #${reference.step_id}`:null].filter(Boolean).join(" · ") || JSON.stringify(reference);
 }
 function nativeValue(value) {return typeof value==="object"?JSON.stringify(value):String(value ?? "Not supplied");}
-async function inspectNativeEvidence(item) {
-  const building=state.document?.building_id,revision=state.result?.answered_revision_id || state.scene?.revision_id || state.document?.revision_id;
+async function inspectNativeEvidence(item, revisionOverride = null) {
+  const building=state.document?.building_id,revision=revisionOverride || state.result?.answered_revision_id || state.scene?.revision_id || state.document?.revision_id;
   const epoch=state.epoch,token=state.nativeEvidenceToken=(state.nativeEvidenceToken || 0)+1;
   if(state.scene?.elements.some(element=>element.id===item.element_id&&element.geometry))selectModelElement(item.element_id);
   $("native-record-inspector").hidden=false;$("native-record-name").textContent=item.label || "Original IFC record";$("native-record-note").textContent="Loading the original source record from the answered revision…";
@@ -1016,6 +1027,7 @@ async function refreshConversation() {
   }catch(error){if(epoch===state.epoch)setError("conversation-error",`Conversation history is unavailable: ${error.message}`);}
 }
 function renderConversation() {
+  if(window.chatUI){window.chatUI.mergeConversation(state.conversation);return;}
   const container=$("conversation");container.replaceChildren();
   const latestAssistant=[...state.conversation].reverse().find(m=>m.answer);
   state.clarificationReply=latestAssistant?.answer?.status==="clarification"?latestAssistant.id:null;
@@ -1169,6 +1181,7 @@ $("element-source").addEventListener("click", () => {
 
 $("question-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if(window.chatUI){window.chatUI.submit();return;}
   const question=$("question").value.trim();
   if(!question||!state.document||state.busy||state.askSubmitting||!state.providerReady)return;
   resetAnswer();$("answer-empty").hidden=true;

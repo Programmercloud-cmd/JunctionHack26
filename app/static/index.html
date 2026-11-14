@@ -3,13 +3,31 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#123b36">
-  <title>Blueprint QA — Ask the drawing</title>
+  <meta name="theme-color" content="#fbfaf8">
+  <title>Blueprint — Your drawings, in conversation</title>
   <link rel="stylesheet" href="/static/styles.css">
   <script type="importmap">{"imports":{"three":"/static/vendor/three/three.module.js"}}</script>
   <script src="/static/app.js" defer></script>
+  <script src="/static/chat-workspace.js" defer></script>
 </head>
 <body>
+  <a class="skip-link" href="#question">Skip to conversation</a>
+  <main id="chat-shell" class="chat-shell">
+    <section id="chat-column" class="chat-column" aria-label="Blueprint conversation">
+      <header class="chat-header"><a href="/" class="chat-brand"><span aria-hidden="true">▧</span> Blueprint</a><span id="chat-connection" role="status">Connecting…</span></header>
+      <div id="chat-scroll" class="chat-scroll">
+        <div id="chat-welcome" class="chat-welcome"><p class="chat-kicker">A conversation with your drawings</p><h1>Start with a blueprint.</h1><p>Attach your plans and ask a question.<br>When you want a closer look, we’ll open the workspace.</p><div class="chat-actions"><button id="welcome-upload" type="button">Attach drawings <span aria-hidden="true">↗</span></button><button id="welcome-saved" type="button">Open saved building</button></div></div>
+        <div id="chat-log" class="chat-log" role="log" aria-label="Conversation messages" aria-live="polite" aria-relevant="additions text"></div>
+      </div>
+      <div id="chat-composer" class="chat-composer"><div id="attachment-summary" hidden></div><div id="composer-slot"></div><p class="chat-footnote">Original sources first. Modeled geometry is an interpretation.</p></div>
+    </section>
+    <section id="visual-workspace" class="visual-workspace" aria-label="Visual workspace" hidden>
+      <div class="workspace-caption"><span id="workspace-title">Drawing workspace</span><span id="workspace-status"></span></div>
+      <div id="workspace-content"></div>
+    </section>
+  </main>
+  <!-- Existing operation adapters retain their DOM anchors; presentation lives above. -->
+  <div id="operation-adapters" hidden inert>
   <header class="topbar">
     <a class="brand" href="/" aria-label="Blueprint QA home"><span class="brand-mark" aria-hidden="true">B<span>Q</span></span><span>Blueprint <strong>QA</strong></span></a>
     <div class="environment"><span class="status-dot" aria-hidden="true"></span> LOCAL WORKSPACE</div>
@@ -121,6 +139,7 @@
     </div>
     <footer class="footer"><span>BLUEPRINT QA / JUNCTION 2026</span><span>Read the source. Question the assumptions.</span></footer>
   </main>
+  </div>
   <div id="announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
 </body>
 </html>
