@@ -8,6 +8,7 @@ from time import monotonic
 from typing import Literal, Union
 from uuid import uuid4
 
+from httpx import TimeoutException
 from pydantic import Field, StrictBool, ValidationError, model_validator
 
 from .documents import Document, DocumentError, resolve_reference
@@ -742,7 +743,9 @@ def chat_actions(store, runner, provider_factory, request):
     except Exception as error:
         # A failed inner stage already emitted this invocation's one safe diagnostic.
         _log_intent_failure("provider_setup" if provider is None else "action_boundary", error)
-        raise ProviderError("Chat interpretation failed operationally. No action was executed; your saved sources and usable model remain available. "
+        outcome = ("Chat interpretation timed out before an action was resolved."
+            if isinstance(error, TimeoutException) else "Chat interpretation failed operationally.")
+        raise ProviderError(f"{outcome} No action was executed; your saved sources and usable model remain available. "
             f"Diagnostic reference: {diagnostic['reference']}.") from None
     finally:
         if provider is not None:

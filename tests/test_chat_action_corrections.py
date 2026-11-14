@@ -3,6 +3,7 @@ import logging
 import re
 
 from fastapi.testclient import TestClient
+import httpx
 import pytest
 
 from app.main import create_app
@@ -164,3 +165,34 @@ def test_non_numeric_exception_status_is_never_logged(chat_client, caplog):
     assert response.status_code == 502
     assert 'http_status' not in caplog.text
     assert 'PRIVATE_' not in caplog.text + response.text
+
+
+@pytest.mark.parametrize('timeout_class', [httpx.ReadTimeout, httpx.ConnectTimeout])
+def test_transport_timeout_has_safe_specific_outcome_and_correlated_diagnostic(tmp_path, caplog, timeout_class):
+    secret = 'PRIVATE_TIMEOUT_BODY_AND_REQUEST'
+    class Transport:
+        usage = Usage()
+        closed = 0
+        calls = 0
+        def _generate(self, *args, **kwargs):
+            self.calls += 1
+            raise timeout_class(secret, request=httpx.Request('POST', f'https://example.invalid/{secret}'))
+        def close(self):
+            self.closed += 1
+    provider = Transport()
+    app = create_app(provider_factory=lambda:provider, storage_root=tmp_path)
+    with TestClient(app) as client, caplog.at_level(logging.WARNING, logger='app.chat_actions'):
+        doc = saved_drawing(app.state.documents)
+        response = client.post('/api/chat/actions', json=payload(doc, 'How many windows does this building have?'))
+        assert app.state.jobs.for_building(doc.id) == []
+        assert app.state.documents.get(doc.id).revision_id == doc.revision_id
+    assert response.status_code == 502
+    detail = response.json()['detail']
+    assert 'timed out before an action was resolved' in detail
+    assert 'No action was executed' in detail and 'saved sources and usable model remain available' in detail
+    reference = re.search(r'Diagnostic reference: ([a-f0-9]{32})\.', detail).group(1)
+    records = [record.getMessage() for record in caplog.records if record.name == 'app.chat_actions']
+    assert len(records) == 1 and reference in records[0]
+    assert 'provider_response' in records[0] and timeout_class.__name__ in records[0]
+    assert secret not in records[0] + detail and 'example.invalid' not in records[0] + detail
+    assert provider.calls == 1 and provider.closed == 1
