@@ -11,6 +11,8 @@ import secrets
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
+from .access_policy import evaluate_policy
+
 COOKIE_NAME='__Host-blueprint_demo'
 ID=r'[0-9a-f]{64}'
 REV=r'[0-9a-f]{32}'
@@ -40,12 +42,16 @@ class PublicAccess:
     verifier: str=field(default='',repr=False)
     session_secret: str=field(default='',repr=False)
     protected_source_ids: set=field(default_factory=set)
+    require_access_code: bool=True
+    access_mode_file: str | None=None
 
     @classmethod
     def from_environment(cls,environ=None):
         env=os.environ if environ is None else environ
         flag=env.get('BLUEPRINT_PUBLIC_DEMO','0')
         if flag not in ('0','1'):raise RuntimeError('BLUEPRINT_PUBLIC_DEMO must explicitly be 0 or 1.')
+        code_flag=env.get('BLUEPRINT_DEMO_REQUIRE_ACCESS_CODE','1')
+        if code_flag not in ('0','1'):raise RuntimeError('BLUEPRINT_DEMO_REQUIRE_ACCESS_CODE must explicitly be 0 or 1.')
         if flag=='0':return cls()
         verifier=env.get('BLUEPRINT_DEMO_ACCESS_CODE_HASH','');_verifier(verifier)
         secret=env.get('BLUEPRINT_DEMO_SESSION_SECRET','')
@@ -62,7 +68,8 @@ class PublicAccess:
                 examples[identity]=revision;titles[identity]=item.get('title','')
         except (KeyError,TypeError,ValueError,OSError):
             raise RuntimeError('Public example manifest is missing or invalid.') from None
-        return cls(True,examples,titles,verifier,secret)
+        return cls(True,examples,titles,verifier,secret,
+                   require_access_code=code_flag=='1',access_mode_file=env.get('BLUEPRINT_DEMO_ACCESS_MODE_FILE') or None)
 
     def validate_store(self,store):
         if not self.enabled:return
@@ -79,19 +86,44 @@ class PublicAccess:
     def _signature(self,nonce):
         return hmac.new(self.session_secret.encode(),f'editor:{self.verifier}:{nonce}'.encode(),hashlib.sha256).hexdigest()
 
-    def is_editor(self,request):
-        if not self.enabled:return True
+    def _policy(self):
+        if not self.enabled:return {'required':False,'window':None}
+        if self.access_mode_file is not None:
+            try:
+                # The operator swaps this file atomically. Malformed or missing
+                # policies require the code instead of falling back to open mode.
+                return evaluate_policy(Path(self.access_mode_file).read_text())
+            except (OSError,UnicodeError):
+                return {'required':True,'window':None}
+        return {'required':self.require_access_code,'window':None}
+
+    def _requires_code(self):
+        return self._policy()['required']
+
+    def _editor_cookie(self,request):
         parts=request.cookies.get(COOKIE_NAME,'').split('.')
         return (len(parts)==2 and re.fullmatch(r'[0-9a-f]{64}',parts[0]) is not None
             and re.fullmatch(r'[0-9a-f]{64}',parts[1]) is not None
             and hmac.compare_digest(parts[1],self._signature(parts[0])))
 
+    def is_editor(self,request):
+        return not self._requires_code() or self._editor_cookie(request)
+
     def require_editor(self,request):
         if not self.is_editor(request):raise HTTPException(401,'Enter the access code to use paid or private features.')
 
+    def _status(self,request,policy,*,editor=None):
+        required=policy['required']
+        if editor is None:editor=not required or self._editor_cookie(request)
+        status={'public_demo':self.enabled,'access_code_required':required,'can_work':editor,
+                'shared_workspace':self.enabled and editor}
+        if policy['window'] is not None:status['access_window']=policy['window']
+        return status
+
     def status(self,request):
-        return {'public_demo':self.enabled,'can_work':self.is_editor(request),
-            'shared_workspace':self.enabled and self.is_editor(request)}
+        # One policy/clock snapshot keeps the advertised boundary and permission
+        # consistent even when a request arrives at the opening or closing time.
+        return self._status(request,self._policy())
 
     def _same_origin(self,request):
         if not self.enabled:return
@@ -103,18 +135,20 @@ class PublicAccess:
 
     def unlock(self,request,code):
         self._same_origin(request)
-        if not self.enabled:return JSONResponse(self.status(request),headers={'Cache-Control':'no-store'})
+        policy=self._policy()
+        if not policy['required']:return JSONResponse(self._status(request,policy),headers={'Cache-Control':'no-store'})
         salt,expected=_verifier(self.verifier)
         supplied=hashlib.scrypt((code if isinstance(code,str) else '').encode(),salt=salt,n=16384,r=8,p=1,dklen=32)
         if not hmac.compare_digest(supplied,expected):raise HTTPException(401,'Access code not accepted.')
         nonce=secrets.token_hex(32)
-        response=JSONResponse({'public_demo':True,'can_work':True,'shared_workspace':True},headers={'Cache-Control':'no-store'})
+        response=JSONResponse(self._status(request,policy,editor=True),headers={'Cache-Control':'no-store'})
         response.set_cookie(COOKIE_NAME,f'{nonce}.{self._signature(nonce)}',secure=True,httponly=True,samesite='strict',path='/')
         return response
 
     def lock(self,request):
         self._same_origin(request)
-        response=JSONResponse({'public_demo':self.enabled,'can_work':not self.enabled,'shared_workspace':False},headers={'Cache-Control':'no-store'})
+        policy=self._policy()
+        response=JSONResponse(self._status(request,policy,editor=not policy['required']),headers={'Cache-Control':'no-store'})
         response.delete_cookie(COOKIE_NAME,path='/',secure=True,httponly=True,samesite='strict')
         return response
 

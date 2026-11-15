@@ -6,10 +6,10 @@ The existing `blueprint-qa-isolated` demo at `https://95.133.254.90.sslip.io/` r
 
 ## Published release and results
 
-- Frozen source: `/tmp/junction-agentic-publish/release-v5/source`; branch `feat/agentic-chat`, Git base `46099464d3b0dc1405fae3f1d33398d0475a4962`. This is a worktree snapshot including uncommitted/untracked files, not an archive of Git HEAD.
-- Content identity: `0ae8f14448f4aa2aa962fba0fab92f72bc6175b5802541fc4bbfe8c47fab316a`.
-- Production archive SHA256: `1cb51b39f8767a30841f147de552a6e4ac7873c3f087cfe4b8d23ed9d29c0224`. All 73 installed production files match their frozen hashes, including the user-supplied brand PNG.
-- Latest frozen-source checks: **941 passed / 121 optional skipped** in 86.04 seconds; **nine focused Chromium checks passed** in 39.04 seconds against matching production bytes. The preceding UI release passed 44 selected Chromium checks in 183.34 seconds. Tests cover the latest projects/sessions, tasks, microphone lifecycle, marks/editor, drawers, source/model/concept, shared UI and parallel render behavior. Offline fixture/intercept tests are not live-provider claims.
+- Frozen source: `/tmp/junction-agentic-publish/release-v6/source`; branch `feat/agentic-chat`, Git base `a350690b424a0159649ab38e60b79e62fb85aa09`. This is a worktree snapshot including uncommitted/untracked files, not an archive of Git HEAD.
+- Content identity: `0fa281b79164b5955abb0db3ccb8f2a93b3fd6716f344d6544d2c23440472d04`.
+- Production archive SHA256: `38a1dc39312e43e8a53c0fcc00bf8b50229f540455544567583e412ba335b8e5`. All 75 installed production files match their frozen hashes, including the user-supplied brand PNG.
+- Latest frozen-source checks: **1,012 passed / 126 optional skipped** in 85.91 seconds; **15 focused Chromium checks passed** in 57.13 seconds against matching production bytes. The measurement/render release previously passed 941 backend checks and nine selected Chromium checks. The preceding UI release passed 44 selected Chromium checks in 183.34 seconds. Tests cover the latest projects/sessions, tasks, microphone lifecycle, marks/editor, drawers, source/model/concept, shared UI and parallel render behavior. Offline fixture/intercept tests are not live-provider claims.
 - Public checks: trusted TLS; exactly nine manifest-pinned public scenes; no anonymous jobs/history/private uploads; paid requests blocked before provider construction; secure host-only sessions; the existing access code unlocks the separate site.
 - Independent final public Chromium review passed all eight drawing examples plus a targeted native IFC rerun: exact source/revision links, orbit, same-revision Concept, visible saved-floor filtering/restoration, and loaded original records. The settled native Evidence drawer is opaque/readable and scrolls. Zero script errors or mutation attempts; nine public examples only, private history denied, original URL/access HTTP 200 and no mobile page overflow. Reports distinguish the initial eight-example pass from the native rerun after fixing a test-only network wait.
 - Actual public Gemini checks: an empty project requests sources instead of inheriting another file. A new synthetic original was uploaded/interpreted, then its render completed in one round with **exactly three Hydrogen calls**: creator `DescriptionPatch` (26.061 seconds), reviewer 1 `RenderReview` (6.133 seconds), reviewer 2 `RenderReview` (5.285 seconds). Both reviews ran in the parallel-review phase; reviewer 2 finished first, both final support/satisfaction votes referenced one exact candidate digest. These per-call timings are observed samples, not a general latency benchmark. Upload interpretation and chat routing are separate from those three render calls.
@@ -25,6 +25,28 @@ The latest deployed follow-up implements the [colorful-355 measurement/output-li
 Deployment review also fixed portable lineage after an unsupported private candidate: generation now pins the next candidate's revision number/parent to the last published revision before writing IFC bytes. Independent reproduction and regression checks verify bundle, reopened IFC, manifest and real saved ancestry agree. The fixed creator/parallel-review policy and unbounded retry/Stop semantics are unchanged.
 
 Detailed runtime/browser reports and screenshots are local under `/tmp/junction-agentic-publish/public-verification/`; root-only preparation/rollback records remain on the VM. These live synthetic checks establish the deployed flow, not general complex-plan fidelity or engineering accuracy.
+
+## Peer-review access window
+
+The user confirmed **Sunday 15 November 2026, 09:30–14:00 Europe/Helsinki** (07:30–12:00 UTC). This is a one-time window: code-free shared-workspace access opens at 09:30 inclusive, and the access code is required again at 14:00. Any visitor during the window has the existing code-holder visibility/actions, including saved uploads and chats. The nine pinned examples remain read-only. Existing code-holder cookies remain valid after the window; previously accepted jobs continue under their normal Stop/consensus policy.
+
+The operator-owned `/etc/blueprint-agentic/access-mode` policy is read on requests, so opening and closing need no app restart, cron job or running assistant. The one-time JSON policy has aware opening/closing timestamps. A missing, unreadable or invalid configured file requires the code. `BLUEPRINT_PUBLIC_DEMO=1` stays enabled so source pins, read-only guards and same-origin checks remain active. The code verifier and session secret are retained.
+
+From this checkout, inspect or manage the separate agentic site:
+
+```bash
+bash scripts/peer-review-access.sh status
+bash scripts/peer-review-access.sh schedule 2026-11-15 09:30 14:00
+bash scripts/peer-review-access.sh require-code
+```
+
+`require-code` cancels the window and immediately requires the code. `open` is also available as an explicit indefinite override; it cancels the timed window. The wrapper uses the existing dedicated SSH key/known-host file; `BLUEPRINT_DEMO_SSH_KEY` and `BLUEPRINT_DEMO_KNOWN_HOSTS` override their locations. The VM equivalent is `/opt/blueprint-agentic/current/.venv/bin/python /opt/blueprint-agentic/current/deploy/verda-agentic/access_mode.py status` (or `schedule --date 2026-11-15 --start 09:30 --end 14:00`, `require-code`, `open`).
+
+Only the fixed agentic policy file is replaced atomically; the command checks the live API and restores previous bytes if verification fails. Policy-file reads also run as the application user during deployment to check directory traversal/readability. The config directory and policy are root-owned, the policy is readable but not writable by the app, and `application.env` remains root-only. No credentials or runtime bundles are changed by the switch. Browser access refreshes at the server-reported boundaries; API enforcement remains authoritative if a browser is asleep.
+
+**Activated and verified on the public agentic site.** At 05:37 UTC (07:37 Helsinki), fresh public status reported the exact 07:30–12:00 UTC window, code required and the opening as the next transition. Anonymous paid chat returned 401; nine pinned examples and no private jobs were visible. Independent trusted-HTTPS/Chromium review found the code form present and its automatic opening refresh scheduled, with zero script errors or browser mutations. The application Unix user successfully read and evaluated the deployed policy at before/start/inside/end test times; this did not alter the server clock or open public access early.
+
+The code-only release retained all **519 current runtime files**, including user work added since the earlier 476-file checkpoint. All 75 production hashes match the tested archive. The original demo retained its release, process, configuration and all 1,154 recorded runtime hashes. Independent review cleared the policy, unit conversions, atomic operator rollback and timed UI; 132 focused backend/operator checks and five targeted timing-browser checks passed in addition to the integrated suites. The window is enforced by persisted application policy rather than an assistant or cron callback.
 
 ## Isolated target
 

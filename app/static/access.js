@@ -5,6 +5,7 @@
 (() => {
   let access = null;
   let pending = false;
+  let accessTimer = null;
   const editIds = new Set(["append-sources", "attach-drawings", "workspace-attach-sources", "retry-extraction", "generate-scene", "refine-building", "reconstruct-building", "apply-assumptions"]);
   const panel = document.createElement("section");
   panel.id = "access-panel"; panel.className = "access-panel"; panel.hidden = true;
@@ -12,6 +13,7 @@
   panel.innerHTML = '<strong id="access-title">Public examples</strong><p id="access-description"></p><p id="access-shared"></p><form id="access-form" class="access-form"><label for="access-code">Access code<input id="access-code" type="password" autocomplete="off" spellcheck="false" autocapitalize="none"></label><button id="access-unlock" class="secondary-button" type="submit">Unlock workspace</button></form><div class="access-actions"><button id="access-lock" class="text-button" type="button" hidden>Lock workspace</button><button id="access-refresh" class="text-button" type="button">Refresh access</button></div><p id="access-message" class="access-message" role="status" hidden></p><p id="access-model-note" class="access-model-note" hidden>Cached example · read-only model. You can inspect its sources and 3D model, and ask questions after entering the code. Model edits and added sources are unavailable for this example.</p>';
   document.getElementById("home-library").append(panel);
   const element = id => document.getElementById(id);
+  const requiresCode = () => access?.access_code_required ?? Boolean(access?.public_demo);
   const locked = () => access?.public_demo && !access.can_work;
   const readOnly = () => access?.public_demo && state.document?.read_only_model;
   function message(text = "") { element("access-message").textContent = text; element("access-message").hidden = !text; }
@@ -32,19 +34,32 @@
       input.disabled = Boolean(locked() || readOnly());
     });
     element("access-model-note").hidden = !readOnly();
+    element("access-model-note").textContent = "Cached example · read-only model. You can inspect its sources and 3D model, and ask questions" + (locked() ? " after entering the code" : "") + ". Model edits and added sources are unavailable for this example.";
 
   }
   function renderAccess() {
+    clearTimeout(accessTimer); accessTimer = null;
+    const windowStatus = access?.access_window;
+    const changeAt = Date.parse(windowStatus?.next_change_at || "");
+    const checkedAt = Date.parse(windowStatus?.checked_at || "");
+    if (Number.isFinite(changeAt) && Number.isFinite(checkedAt)) {
+      // Server-relative delay also works when the browser clock is inaccurate.
+      // Longer waits refresh at the browser timer's signed 32-bit ceiling.
+      accessTimer = setTimeout(refreshAccess, Math.min(2147483647, Math.max(0, changeAt - checkedAt)));
+    }
     state.taskAccess=access;window.activeTasks?.setAccess(access||{});window.chatUI?.refreshTasks();
     panel.hidden = !access?.public_demo;
     if (!access?.public_demo) return;
-    element("access-title").textContent = locked() ? "Explore the public examples" : "Workspace unlocked";
+    element("access-title").textContent = !requiresCode() ? "Peer-review workspace" : locked() ? "Explore the public examples" : "Workspace unlocked";
     element("access-description").textContent = locked()
       ? "Browse cached drawings, models and source evidence without a code. Uploads, questions and edits require the access code."
-      : "You can upload sources and ask questions. Cached example models stay read-only. Unlocking does not retry a previous action; submit it again when ready.";
-    element("access-shared").textContent = "Code holders share the same workspace, including uploaded sources and conversations. This is not a private personal workspace.";
-    element("access-form").hidden = !locked();
-    element("access-lock").hidden = locked();
+      : !requiresCode() ? "You can upload sources and ask questions without an access code. Cached example models stay read-only."
+        : "You can upload sources and ask questions. Cached example models stay read-only. Unlocking does not retry a previous action; submit it again when ready.";
+    element("access-shared").textContent = !requiresCode()
+      ? "All visitors share this workspace, including uploaded sources and conversations. This is not a private personal workspace."
+      : "Code holders share the same workspace, including uploaded sources and conversations. This is not a private personal workspace.";
+    element("access-form").hidden = !requiresCode() || !locked();
+    element("access-lock").hidden = !requiresCode() || locked();
     element("access-lock").disabled = pending;
     updateControls(); updateAssumptionButton();
   }
@@ -55,9 +70,21 @@
     return payload;
   }
   async function refreshAccess() {
-    try { access = await accessRequest("/api/access"); message(); renderAccess(); }
+    try {
+      const previous = access;
+      access = await accessRequest("/api/access"); message(); renderAccess();
+      if (previous?.can_work && !access.can_work) {
+        // As with Lock workspace, discard private UI and any late responses.
+        window.location.reload(); return;
+      }
+      if (previous && !previous.can_work && access.can_work) {
+        await Promise.allSettled([refreshSavedBuildings(), refreshConversation(), voice?.checkConfig()]);
+      }
+    }
     catch { if (access?.public_demo) message("Access could not be checked. Refresh access before trying again."); }
   }
+  window.addEventListener("pagehide", () => { clearTimeout(accessTimer); accessTimer = null; });
+  window.addEventListener("pageshow", event => { if (event.persisted) refreshAccess(); });
   const originalControls = updateControls;
   updateControls = function (...args) { const result = originalControls(...args); restrictControls(); return result; };
   const originalAssumptionButton = updateAssumptionButton;

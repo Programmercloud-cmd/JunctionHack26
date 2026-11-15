@@ -106,3 +106,5 @@ For the two-call experiment, add `--pipeline interpretation-only`. It samples te
 ## Voice interaction
 
 The microphone icon beside the prompt starts muted. Click to start dictating and click again to stop, then review and edit the transcript before sending. Enable **Read answers aloud** beside the microphone to hear new answers via ElevenLabs. See [voice setup](docs/VOICE.md).
+
+Peer-review access for the separate agentic deployment: `bash scripts/peer-review-access.sh status`. The one-time Helsinki window and immediate code restoration command are documented in [AGENTIC_DEPLOYMENT.md](docs/AGENTIC_DEPLOYMENT.md#peer-review-access-window).
