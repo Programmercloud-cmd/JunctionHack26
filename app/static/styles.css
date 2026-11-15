@@ -207,6 +207,7 @@ main.chat-shell.project-overview{grid-template-columns:minmax(340px,1fr) minmax(
 #composer-slot .question-form{padding:0}
 #composer-slot .question-form>label,#composer-slot .question-meta,#composer-slot .suggestions,#composer-slot #provider-mode{display:none}
 #composer-slot textarea{display:block;border:0;border-radius:14px;background:transparent;color:var(--text);resize:none;min-height:70px;max-height:180px;padding:17px 18px 10px;font-size:14px;line-height:1.5;box-shadow:none}
+#composer-slot textarea:focus{outline:none}
 .prompt-row{display:flex;align-items:flex-start;gap:4px}
 .prompt-row textarea{flex:1;min-width:0}
 .composer-voice{display:flex;align-items:center;gap:6px;flex:none;margin:11px 11px 0 0}
