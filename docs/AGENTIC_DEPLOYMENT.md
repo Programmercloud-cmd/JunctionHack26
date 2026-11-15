@@ -79,7 +79,9 @@ Detailed runtime/browser reports and screenshots are local under `/tmp/junction-
 
 ## Peer-review access window
 
-The user initially requested 09:30–14:00, then explicitly confirmed keeping the existing **Sunday 15 November 2026, 09:30–14:30 Europe/Helsinki** window (07:30–12:30 UTC) during final drawing-navigation verification. This is a one-time window: code-free shared-workspace access opens at 09:30 inclusive, and the access code is required again at 14:30. Any visitor during the window has the existing code-holder visibility/actions, including saved uploads and chats. The nine pinned examples remain read-only. Existing code-holder cookies remain valid after the window; previously accepted jobs continue under their normal Stop/consensus policy.
+The user initially requested 09:30–14:00, confirmed an extension to 14:30, then extended peer review until 22:00 tonight. The current one-time window is **Sunday 15 November 2026, 09:30–22:00 Europe/Helsinki** (07:30–20:00 UTC): code-free shared-workspace access opens at 09:30 inclusive, and the access code is required again at 22:00. Any visitor during the window has the existing code-holder visibility/actions, including saved uploads and chats. The nine pinned examples remain read-only. Existing code-holder cookies remain valid after the window; previously accepted jobs continue under their normal Stop/consensus policy.
+
+**22:00 extension verified (15 November, 11:20 UTC).** The persisted policy and anonymous public HTTPS status both report the original 07:30 UTC opening and new 20:00 UTC closing/next transition. The existing policy evaluator requires the code at exactly 22:00 Helsinki. Both application processes retained their PIDs; no restart or paid inference was needed. Earlier verification timestamps below describe the previous schedules.
 
 The operator-owned `/etc/blueprint-agentic/access-mode` policy is read on requests, so opening and closing need no app restart, cron job or running assistant. The one-time JSON policy has aware opening/closing timestamps. A missing, unreadable or invalid configured file requires the code. `BLUEPRINT_PUBLIC_DEMO=1` stays enabled so source pins, read-only guards and same-origin checks remain active. The code verifier and session secret are retained.
 
@@ -87,11 +89,11 @@ From this checkout, inspect or manage the separate agentic site:
 
 ```bash
 bash scripts/peer-review-access.sh status
-bash scripts/peer-review-access.sh schedule 2026-11-15 09:30 14:30
+bash scripts/peer-review-access.sh schedule 2026-11-15 09:30 22:00
 bash scripts/peer-review-access.sh require-code
 ```
 
-`require-code` cancels the window and immediately requires the code. `open` is also available as an explicit indefinite override; it cancels the timed window. The wrapper uses the existing dedicated SSH key/known-host file; `BLUEPRINT_DEMO_SSH_KEY` and `BLUEPRINT_DEMO_KNOWN_HOSTS` override their locations. The VM equivalent is `/opt/blueprint-agentic/current/.venv/bin/python /opt/blueprint-agentic/current/deploy/verda-agentic/access_mode.py status` (or `schedule --date 2026-11-15 --start 09:30 --end 14:30`, `require-code`, `open`).
+`require-code` cancels the window and immediately requires the code. `open` is also available as an explicit indefinite override; it cancels the timed window. The wrapper uses the existing dedicated SSH key/known-host file; `BLUEPRINT_DEMO_SSH_KEY` and `BLUEPRINT_DEMO_KNOWN_HOSTS` override their locations. The VM equivalent is `/opt/blueprint-agentic/current/.venv/bin/python /opt/blueprint-agentic/current/deploy/verda-agentic/access_mode.py status` (or `schedule --date 2026-11-15 --start 09:30 --end 22:00`, `require-code`, `open`).
 
 Only the fixed agentic policy file is replaced atomically; the command checks the live API and restores previous bytes if verification fails. Policy-file reads also run as the application user during deployment to check directory traversal/readability. The config directory and policy are root-owned, the policy is readable but not writable by the app, and `application.env` remains root-only. No credentials or runtime bundles are changed by the switch. Browser access refreshes at the server-reported boundaries; API enforcement remains authoritative if a browser is asleep.
 
