@@ -51,8 +51,15 @@ class Proposal(StrictModel):
 
 class Operand(StrictModel):
     value: float
-    evidence_index: int = Field(ge=0)
+    evidence_index: int | None = Field(default=None, ge=0)
+    user_value_id: str | None = Field(default=None, min_length=1)
     unit: str | None = None
+
+    @model_validator(mode="after")
+    def one_reference(self):
+        if (self.evidence_index is None) == (self.user_value_id is None):
+            raise ValueError("A calculation operand needs exactly one drawing or user-value reference")
+        return self
 
 
 class Calculation(StrictModel):

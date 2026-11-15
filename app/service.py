@@ -1,6 +1,7 @@
 """Bounded question orchestration and deterministic evidence/calculation checks."""
 import math
 import json
+import re
 from copy import deepcopy
 from time import monotonic
 
@@ -35,6 +36,43 @@ def _user_value_attributions(draft,document):
     return [{"id":identity,"property":available[identity].get("property"),"value":available[identity].get("value"),
              "unit":available[identity].get("unit"),"scope":available[identity].get("scope"),"provenance":"user_provided",
              "label":"Provided by user; not observed in the original drawing."} for identity in dict.fromkeys(draft.user_value_evidence)]
+
+
+def _user_calculation_units(calculation, operands):
+    """Compute attributed length arithmetic in metres, then convert the result."""
+    from .user_inputs import METRES
+    units = [operand["unit"] for operand in operands]
+    if any(unit is not None and unit not in METRES for unit in units):
+        raise ProviderError("The user-value calculation requires supported length units or dimensionless inputs.")
+    powers = [0 if unit is None else 1 for unit in units]
+    if calculation.operation in {"sum", "difference"}:
+        if len(set(powers)) != 1:
+            raise ProviderError("Calculation inputs have incompatible dimensions.")
+        power = powers[0]
+    elif calculation.operation == "product":
+        power = sum(powers)
+    elif len(powers) == 2:
+        power = powers[0] - powers[1]
+    else:
+        raise ProviderError("The model returned an invalid two-input calculation. Please retry.")
+    output = calculation.unit.strip().lower().replace(" ", "").replace("²", "^2").replace("³", "^3")
+    if output in {"1", "ratio", "dimensionless", "unitless", "count"}:
+        output_power, factor = 0, 1.
+    else:
+        match = re.fullmatch(r"(mm|cm|m|ft|in)(?:\^?([1-9]\d*))?", output)
+        if match is None:
+            raise ProviderError("The calculation result needs a supported length, area, volume or dimensionless unit.")
+        output_power = int(match[2] or 1)
+        if output_power != power:
+            raise ProviderError("The calculation result unit does not match the input dimensions.")
+        factor = METRES[match[1]] ** output_power
+    if output_power != power or not math.isfinite(factor) or factor <= 0:
+        raise ProviderError("The calculation result unit does not match the input dimensions.")
+    normalized = [operand["value"] * METRES.get(operand["unit"], 1.) for operand in operands]
+    base_unit = "1" if power == 0 else "m" if power == 1 else f"m^{power}"
+    return normalized, factor, {"operation": calculation.operation, "unit": base_unit,
+        "operands": [{"value": value, "unit": "1" if unit is None else "m"} for value, unit in zip(normalized, units)],
+        "output_unit": calculation.unit, "output_unit_in_base_units": factor}
 
 
 def validate_draft(draft: DraftAnswer, document, gate, *, server_catalog_count=False):
@@ -76,11 +114,35 @@ def validate_draft(draft: DraftAnswer, document, gate, *, server_catalog_count=F
         if draft.status != "answered" or "{result}" not in draft.answer:
             raise ProviderError("The model returned an incomplete calculation. Please rephrase the measurement question.")
         calculation = draft.calculation
-        if any(v.evidence_index >= len(draft.evidence or draft.model_evidence) for v in calculation.operands):
-            raise ProviderError("A calculation input lacks a source reference. Please provide clearer dimensions.")
-        values = [v.value for v in calculation.operands]
-        units=[v.unit for v in calculation.operands]
-        if any(units) and calculation.operation in {"sum","difference"} and len(set(units))!=1:
+        available = {value["id"]: value for value in (document.question_context or {}).get("user_values", []) if value.get("id")}
+        bound_operands = []
+        for operand in calculation.operands:
+            if operand.user_value_id is not None:
+                if (document.question_context or {}).get("evidence_scope") != "sources_and_user":
+                    raise ProviderError("A source-only calculation cannot use user-provided values.")
+                supplied = available.get(operand.user_value_id)
+                if supplied is None or operand.user_value_id not in draft.user_value_evidence:
+                    raise ProviderError("A calculation input lacks a permitted, attributed user-value reference.")
+                if (not isinstance(supplied.get("value"), (int, float)) or isinstance(supplied.get("value"), bool)
+                    or operand.value != supplied["value"] or operand.unit != supplied.get("unit")):
+                    raise ProviderError("A calculation input changed the referenced user-provided value or unit.")
+                bound_operands.append({"value": supplied["value"], "unit": supplied.get("unit"),
+                    "user_value_id": operand.user_value_id, "provenance": "user_provided",
+                    "source": deepcopy(supplied)})
+            else:
+                if operand.evidence_index is None or operand.evidence_index >= len(draft.evidence):
+                    raise ProviderError("A calculation input lacks a source reference. Please provide clearer dimensions.")
+                bound_operands.append({"value": operand.value, "unit": operand.unit,
+                    "evidence_index": operand.evidence_index,
+                    "source": draft.evidence[operand.evidence_index].model_dump(mode="json")})
+        values = [operand["value"] for operand in bound_operands]
+        units = [operand["unit"] for operand in bound_operands]
+        attributed = any(operand.user_value_id is not None for operand in calculation.operands)
+        computation = None
+        output_factor = 1.
+        if attributed:
+            values, output_factor, computation = _user_calculation_units(calculation, bound_operands)
+        elif any(units) and calculation.operation in {"sum","difference"} and len(set(units))!=1:
             raise ProviderError("Calculation inputs have incompatible or missing units.")
         if calculation.operation == "sum":
             result = sum(values)
@@ -94,13 +156,19 @@ def validate_draft(draft: DraftAnswer, document, gate, *, server_catalog_count=F
             raise ProviderError("The model returned a division by zero. Please provide clearer dimensions.")
         else:
             result = values[0] / values[1]
+        if computation is not None:
+            computation["value"] = result
+        result /= output_factor
         if not math.isfinite(result):
             raise ProviderError("The model returned an invalid numerical calculation. Please retry.")
         draft.answer = draft.answer.replace("{result}", f"{result:.6g}")
         calculation_result={"status":"complete","value":result,"unit":calculation.unit,
-            "operation":calculation.operation,"method":f"Server {calculation.operation} of cited drawing inputs.",
-            "operands":[{"value":operand.value,"unit":operand.unit,"evidence_index":operand.evidence_index,
-                "source":draft.evidence[operand.evidence_index].model_dump(mode="json")} for operand in calculation.operands]}
+            "operation":calculation.operation,
+            "method":f"Server {calculation.operation} of " + ("referenced user-provided and/or cited drawing inputs."
+                if attributed else "cited drawing inputs."),
+            "operands":bound_operands}
+        if computation is not None:
+            calculation_result["computation"] = computation
     elif "{result}" in draft.answer:
         raise ProviderError("The model omitted the calculation inputs. Please retry.")
     draft.highlight_ids = validated_highlights(draft, document)

@@ -23,6 +23,32 @@ class RenderReview(ReconstructionReview):
     satisfied: bool = Field(description="True only if this exact reopened model needs no further supported correction for the user's request.")
 
 
+INCREMENTAL_CREATOR_INSTRUCTIONS = """
+Make incremental progress with a compact, coherent source-supported patch. You do not need to fix every outstanding
+finding in one response. For a broad inventory finding, address a meaningful part rather than copying or rewriting
+the entire building. Return only changed records and required related operations; keep reasons concise.
+The complete description, original sources and all review findings remain context. Unaddressed findings remain
+outstanding for later rounds; never claim completion, erase records, or omit required dependencies to shorten output.
+The suggested focus is guidance, not a restriction on a larger coherent supported patch. Both reviewers will still
+inspect the complete reopened candidate, including omissions, before any publication or completion.
+"""
+
+CALL_METADATA_FIELDS = frozenset({
+    "call_id", "stage", "schema", "model", "max_output_tokens", "timeout_ms", "thinking_level",
+    "elapsed_ms", "finish_reason", "prompt_tokens", "candidate_tokens", "thought_tokens",
+    "reported_output_tokens", "outcome", "exception_type", "http_status",
+})
+
+
+def render_call_metadata(providers):
+    """Persist content-free call records, including calls that never reach review."""
+    return [{**{key: value for key, value in dict(call).items()
+                if key in CALL_METADATA_FIELDS and (value is None or type(value) in (str, int, float, bool))},
+             "role": "creator" if index == 0 else f"reviewer_{index}", "worker": index + 1}
+            for index, provider in enumerate(providers)
+            for call in list(getattr(provider, "provider_calls", []))]
+
+
 def candidate_digest(document):
     # Actual reopened mesh geometry is included, rather than just intended polygons.
     data = {"description": document.description.model_dump(mode="json"),
@@ -51,9 +77,14 @@ def propose(provider, document, review, feedback, annotations, message):
     if review is None:
         from .geometry_requirements import missing_geometry_requests
         data["missing_geometry_requests"] = missing_geometry_requests(document.description)
+        focus = next(iter(data["missing_geometry_requests"]), None)
+    else:
+        focus = next((issue.model_dump(mode="json") for issue in review.issues
+                      if issue.actionable and issue.category == "extraction"), None)
+    data["suggested_incremental_focus"] = focus
     return provider._generate(document, message, (RECONSTRUCTION_PATCH_INSTRUCTIONS if review is not None else GEOMETRY_ENRICHMENT_INSTRUCTIONS) +
         "\nCorrect the requested model using the independently reported source findings. Preserve all user-provided provenance. "
-        "User annotations identify requests, not evidence observed in the original blueprint." + role, DescriptionPatch,
+        "User annotations identify requests, not evidence observed in the original blueprint." + role + INCREMENTAL_CREATOR_INSTRUCTIONS, DescriptionPatch,
         extra_views=overlay_views(document, document.scene) if document.scene else [], extra_data=data, **options)
 
 
@@ -145,6 +176,14 @@ def run_render(runner, identity, original, message, annotations):
         guard()
         runner._update(identity, status="running", **fields)
 
+    def persist_calls():
+        # A completed in-flight request may arrive after Stop. Append its safe
+        # metadata without guard() or a status/phase change that could reopen it.
+        with runner.lock:
+            job = runner.jobs[identity]
+            job["provider_calls"] = render_call_metadata(providers)
+            runner.store.save_job(job["building_id"], deepcopy(job))
+
     try:
         update(phase="provider_setup", config=config, message="Starting one Hydrogen creator and two independent reviewers.")
         while True:
@@ -159,6 +198,7 @@ def run_render(runner, identity, original, message, annotations):
                     provider.request_deadline = None
                     provider.provider_calls = []
                     provider.diagnostic_stage = (lambda phase="render_proposing" if not providers else f"render_review_{len(providers)}": phase)
+                    provider.diagnostic_callback = persist_calls
                     providers.append(provider)
                 round_number += 1
                 update(phase="render_proposing", render_round=round_number, candidate_digest=None,
@@ -211,8 +251,7 @@ def run_render(runner, identity, original, message, annotations):
                 accepted = all(v.candidate_supported for v in votes)
                 complete = accepted and all(v.satisfied for v in votes)
                 update(issues=[issue.model_dump(mode="json") for issue in review.issues],
-                       provider_calls=[{**call, "role": "creator" if i == 0 else f"reviewer_{i}", "worker": i + 1}
-                                       for i, p in enumerate(providers) for call in getattr(p, "provider_calls", [])])
+                       provider_calls=render_call_metadata(providers))
                 if accepted:
                     with runner.lock:
                         guard()
@@ -234,15 +273,26 @@ def run_render(runner, identity, original, message, annotations):
                 feedback = {"category": "candidate_validation", "message": error.message}
                 # Failed initial geometry must reach the VLM preparation path instead of
                 # deterministically rebuilding the same incomplete interpretation forever.
-                update(phase="render_retry", reviewer_votes=[], candidate_digest=None, message="Candidate validation needs another rendering attempt. Previous usable model retained; Stop remains available.")
+                update(phase="render_retry", reviewer_votes=[], candidate_digest=None,
+                       last_render_failure={"category": "candidate_validation"},
+                       message="Candidate validation needs another rendering attempt. Previous usable model retained; Stop remains available.")
                 if runner.events[identity].wait(1):
                     raise JobStopped()
-            except Exception:
+            except Exception as error:
                 # No exception text, source payload or credential crosses the diagnostics boundary.
-                feedback = {"category": "provider_or_schema_failure", "message": "Previous call failed operationally; retry using the same originals and validated model contract."}
-                update(phase="render_retry", reviewer_votes=[], candidate_digest=None, message="Rendering hit an operational error and will retry. Previous usable model retained; Stop remains available.")
+                output_limit = getattr(error, "category", None) == "provider_output_limit"
+                feedback = ({"category": "provider_output_limit", "message":
+                    "The previous response reached its output limit and was not accepted. Return a smaller coherent part of the outstanding correction, preserving required dependencies. Keep the full remaining findings outstanding; do not repeat the oversized response."}
+                    if output_limit else {"category": "provider_or_schema_failure", "message":
+                    "Previous call failed operationally; retry using the same originals and validated model contract."})
+                update(phase="render_retry", reviewer_votes=[], candidate_digest=None,
+                       last_render_failure={"category": feedback["category"]},
+                       message=("The rendering response reached its output limit; retrying a smaller coherent correction. Previous usable model retained; Stop remains available."
+                                if output_limit else "Rendering hit an operational error and will retry. Previous usable model retained; Stop remains available."))
                 if runner.events[identity].wait(2):
                     raise JobStopped()
+            finally:
+                persist_calls()
     except JobStopped:
         if runner.jobs[identity]["status"] != "interrupted":
             runner._update(identity, status="stopped", phase="stopped", message="Rendering interrupted. Original sources and the last usable model remain saved.")

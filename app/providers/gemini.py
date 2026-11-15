@@ -528,11 +528,25 @@ GATE_INSTRUCTIONS += PROVENANCE_QA_INSTRUCTIONS + IMAGE_DIRECTION_INSTRUCTIONS +
 ANSWER_INSTRUCTIONS += PROVENANCE_QA_INSTRUCTIONS + IMAGE_DIRECTION_INSTRUCTIONS + DRAWING_MEASUREMENT_INSTRUCTIONS
 ANSWER_REVIEW_INSTRUCTIONS += PROVENANCE_QA_INSTRUCTIONS + IMAGE_DIRECTION_INSTRUCTIONS + DRAWING_MEASUREMENT_INSTRUCTIONS
 
+USER_MEASUREMENT_QA_INSTRUCTIONS = """
+For permitted user values, a calculation operand uses user_value_id instead of evidence_index. Copy its exact stored value and unit,
+and include that ID in user_value_evidence. Never disguise a user value as a dimension observed in a drawing.
+When the user asks 'based on my measurements', use the attached attributed measurements, not generated model dimensions.
+If the question explicitly requests user-supplied marks/measurements but none are attached or otherwise supplied, ask the user to attach those marks.
+Building footprint means the ground-floor exterior outline, not the area of one marked room or the sum of storeys.
+Trace the relevant original outline and explain any supported proportional estimate. A mark applies only to its exact source view.
+If marks imply conflicting image-to-physical scales, ask which calibration to use before extrapolating a whole-building footprint.
+Never silently assume nonuniform image scaling or transfer calibration to another floor/view. Explicit user-supplied dimensions can
+still support an attributed calculation for their own rectangular region even when a global image calibration is unresolved.
+"""
+ANSWER_REVIEW_INSTRUCTIONS += USER_MEASUREMENT_QA_INSTRUCTIONS
+
 # Product chat answers directly from evidence. No synthetic gate outcome is supplied.
 AGENT_EVIDENCE_INSTRUCTIONS = ANSWER_INSTRUCTIONS.replace(
     "If ambiguity remains, use unclear. A sufficient gate is permission to attempt an answer, not proof that it is answerable.\n"
     "For insufficient/unclear gate decisions you MUST use that status, answer only with a limitation, and NEVER include a guessed factual answer.",
     "Assess the evidence yourself while answering. If essential evidence is absent, return insufficient; if it remains ambiguous, return unclear. Never guess a factual answer.")
+AGENT_EVIDENCE_INSTRUCTIONS += USER_MEASUREMENT_QA_INSTRUCTIONS
 AGENT_ANSWER_INSTRUCTIONS = AGENT_EVIDENCE_INSTRUCTIONS + """
 Return either draft with the evidence answer, or clarification for materially ambiguous user intent.
 Do not clarify merely because source evidence is missing; return a scoped insufficient/unclear draft.
@@ -720,6 +734,8 @@ class GeminiProvider:
             "timeout_ms": round(configured_number("GEMINI_DRAFT_SECONDS", 90)*1000),
             "extra_data": extra_data,
         }
+        if hasattr(self, "_agent_answer_tokens"):
+            options["max_tokens"] = self._agent_answer_tokens
         try:
             return self._generate(document, question, instruction, DraftAnswer, crop, **options)
         except _DraftResponseError as error:
@@ -755,8 +771,13 @@ class GeminiProvider:
             model=self.basic_model,include_qa_context=False,extra_data=context)
 
     def answer_agent(self, document, question):
+        # High-thinking advanced answers share the provider output allowance with
+        # private thoughts. Keep corrections on the same selected-worker budget.
+        self._agent_answer_tokens = configured_number("GEMINI_AGENT_ANSWER_TOKENS",
+            8192 if self.model == self.basic_model else 65536, integer=True)
         return self._generate(document,question,AGENT_ANSWER_INSTRUCTIONS,AgentTechnicalResponse,
             model=self.model,thinking_level="low" if self.model==self.basic_model else "high",
+            max_tokens=self._agent_answer_tokens,
             timeout_ms=round(configured_number("GEMINI_DRAFT_SECONDS",90)*1000))
 
     def interact_agent(self, message, catalog, *, ui_request=None):
