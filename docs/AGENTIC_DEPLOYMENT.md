@@ -2,9 +2,23 @@
 
 Status: **live at https://agentic.95.133.254.90.sslip.io/**. The final creator-plus-two-parallel-reviewers implementation, project/session UI, branding and deployment fixes are included. Trusted public HTTPS, access controls, live inference, actual generated-model browsing and restart persistence passed.
 
-The existing `blueprint-qa-isolated` demo at `https://95.133.254.90.sslip.io/` remains running. The agentic worktree is `feat/agentic-chat` at `/tmp/junction-agentic-chat`, including its uncommitted project/session, marks, branding, and rendering changes. No commit or push is required to publish a verified content-addressed snapshot.
+The existing `blueprint-qa-isolated` demo at `https://95.133.254.90.sslip.io/` remains running. The agentic worktree is `feat/agentic-chat` at `/tmp/junction-agentic-chat`. The user-authorized implementation commits through `0b4f9ba` are pushed to that branch.
 
-## Published release and results
+## Current published release: drawing navigation and attributed measurements
+
+- Source: clean committed snapshot `0b4f9ba671b8a95ca7fe57ddf88c17977d94a0f5`, frozen under `/tmp/junction-agentic-publish/release-v9/source`. Its release metadata records a detached checkout. An unrelated concurrent local `styles.css` edit was preserved and excluded.
+- Content identity: `0c41d0ef9e7de4eedeb9dc41f7af6cadcf4c7b88b29dee52d925c897007e427d`; archive SHA256: `a17c753d3f1f635245443b74a0c6265bd6f4a1cd2a9800546980706af48f529b`. All **75 installed production files** match the tested snapshot.
+- Final frozen checks: **1,109 passed / 132 optional skipped** in 98.52 seconds, plus **29 Chromium checks passed** in 115.37 seconds. Independent backend and browser review cleared changed-behavior blockers.
+- [Drawing navigation](DRAWING_FILE_NAVIGATION.md): Drawings expands a project file picker downward; wide previous/next chevrons above/below the drawing switch files. The live authenticated browser used two existing originals in a temporary metadata-only project and verified file-owned chats, return-to-file session restoration, exact source/revision, mobile target sizes and no overflow or script errors. No new upload or paid request was made; only the test project's metadata was hidden afterward, retaining originals/models.
+- [Measurement scope](MEASUREMENT_SCOPE_268.md): the exact colorful-268 question now retains both selected 3 m values. A real isolated production-path replay returned calibration clarification in 3.876-second routing plus 24.007-second advanced answering, without claiming the dimensions were absent or inventing an area. The conflicting implied scales still require a choice or assumption; this is not a validated footprint result.
+- Activation waited for the live render to finish, then changed only the agentic code pointer. **All 688 runtime files were byte-identical across the update.** The previous V6 release remains available. Subsequent intentional test metadata and visitor activity may change mutable history; no source/model migration or data rollback occurred.
+- The original app retained its process, release, environment, unit, public pins and **all 1,154 recorded runtime hashes**. Its Caddy host block remains byte-for-byte intact. The peer-review policy file hash is unchanged by this update.
+
+Independent GET-only public acceptance also passed trusted HTTPS on both sites, nine exact pinned examples, actual dropdown/arrow visibility, source pinning and mobile fit, with zero script errors or mutation attempts. Its report is under `/tmp/junction-agentic-diagnostics/independent-v9-public/`. The observed 14:30 Helsinki closing time was explicitly confirmed by the user; no policy change was needed.
+
+Live navigation screenshots/results are private under `/tmp/junction-measurement-268/checks/live-drawings/`; frozen-suite logs and isolated measurement replay evidence are under `/tmp/junction-measurement-268/`. The public verification did not run further paid inference or claim general reconstruction fidelity.
+
+## Earlier release checkpoints
 
 - Frozen source: `/tmp/junction-agentic-publish/release-v6/source`; branch `feat/agentic-chat`, Git base `a350690b424a0159649ab38e60b79e62fb85aa09`. This is a worktree snapshot including uncommitted/untracked files, not an archive of Git HEAD.
 - Content identity: `0fa281b79164b5955abb0db3ccb8f2a93b3fd6716f344d6544d2c23440472d04`.
@@ -28,7 +42,7 @@ Detailed runtime/browser reports and screenshots are local under `/tmp/junction-
 
 ## Peer-review access window
 
-The user confirmed **Sunday 15 November 2026, 09:30–14:00 Europe/Helsinki** (07:30–12:00 UTC). This is a one-time window: code-free shared-workspace access opens at 09:30 inclusive, and the access code is required again at 14:00. Any visitor during the window has the existing code-holder visibility/actions, including saved uploads and chats. The nine pinned examples remain read-only. Existing code-holder cookies remain valid after the window; previously accepted jobs continue under their normal Stop/consensus policy.
+The user initially requested 09:30–14:00, then explicitly confirmed keeping the existing **Sunday 15 November 2026, 09:30–14:30 Europe/Helsinki** window (07:30–12:30 UTC) during final drawing-navigation verification. This is a one-time window: code-free shared-workspace access opens at 09:30 inclusive, and the access code is required again at 14:30. Any visitor during the window has the existing code-holder visibility/actions, including saved uploads and chats. The nine pinned examples remain read-only. Existing code-holder cookies remain valid after the window; previously accepted jobs continue under their normal Stop/consensus policy.
 
 The operator-owned `/etc/blueprint-agentic/access-mode` policy is read on requests, so opening and closing need no app restart, cron job or running assistant. The one-time JSON policy has aware opening/closing timestamps. A missing, unreadable or invalid configured file requires the code. `BLUEPRINT_PUBLIC_DEMO=1` stays enabled so source pins, read-only guards and same-origin checks remain active. The code verifier and session secret are retained.
 
@@ -36,11 +50,11 @@ From this checkout, inspect or manage the separate agentic site:
 
 ```bash
 bash scripts/peer-review-access.sh status
-bash scripts/peer-review-access.sh schedule 2026-11-15 09:30 14:00
+bash scripts/peer-review-access.sh schedule 2026-11-15 09:30 14:30
 bash scripts/peer-review-access.sh require-code
 ```
 
-`require-code` cancels the window and immediately requires the code. `open` is also available as an explicit indefinite override; it cancels the timed window. The wrapper uses the existing dedicated SSH key/known-host file; `BLUEPRINT_DEMO_SSH_KEY` and `BLUEPRINT_DEMO_KNOWN_HOSTS` override their locations. The VM equivalent is `/opt/blueprint-agentic/current/.venv/bin/python /opt/blueprint-agentic/current/deploy/verda-agentic/access_mode.py status` (or `schedule --date 2026-11-15 --start 09:30 --end 14:00`, `require-code`, `open`).
+`require-code` cancels the window and immediately requires the code. `open` is also available as an explicit indefinite override; it cancels the timed window. The wrapper uses the existing dedicated SSH key/known-host file; `BLUEPRINT_DEMO_SSH_KEY` and `BLUEPRINT_DEMO_KNOWN_HOSTS` override their locations. The VM equivalent is `/opt/blueprint-agentic/current/.venv/bin/python /opt/blueprint-agentic/current/deploy/verda-agentic/access_mode.py status` (or `schedule --date 2026-11-15 --start 09:30 --end 14:30`, `require-code`, `open`).
 
 Only the fixed agentic policy file is replaced atomically; the command checks the live API and restores previous bytes if verification fails. Policy-file reads also run as the application user during deployment to check directory traversal/readability. The config directory and policy are root-owned, the policy is readable but not writable by the app, and `application.env` remains root-only. No credentials or runtime bundles are changed by the switch. Browser access refreshes at the server-reported boundaries; API enforcement remains authoritative if a browser is asleep.
 
@@ -68,7 +82,7 @@ Only the nine already approved exact public example revisions are seeded. All 43
 
 ## Freeze and release
 
-Do not run the original `deploy/verda/install-server.sh` for this target: it replaces the old app's Caddy configuration, service, and current pointer. Do not package `HEAD` with the historical Git-archive helper: the agentic changes are uncommitted/untracked and would be omitted.
+Do not run the original `deploy/verda/install-server.sh` for this target: it replaces the old app's Caddy configuration, service, and current pointer. The historical Git-archive helper omits uncommitted/untracked changes. To release committed changes only, freeze a clean checkout of the selected commit, as with V9 above.
 
 After the side work is complete, use `scripts/verda_agentic_release.py --source-root /tmp/junction-agentic-chat --output CHOSEN_RELEASE_DIRECTORY`. The helper creates `source/`, `application.tar`, and `release.json`. It records the branch/base commit, every source file's hash, content identity, and archive hash. Production includes the actual current `app`, locked requirements, and new deployment templates; the local validation tree separately includes tests/scripts/docs. Secrets, runtime, datasets, caches, and symlinks are excluded. Before/after inventories reject changing input, and `--verify RELEASE_DIRECTORY` checks frozen files against the production archive.
 
