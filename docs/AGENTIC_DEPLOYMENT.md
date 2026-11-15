@@ -1,10 +1,23 @@
 # Separate agentic public deployment — 2026-11-15
 
-Status: **live at https://agentic.95.133.254.90.sslip.io/**. The final creator-plus-two-parallel-reviewers implementation, project/session UI, branding and deployment fixes are included. Trusted public HTTPS, access controls, live inference, actual generated-model browsing and restart persistence passed.
+Status: **live at https://agentic.95.133.254.90.sslip.io/**. The final creator-plus-two-parallel-reviewers implementation, Buildings/shared-drawings UI, branding and deployment fixes are included. Trusted public HTTPS, access controls, live inference, actual generated-model browsing and restart persistence passed.
 
-The existing `blueprint-qa-isolated` demo at `https://95.133.254.90.sslip.io/` remains running. The agentic worktree is `feat/agentic-chat` at `/tmp/junction-agentic-chat`. The user-authorized implementation commits through `0b4f9ba` are pushed to that branch.
+The existing `blueprint-qa-isolated` demo at `https://95.133.254.90.sslip.io/` remains running. The agentic worktree is `feat/agentic-chat` at `/tmp/junction-agentic-chat`. The user-authorized implementation commits through `706aa5c` are pushed to that branch.
 
-## Current published release: drawing navigation and attributed measurements
+## Current published release: Buildings and shared drawings
+
+- Source commit `706aa5c40d70b3beee84bd13c534501583a45041`, from a clean detached checkout, frozen under `/tmp/junction-agentic-publish/release-v10/source`. The unrelated concurrent local `styles.css` edit remains preserved and excluded.
+- Content identity: `96084b01f2747cd6424bf93b53f3c22f3fa139350abfb48c13799063fdc1197b`; archive SHA256: `06067507601955f70dd8fa7bcd8e15db4bafc9d2d371ee0c670714735d9a9bb8`. All **75 deployed production files** match this exact tested archive.
+- Frozen verification: **1,120 passed / 137 optional skipped** in 104.55 seconds, plus **52 Chromium checks passed** in 226.71 seconds. Independent implementation review additionally cleared 23 backend/access and 17 browser checks. Tests cover [shared Building scope and legacy preservation](BUILDINGS_SHARED_DRAWINGS.md), uploads, chats, source/model marks, task origins, voice lifecycle, public controls and timed access.
+- Buildings replaces the Project UI without another hierarchy level. The overview exposes Drawings, Chats and Upload drawings; new uploads join the Building's shared source group. Visualizer drops capture the current Building; composer Attach and visualizer Import are removed. Picker and wide arrows change only the visible drawing, preserving the current chat and draft.
+- The user-selected legacy representation is explicit separate Building entries for independently uploaded groups. Original conversation owners, sessions, source/model revisions, annotations and historical references are retained. Native IFC remains separate. Older bundles linked to multiple owners reject source append with an explanation; their inspection/chats stay usable. New Buildings isolate identical original uploads rather than adopting another group's appended sources/model/history.
+- Publication passed the active-job gate and retained **all 830 runtime files byte-for-byte**. The previous V9 code release remains installed. No source/model/history restore, merge or deletion occurred.
+- Actual authenticated HTTPS browser acceptance opened an existing owned chat and two existing drawing files. File switching preserved that chat and an unsent draft; overview upload, absent Attach/Import, mobile arrows and fit passed with zero script errors, browser mutations or inference requests. Independent GET-only public review passed both trusted HTTPS URLs, nine pinned read-only examples/scopes, the new overview/picker/arrows, exact selected-source pin and mobile layout.
+- The original demo retained its process/release/configuration and **all 1,154 recorded runtime hashes**, with its original Caddy host block intact. The persisted **09:30–14:30 Helsinki** access policy hash is unchanged. The idle local 8012 preview was also restarted with all **125 runtime hashes unchanged**; active work was checked before restart.
+
+Private results are under `/tmp/junction-buildings-verification/checks/`, including frozen logs, actual saved-artifact screenshots, live existing-chat navigation and local restart checks. Independent public evidence is under `/tmp/junction-agentic-diagnostics/independent-v10-public/`. These are UI/ownership/preservation checks; no new live inference or general model-fidelity claim is made.
+
+## Previous release V9: drawing navigation and attributed measurements
 
 - Source: clean committed snapshot `0b4f9ba671b8a95ca7fe57ddf88c17977d94a0f5`, frozen under `/tmp/junction-agentic-publish/release-v9/source`. Its release metadata records a detached checkout. An unrelated concurrent local `styles.css` edit was preserved and excluded.
 - Content identity: `0c41d0ef9e7de4eedeb9dc41f7af6cadcf4c7b88b29dee52d925c897007e427d`; archive SHA256: `a17c753d3f1f635245443b74a0c6265bd6f4a1cd2a9800546980706af48f529b`. All **75 installed production files** match the tested snapshot.
