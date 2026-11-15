@@ -1,3 +1,13 @@
+# Current agentic speech restoration — 2026-11-15
+
+The speaker control was present but disabled: the current app and deployed server lacked ElevenLabs key/voice configuration. The previously authorized key and existing voice were recovered from the earlier voice worktree and configured privately for the agentic app. The original demo configuration is unchanged; no key is printed, exposed to browsers or committed.
+
+The product path also needed wiring: ordinary conversation never invoked speech, source-free chats were rejected, and technical agent answers serialized default null spoken fields without the existing formatter. The fix supports captured owned-chat speech with nullable documents, routes accepted normal/clarification replies to the existing toggle, and prepares validated technical answers using the established deterministic formatter. Explicit factual nulls still deny playback; history/progress is not spoken. No new QA model call or provider fallback was added.
+
+Independent final checks passed 14 backend context/format regressions and six real-HTTP Chromium speech cases, using injected speech providers. Coverage includes source-free/normal/grouped technical replies, both clarification forms, prepared-null denial, latest-only playback, cancellation, autoplay reuse and written fallback. The implementation's combined focused backend run passed 108 checks. Historical tests below describe earlier UI flows where superseded.
+
+An authorized real ElevenLabs probe generated a 26,374-byte MP3 for “Voice output is ready.” Chromium decoded it successfully (1.579 seconds, one channel). This verifies the recovered credentials and actual provider audio; final deployed app/playback verification is recorded after publication. Private artifacts are under `/tmp/junction-voice-restore/`; they are not committed runtime context.
+
 # Voice verification — 2026-11-14
 
 ## Integrated regression

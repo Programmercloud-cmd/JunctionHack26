@@ -648,8 +648,8 @@
       if(!sameDocument(context))return;
       removeEntry(pending);
       if(!context.document_id){conversationHistory.push({role:"user",content:message});if(response.message)conversationHistory.push({role:"assistant",content:response.message});}
-      if(response.answer){const rendered=renderAnswer(response.answer,"agent-answer:"+context.request_id);rendered.dataset.requestId=context.request_id;rendered.dataset.answer=JSON.stringify(response.answer);if(ui.latestSubmissionId===context.request_id&&context.order>=ui.latestQuestionOrder){ui.latestQuestionOrder=context.order;state.result=answerForDisplayedRevision(response.answer);syncHighlights();voice?.answerReady(response.answer);}}
-      else if(response.message&&response.status!=="clarification"){const rendered=note(response.message,"agent-message:"+context.request_id);rendered.dataset.requestId=context.request_id;rendered.dataset.messageText=response.message;}
+      if(response.answer){const rendered=renderAnswer(response.answer,"agent-answer:"+context.request_id);rendered.dataset.requestId=context.request_id;rendered.dataset.answer=JSON.stringify(response.answer);if(ui.latestSubmissionId===context.request_id&&context.order>=ui.latestQuestionOrder){ui.latestQuestionOrder=context.order;state.result=answerForDisplayedRevision(response.answer);syncHighlights();voice?.answerReady(response.answer,context);}}
+      else if(response.message&&response.status!=="clarification"){const rendered=note(response.message,"agent-message:"+context.request_id);rendered.dataset.requestId=context.request_id;rendered.dataset.messageText=response.message;if(response.tool==="conversation"&&ui.latestSubmissionId===context.request_id)voice?.answerReady({answer:response.message},context);}
       if(response.job){rememberJob(response.job);schedulePoll(0);}
       if(response.status==="clarification"){
         if(ui.latestSubmissionId===context.request_id)ui.clarification={message};
@@ -657,7 +657,7 @@
         const node=note(response.clarification?.message||response.message,"clarification:"+context.request_id),controls=element("div",null,"chat-actions");
         node.dataset.requestId=context.request_id;node.dataset.messageText=response.clarification?.message||response.message;
         for(const suggestion of response.clarification?.suggestions||[])controls.append(button(suggestion,()=>{if(sameDocument(context))return submit(suggestion,{message});}));
-        node.append(controls);return;
+        node.append(controls);if(ui.latestSubmissionId===context.request_id)voice?.answerReady({answer:response.clarification?.message||response.message},context);return;
       }
       const actions=response.actions||[];
       let navigationSkipped=false;

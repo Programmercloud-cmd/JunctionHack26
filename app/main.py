@@ -777,7 +777,8 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
             raise HTTPException(error.status, error.message) from None
 
     from .voice import attach_voice_routes
-    attach_voice_routes(application, transcription_factory=transcription_factory, speech_factory=speech_factory)
+    attach_voice_routes(application, transcription_factory=transcription_factory, speech_factory=speech_factory,
+                        project_selector=selected_project)
     return application
 
 

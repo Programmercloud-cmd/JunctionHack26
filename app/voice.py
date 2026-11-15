@@ -83,7 +83,7 @@ async def _cancel_tasks(tasks):
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def attach_voice_routes(application, transcription_factory=None, speech_factory=None):
+def attach_voice_routes(application, transcription_factory=None, speech_factory=None, *, project_selector=None):
     transcription_factory = transcription_factory or GeminiTranscriptionProvider
     speech_factory = speech_factory or ElevenLabsSpeechProvider
 
@@ -212,9 +212,27 @@ def attach_voice_routes(application, transcription_factory=None, speech_factory=
                 body = await request.json()
             except (ValueError, UnicodeDecodeError):
                 raise VoiceError("Send a valid speech request.", 400) from None
-            if not isinstance(body, dict) or not isinstance(body.get("document_id"), str) or not isinstance(body.get("text"), str):
-                raise VoiceError("Speech requires a document and answer text.", 400)
-            document = application.state.documents.get(body["document_id"])
+            if not isinstance(body, dict) or not isinstance(body.get("text"), str):
+                raise VoiceError("Speech requires answer text and an open chat or document.", 400)
+            document_id = body.get("document_id")
+            if document_id is not None and not isinstance(document_id, str):
+                raise VoiceError("Choose a valid document for spoken answers.", 400)
+            has_chat_context = "project_id" in body or "session_id" in body
+            if has_chat_context:
+                if any(not isinstance(body.get(key), str) or not body[key] for key in ("project_id", "session_id")):
+                    raise VoiceError("Speech requires both the Building and chat identifiers.", 400)
+                # Match the captured chat before paid synthesis. In particular, an
+                # old source-free view cannot speak after its first source upload.
+                with application.state.documents.lock:
+                    project = (project_selector(request, body["project_id"]) if project_selector
+                               else application.state.projects.get(body["project_id"]))
+                    application.state.project_chats.validate_context(project, body["session_id"], document_id)
+                    if document_id is not None:
+                        application.state.documents.get(document_id)
+            elif isinstance(document_id, str):
+                application.state.documents.get(document_id)  # Existing document-only clients.
+            else:
+                raise VoiceError("Speech requires an open chat or document.", 400)
             text = body["text"]
             if not text.strip() or len(text) > SPEECH_TEXT_LIMIT:
                 raise VoiceError("Spoken answers support 1–6,000 characters. Read the complete written answer instead; it has not been shortened.", 400)

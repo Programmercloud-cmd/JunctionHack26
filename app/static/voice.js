@@ -83,12 +83,11 @@ window.BlueprintVoice = class BlueprintVoice {
   }
 
   syncSpeechToggle() {
-    const unavailable = !this.speechReady || !(window.chatUI?.chatAvailable() ?? Boolean(this.documentId));
-    this.speechToggle.disabled = unavailable || Boolean(this.host.state().busy);
-    this.speechToggle.setAttribute("aria-pressed", String(this.speechEnabled));
-    this.speechToggle.title = this.speechReady
-      ? this.documentId ? `Read answers aloud: ${this.speechEnabled ? "on" : "off"}` : "Open a blueprint to enable spoken answers"
-      : "Spoken answers are unavailable. Check the server’s ElevenLabs API key and voice ID.";
+    const chatAvailable=window.chatUI?.chatAvailable()??Boolean(this.documentId);
+    this.speechToggle.disabled=!this.speechReady||!chatAvailable||Boolean(this.host.state().busy);
+    this.speechToggle.setAttribute("aria-disabled",String(this.speechToggle.disabled));
+    this.speechToggle.setAttribute("aria-pressed",String(this.speechEnabled));
+    this.speechToggle.title=!this.speechReady?"Spoken answers are unavailable. Check the server’s ElevenLabs API key and voice ID.":!chatAvailable?"Open a chat to enable spoken answers":`Read answers aloud: ${this.speechEnabled?"on":"off"}`;
   }
 
   async checkConfig() {
@@ -304,8 +303,14 @@ window.BlueprintVoice = class BlueprintVoice {
     this.speechErrorMessage.hidden = !message;
   }
 
-  async answerReady(answer) {
-    if (!this.speechReady || !this.speechEnabled || !this.documentId || this.recording || this.host.state().busy === "upload" || window.chatUI?.isHome()) return;
+  async answerReady(answer, context = null) {
+    const state=this.host.state();
+    const captured=context||{project_id:state.activeProjectId,session_id:state.activeSessionId,session_epoch:state.sessionEpoch,document_id:state.document?.document_id||null,document_epoch:state.epoch};
+    const current=()=>{
+      const now=this.host.state();
+      return this.speechReady&&this.speechEnabled&&!this.recording&&now.busy!=="upload"&&(window.chatUI?.chatAvailable()??Boolean(this.documentId))&&captured.project_id===now.activeProjectId&&captured.session_id===now.activeSessionId&&captured.session_epoch===now.sessionEpoch&&captured.document_epoch===now.epoch&&(captured.document_id||null)===(now.document?.document_id||null)&&(!captured.request_id||window.chatUI?.isLatestSubmission(captured.request_id));
+    };
+    if(!current())return;
     this.stopSpeech();
     // An explicit null records a preparation failure. Only legacy responses
     // without either speech field can fall back to the written answer.
@@ -322,7 +327,7 @@ window.BlueprintVoice = class BlueprintVoice {
       const response = await fetch("/api/voice/speech", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({document_id: this.documentId, text: spoken}),
+        body: JSON.stringify({project_id:captured.project_id,session_id:captured.session_id,document_id:captured.document_id||null,text:spoken}),
         signal: speech.controller.signal,
       });
       if (!response.ok) {
@@ -331,6 +336,7 @@ window.BlueprintVoice = class BlueprintVoice {
       }
       const blob = await response.blob();
       if (this.speech !== speech) return;
+      if(!current()){this.stopSpeech();return;}
       if (!blob.size || !blob.type.startsWith("audio/")) throw new Error("Could not prepare playable answer audio.");
       speech.url = URL.createObjectURL(blob);
       speech.audio = new Audio(speech.url);

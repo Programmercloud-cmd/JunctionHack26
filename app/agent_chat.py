@@ -218,6 +218,13 @@ def agent_chat(store, runner, provider_factory, request, *, document=None, annot
                         from .highlights import validated_highlights
                         answer.highlight_ids = validated_highlights(answer, latest)
                         answer.review_note += ' The displayed model changed; source citations remain pinned to the inspected revision.'
+                    if answer.status == 'clarification' and answer.clarification:
+                        answer = answer.model_copy(update={
+                            'spoken_answer': answer.clarification.message,
+                            'spoken_answer_with_details': answer.clarification.message})
+                    else:
+                        from .voice_format import with_spoken_answers
+                        answer = with_spoken_answers(answer, request.message)
                     result = {**base, 'answer': answer.model_dump(mode='json'), 'message': answer.answer}
                     if answer.status == 'clarification':
                         result.update(status='clarification', clarification=answer.clarification.model_dump(mode='json'))
