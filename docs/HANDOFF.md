@@ -1,3 +1,11 @@
+# Manual slicing restored — published 2026-11-15
+
+Live at the agentic site: **3D Model / Concept → View settings → Visible height**, immediately below Floor. The existing range/output control was moved out of the hidden model toolbar, retaining its IDs and input handler. Its value stays synchronized with the viewer and floor/mode changes; Drawings or a missing model hides/disables it. Set 100% to restore full geometry. This is display-only clipping, with no source/model/evidence mutation or inference.
+
+Source `090850d`, frozen V13 `c7ff072fe23e1e5538829ef5d873e8be3084489af95f16bddc8a0d889e46542b`. Only workspace-controls.js and workspace-drawers.css differ in production from V12; renderer/backend/configuration are unchanged. All 18 focused frozen browser checks passed (public/native/derived slicing, drawers and current speech), with independent slicing review cleared. Actual live saved generated and native models clipped at 40%, retained the value in Concept, fit mobile, restored at 100%, and retained identical saved scene/revision JSON; zero script errors, API mutations or inference requests. Evidence: `/tmp/junction-slicing-live/results.json`.
+
+The idle-guarded update retained all 834 runtime hashes and the previous code release. Original demo process/release/configuration and 1,154 recorded runtime hashes remain unchanged. Shared speech readiness and the 09:30–14:30 Helsinki access schedule are retained. Branch feat/agentic-chat is pushed.
+
 # ElevenLabs output restored — published 2026-11-15
 
 Live at [the agentic site](https://agentic.95.133.254.90.sslip.io/) with the user's authorized shared ElevenLabs server key and existing voice. Both the deployed server and local 8012 preview now report speech readiness. The speaker icon beside the microphone starts off; enable it for new normal replies, clarification questions and technical answers, including chats without drawings. Credentials stay server-side; visitors do not enter personal keys. The existing access window remains 09:30–14:30 Helsinki.

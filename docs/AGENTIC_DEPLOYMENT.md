@@ -4,6 +4,14 @@ Status: **live at https://agentic.95.133.254.90.sslip.io/**. The final creator-p
 
 The existing `blueprint-qa-isolated` demo at `https://95.133.254.90.sslip.io/` remains running. The agentic worktree is `feat/agentic-chat` at `/tmp/junction-agentic-chat`. The user-authorized implementation commits through `706aa5c` are pushed to that branch.
 
+## Current manual-slicing release
+
+Source `090850d79bf238ffba0a158c8a088d42364365ce`, frozen under `/tmp/junction-agentic-publish/release-v13/source`; content identity `c7ff072fe23e1e5538829ef5d873e8be3084489af95f16bddc8a0d889e46542b`; archive SHA256 `c89463d5d1a9407ed50ee8f8fe03980d48986fc51641ad16f6f3e4763e30cf94`. All 75 production hashes match. The sole production changes from V12 are workspace-controls.js and workspace-drawers.css; renderer, Python, credentials and access configuration are unchanged.
+
+The original Visible height range/output is now in **View settings below Floor** for usable 3D Model/Concept views, with its original listener and clipping semantics. The slider synchronizes with viewer state and is hidden/disabled for Drawings or unavailable geometry. Eighteen focused frozen browser checks passed in 75.20 seconds; independent slicing review passed its relevant public-controls/drawer suite. Actual live saved generated and native IFC models clipped at 40%, preserved that setting in Concept, fit mobile and restored unclipped geometry at 100%, with identical saved scene/revision JSON and no script errors, API mutations or inference calls. Reports/screenshots: `/tmp/junction-slicing-live/`.
+
+Publication passed the active-job gate and retained all 834 runtime hashes. The old demo's process/release/configuration and 1,154 recorded hashes remain unchanged. Shared ElevenLabs readiness and the timed access policy remain unchanged. V12 below remains the full backend-suite baseline for the unchanged server code.
+
 ## Current voice-output release
 
 Source `0cc2f2ebf7f83353edc026b3e2b06f6f78ba9e33`, frozen under `/tmp/junction-agentic-publish/release-v12/source`; content identity `19e6b706028578e194a9a25740c78a5a155a7c641c9ed28220d3781cdd0566b5`; archive SHA256 `b8c21c6648250eb1bc6a6212bd982a503c1e109786b4cb8d0f06e9f017d65573`. All 75 deployed production hashes match. Frozen checks passed **1,134 default tests / 143 optional skipped** and **28 browser checks**. Independent implementation review additionally passed focused voice/context/format checks and all six current product speech browser cases.
