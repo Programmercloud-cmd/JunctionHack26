@@ -69,3 +69,7 @@
 .building-scope-notice{color:var(--muted);font-size:12px;line-height:1.5;margin:10px 0}
 .home-files tbody th .home-file{overflow-wrap:anywhere;white-space:normal;text-align:left}
 .composer-controls:has(>#ask-button:only-child){justify-content:flex-end}
+
+.workspace-popover .cutaway-control{display:flex;align-items:center;justify-content:space-between;gap:7px;margin:12px 0;color:var(--muted);font-size:11px}
+.workspace-popover .cutaway-control input{order:1;flex:1 0 100%;width:100%;min-width:0;accent-color:var(--accent)}
+.workspace-popover .cutaway-control output{text-align:right;color:var(--text)}

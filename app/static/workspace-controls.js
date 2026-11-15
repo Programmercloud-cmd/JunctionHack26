@@ -162,6 +162,7 @@
   viewPanel.append(fitControls);
   const floorLabel=node("label","Floor","workspace-floor-control"),floorSelect=node("select");floorSelect.id="workspace-floor";floorSelect.setAttribute("aria-label","Model floor");floorLabel.append(floorSelect);viewPanel.append(floorLabel);
   floorSelect.addEventListener("change",()=>act({type:"set_floor",floor_id:floorSelect.value||null}));
+  const cutaway=$("cutaway-percent"),cutawayControl=cutaway.closest(".cutaway-control");viewPanel.append(cutawayControl);
 
   function syncDrawingFit() {
     for (const [mode, fit] of fitButtons) {
@@ -283,6 +284,9 @@
     const floors=state.scene?.floors||[],floorSignature=JSON.stringify(floors.map(item=>[item.id,item.label]));
     if(floorSelect.dataset.catalog!==floorSignature){floorSelect.replaceChildren(new Option("All floors",""));for(const item of floors)floorSelect.append(new Option(item.label||item.id,item.id));floorSelect.dataset.catalog=floorSignature;}
     floorSelect.value=snap.floor_id||"";floorSelect.disabled=!state.viewer||!floors.length;floorLabel.hidden=!floors.length;
+    const canSlice=["model","concept"].includes(snap.view_mode)&&Boolean(state.scene&&state.viewer?.meshes.size);
+    cutawayControl.hidden=!canSlice;cutaway.disabled=!canSlice||Boolean(state.busy||state.sessionOpening);
+    cutaway.value=String(state.viewer?.cutawayPercent??100);updateCutawayNote();
     const view=chatUI.sourceView?.()||{pages:[],revision_id:null,page:null};pages.hidden=snap.view_mode!=="source"||!view.pages.length;
     const signature=JSON.stringify([view.pages,view.revision_id]);if(pageSelect.dataset.catalog!==signature){pageSelect.replaceChildren();for(const p of view.pages)pageSelect.append(new Option(`${p.source_filename||state.document?.filename||"Saved source"} · page ${p.source_page||p.page}`,String(p.page)));pageSelect.dataset.catalog=signature;}
     pageSelect.value=String(view.page);const index=view.pages.findIndex(p=>p.page===view.page);previous.disabled=index<=0;next.disabled=index<0||index===view.pages.length-1;

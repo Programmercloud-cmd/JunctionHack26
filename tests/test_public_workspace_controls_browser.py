@@ -102,3 +102,55 @@ def test_locked_multifloor_control_filters_and_restores_without_inference(static
     assert page.evaluate("document.documentElement.scrollWidth<=innerWidth")
     assert all(method == "GET" for method, _, _ in calls)
     assert not any("chat" in path or "conversation" in path or "reconstruct" in path or "render" in path for _, path, _ in calls)
+
+
+@pytest.mark.parametrize("mobile", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+def test_manual_visible_height_clips_in_view_settings_and_persists_without_inference(static_server, scene_page, mobile, native):
+    from playwright.sync_api import expect
+    page=scene_page
+    if mobile:page.set_viewport_size({"width":390,"height":844})
+    document,scene,calls=public_model(page,static_server,native=native)
+    original=page.evaluate("JSON.stringify([state.document.revision_id,state.scene])")
+    page.locator("#workspace-model").click();page.locator("#workspace-view-toggle").click()
+    slider=page.locator("#workspace-view #cutaway-percent");output=page.locator("#cutaway-value")
+    expect(page.locator("#cutaway-percent")).to_have_count(1);expect(slider).to_be_visible();expect(slider).to_be_enabled()
+    expect(slider).to_have_accessible_name("Visible height");expect(output).to_have_text("100%")
+    slider.focus();slider.press("Home")
+    assert page.evaluate("state.viewer.cutawayPercent")==0
+    assert page.evaluate("state.viewer.getSnapshot().elements.map(element=>element.clipping_planes)")==[[0],[4]]
+    slider.evaluate("input=>{input.value='40';input.dispatchEvent(new Event('input',{bubbles:true}));}")
+    expect(output).to_have_text("40%")
+    planes=page.evaluate("state.viewer.getSnapshot().elements.map(element=>element.clipping_planes[0])")
+    assert planes==pytest.approx([1.2,5.2])
+    page.locator("#workspace-floor").select_option("upper:original")
+    assert page.evaluate("state.viewer.cutawayPercent")==40
+    expect(output).to_have_text("40%")
+    page.locator("#workspace-concept").click();page.locator("#workspace-view-toggle").click()
+    expect(slider).to_be_visible();expect(output).to_have_text("40%")
+    assert page.evaluate("state.viewer.concept.cutawayPercent")==40
+    page.locator("#workspace-model").click();page.locator("#workspace-view-toggle").click()
+    assert page.evaluate("state.viewer.floorFilter")=="upper:original"
+    page.evaluate("chatUI.execute({type:'set_cutaway',percent:65})")
+    expect(slider).to_have_value("65");expect(output).to_have_text("65%")
+    bounds=slider.bounding_box();panel=page.locator("#workspace-view").bounding_box()
+    assert bounds["x"]>=panel["x"] and bounds["x"]+bounds["width"]<=panel["x"]+panel["width"]+1
+    assert bounds["x"]>=0 and bounds["x"]+bounds["width"]<=page.viewport_size["width"]
+    slider.focus();slider.press("End");expect(output).to_have_text("100%")
+    assert page.evaluate("state.viewer.getSnapshot().elements.every(element=>element.clipping_planes.length===0)")
+    if not native:
+        page.locator("#workspace-blueprints").click();page.locator("#workspace-view-toggle").click()
+        expect(slider).not_to_be_visible();expect(slider).to_be_disabled()
+    assert page.evaluate("JSON.stringify([state.document.revision_id,state.scene])")==original
+    assert all(method=="GET" for method,_,_ in calls)
+    assert not any("chat" in path or "reconstruct" in path or "render" in path for _,path,_ in calls)
+    if not native:
+        # A source-only Building can open the model pane without owning a model.
+        source_only,_,source_calls=setup_routes(page)
+        source_only.update(public_example=True,read_only_model=True)
+        page.route("**/api/access",lambda route:route.fulfill(json={"public_demo":True,"can_work":False,"shared_workspace":True}))
+        page.goto(static_server);page.locator("#home-library-list .home-file").first.click();page.locator("#home-library-list .home-file").first.click()
+        expect(page.locator("#page-image")).to_be_visible();page.locator("#workspace-model").click();page.locator("#workspace-view-toggle").click()
+        expect(page.locator("#cutaway-percent")).not_to_be_visible();expect(page.locator("#cutaway-percent")).to_be_disabled()
+        assert page.evaluate("state.viewer===null&&state.scene===null")
+        assert all(method=="GET" for method,_,_ in source_calls)
