@@ -4,6 +4,16 @@ Status: **live at https://agentic.95.133.254.90.sslip.io/**. The final creator-p
 
 The existing `blueprint-qa-isolated` demo at `https://95.133.254.90.sslip.io/` remains running. The agentic worktree is `feat/agentic-chat` at `/tmp/junction-agentic-chat`. The user-authorized implementation commits through `706aa5c` are pushed to that branch.
 
+## Current voice-output release
+
+Source `0cc2f2ebf7f83353edc026b3e2b06f6f78ba9e33`, frozen under `/tmp/junction-agentic-publish/release-v12/source`; content identity `19e6b706028578e194a9a25740c78a5a155a7c641c9ed28220d3781cdd0566b5`; archive SHA256 `b8c21c6648250eb1bc6a6212bd982a503c1e109786b4cb8d0f06e9f017d65573`. All 75 deployed production hashes match. Frozen checks passed **1,134 default tests / 143 optional skipped** and **28 browser checks**. Independent implementation review additionally passed focused voice/context/format checks and all six current product speech browser cases.
+
+ElevenLabs output is restored using the user's explicitly authorized shared key and existing voice, configured only in the root-owned agentic environment (0600) and the feature worktree's ignored local environment. The original app environment is untouched. Credentials never enter public config or the production archive; readiness exposes booleans only. Normal and source-free chats, technical answers and clarification questions use the existing opt-in speaker toggle, captured session guards, deterministic technical formatter and cancellation/autoplay behavior. [Contract](VOICE_CONTRACT.md) and [verification](VOICE_VERIFICATION.md).
+
+The guarded code update retained all **832 runtime hashes**. Actual public chat-to-speech returned one HTTP 200, no-store MPEG response (33,061 bytes), with Chromium playback advancing and successful toggle-off; zero script errors. The temporary metadata-only verification Building was then hidden without deleting its history or any original source. Independent live GET-only checks confirmed speech_ready, enabled/default-off speaker controls in existing empty and drawing chats, no history replay and unchanged 09:30–14:30 Helsinki policy. The original demo retained its process/release/configuration and all 1,154 recorded hashes. The idle local 8012 restart retained all 125 hashes and now has speech readiness too.
+
+Private artifacts are under `/tmp/junction-voice-restore/` and `/tmp/junction-agentic-diagnostics/independent-v12-voice/`. The real provider/decoded/playback observations are distinct from injected speech fixtures. No general answer-accuracy or speech-pronunciation claim is made.
+
 ## Published composer focus follow-up
 
 Current code release: `30c374fd00c03bef62cbc5cbc062520318f81e77232db82163586a712164ab49`, source commit `1533900885ccf510f99054fb0a634d289573060e`, archive SHA256 `bf8ab8e93839050576c4e668cc68112ae69b581c7e5444305e48eea8becf6f1c`. Compared with V10 below, the sole production difference is `app/static/styles.css`: the explicitly requested composer-only `textarea:focus{outline:none}` rule. This adopts the previously preserved local CSS edit; it is no longer pending work.

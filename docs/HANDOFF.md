@@ -1,3 +1,13 @@
+# ElevenLabs output restored — published 2026-11-15
+
+Live at [the agentic site](https://agentic.95.133.254.90.sslip.io/) with the user's authorized shared ElevenLabs server key and existing voice. Both the deployed server and local 8012 preview now report speech readiness. The speaker icon beside the microphone starts off; enable it for new normal replies, clarification questions and technical answers, including chats without drawings. Credentials stay server-side; visitors do not enter personal keys. The existing access window remains 09:30–14:30 Helsinki.
+
+Implementation `0cc2f2e` adds captured owned-chat speech context, normal/clarification playback and existing deterministic technical speech preparation. Explicit factual-null preparation, text/evidence, latest-response guards, cancellation, opt-in behavior and same-audio autoplay fallback are preserved. No extra QA model call or input/provider change. See [voice contract](VOICE_CONTRACT.md) and [current verification](VOICE_VERIFICATION.md).
+
+Frozen V12 `19e6b706028578e194a9a25740c78a5a155a7c641c9ed28220d3781cdd0566b5`: **1,134 default tests passed / 143 optional skipped**, **28 browser checks passed**. Independent implementation and GET-only live review cleared the change. A real public source-free chat generated one 33,061-byte ElevenLabs MP3, returned HTTP 200/audio-mpeg/no-store, and browser playback advanced (1.997-second audio); toggle-off stopped it, with zero script errors. Only the clearly labeled new metadata verification Building was hidden afterward; its history remains retained.
+
+Publication preserved all **832 runtime hashes**; original demo process/release/environment and 1,154 recorded runtime hashes are unchanged. The local idle preview restart preserved all 125 runtime hashes. No key entered source control or the verified production archive. The feature worktree now uses a private regular .env.local instead of the former symlink so the original checkout's environment remains unchanged. Private live audio/report: `/tmp/junction-voice-restore/public-playback.json`; independent public readiness/default-off checks: `/tmp/junction-agentic-diagnostics/independent-v12-voice/`.
+
 # Composer focus outline — published 2026-11-15
 
 The user explicitly requested removal of the purple outline around the visualizer message box. The previously preserved one-line `styles.css` change is now adopted, committed and published as `1533900`: `#composer-slot textarea:focus{outline:none}`. Other controls retain their keyboard focus outlines. Independent actual-app Chromium checks passed mouse/Tab focus in light and dark themes, with unchanged existing chat and no mutations/inference. The trusted HTTPS stylesheet matches the frozen bytes.
