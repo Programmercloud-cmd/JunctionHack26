@@ -532,6 +532,9 @@ USER_MEASUREMENT_QA_INSTRUCTIONS = """
 For permitted user values, a calculation operand uses user_value_id instead of evidence_index. Copy its exact stored value and unit,
 and include that ID in user_value_evidence. Never disguise a user value as a dimension observed in a drawing.
 When the user asks 'based on my measurements', use the attached attributed measurements, not generated model dimensions.
+Read annotation_calibrations, when supplied, before assessing the global outline: their exact entered values/units and
+original-page pixel spans/reference scales are server-derived from the selected user anchors, not a printed scale or geometry fact.
+They do not establish a uniform scale for the whole drawing, resolve conflicting scales, or override a not-to-scale disclaimer.
 If the question explicitly requests user-supplied marks/measurements but none are attached or otherwise supplied, ask the user to attach those marks.
 Building footprint means the ground-floor exterior outline, not the area of one marked room or the sum of storeys.
 Trace the relevant original outline and explain any supported proportional estimate. A mark applies only to its exact source view.
@@ -716,7 +719,7 @@ class GeminiProvider:
             if record["outcome"] == "request_started":
                 record["outcome"] = ("response_json_rejected" if isinstance(error,json.JSONDecodeError) or isinstance(error,ValidationError) and any(e["type"]=="json_invalid" for e in error.errors(include_input=False)) else
                     "response_schema_rejected" if isinstance(error,ValidationError) else "provider_error")
-            if schema is DraftAnswer and (
+            if schema in {DraftAnswer, AgentTechnicalResponse} and (
                 isinstance(error, (httpx2.TimeoutException, TimeoutError))
                 or isinstance(error, genai_errors.APIError) and error.code in {408, 504}
             ):
@@ -729,9 +732,12 @@ class GeminiProvider:
         return self._generate(document, question, CROP_INSTRUCTIONS, CropRequest)
 
     def _generate_draft(self, document, question, instruction, crop, *, extra_data=None):
+        seconds = getattr(self, "_agent_answer_seconds", None)
+        if seconds is None:
+            seconds = configured_number("GEMINI_DRAFT_SECONDS", 90)
         options = {
-            "thinking_level": "low" if self.model == "gemini-3.8-flash" else None,
-            "timeout_ms": round(configured_number("GEMINI_DRAFT_SECONDS", 90)*1000),
+            "thinking_level": getattr(self, "_agent_thinking_level", "low" if self.model == "gemini-3.8-flash" else None),
+            "timeout_ms": round(seconds*1000),
             "extra_data": extra_data,
         }
         if hasattr(self, "_agent_answer_tokens"):
@@ -771,14 +777,26 @@ class GeminiProvider:
             model=self.basic_model,include_qa_context=False,extra_data=context)
 
     def answer_agent(self, document, question):
-        # High-thinking advanced answers share the provider output allowance with
-        # private thoughts. Keep corrections on the same selected-worker budget.
+        # Keep the selected model's default thinking policy unless explicitly
+        # configured; corrections reuse the same policy and execution budgets.
         self._agent_answer_tokens = configured_number("GEMINI_AGENT_ANSWER_TOKENS",
             8192 if self.model == self.basic_model else 65536, integer=True)
+        default_seconds = configured_number("GEMINI_DRAFT_SECONDS", 90) if self.model == self.basic_model else configured_number("QA_TOTAL_SECONDS", 180)
+        self._agent_answer_seconds = configured_number("GEMINI_AGENT_ANSWER_SECONDS", default_seconds)
+        self._agent_thinking_level = "low" if self.model == self.basic_model else None
+        if self.model != self.basic_model:
+            level = os.getenv("GEMINI_ADVANCED_THINKING_LEVEL", "").strip().upper()
+            if level not in {"", "DEFAULT"}:
+                allowed = {name: member for name, member in types.ThinkingLevel.__members__.items()
+                           if member is not types.ThinkingLevel.THINKING_LEVEL_UNSPECIFIED}
+                selected = allowed.get(level)
+                if selected is None:
+                    raise ProviderError("Invalid GEMINI_ADVANCED_THINKING_LEVEL; configure default, minimal, low, medium, high or xhigh.", 503)
+                self._agent_thinking_level = selected.value.lower()
         return self._generate(document,question,AGENT_ANSWER_INSTRUCTIONS,AgentTechnicalResponse,
-            model=self.model,thinking_level="low" if self.model==self.basic_model else "high",
+            model=self.model,thinking_level=self._agent_thinking_level,
             max_tokens=self._agent_answer_tokens,
-            timeout_ms=round(configured_number("GEMINI_DRAFT_SECONDS",90)*1000))
+            timeout_ms=round(self._agent_answer_seconds*1000))
 
     def interact_agent(self, message, catalog, *, ui_request=None):
         from ..chat_actions import INSTRUCTIONS, WireChatIntent

@@ -266,6 +266,47 @@ def _validate_internal(draft,document,question,gate):
     return findings
 
 
+def _annotation_calibrations(document, marks):
+    """Derive reference scales from selected user anchors, never drawing facts."""
+    from .documents import DocumentError, resolve_reference
+    from .user_inputs import METRES
+    hints = []
+    for mark in marks:
+        if not isinstance(mark, dict) or mark.get("kind") != "measurement" or mark.get("space") != "source":
+            continue
+        value, unit, points = mark.get("value"), mark.get("unit"), mark.get("points")
+        if (not isinstance(mark.get("id"), str) or not mark["id"]
+                or type(value) not in (int, float) or not math.isfinite(value) or value <= 0
+                or not isinstance(unit, str) or unit not in METRES
+                or not isinstance(points, (list, tuple)) or len(points) != 2
+                or any(not isinstance(point, (list, tuple)) or len(point) != 2 for point in points)):
+            continue
+        if any(type(coordinate) not in (int, float) or not math.isfinite(coordinate) or not 0 <= coordinate <= 1
+               for point in points for coordinate in point):
+            continue
+        try:
+            page = resolve_reference(document, mark.get("page"), mark.get("source_id"), mark.get("source_page"))
+            if not all(type(size) in (int, float) and math.isfinite(size) and size > 0 for size in (page.width, page.height)):
+                continue
+            span = math.hypot((points[1][0] - points[0][0]) * page.width,
+                              (points[1][1] - points[0][1]) * page.height)
+            length = value * METRES[unit]
+            if not math.isfinite(span) or span <= 0 or not math.isfinite(length) or length <= 0:
+                continue
+            metres_per_pixel, pixels_per_metre = length / span, span / length
+            if not all(math.isfinite(scale) and scale > 0 for scale in (metres_per_pixel, pixels_per_metre)):
+                continue
+        except (DocumentError, TypeError, ValueError, OverflowError):
+            continue
+        hints.append({"user_value_id": mark["id"], "page": page.number,
+            "source_id": page.source_id, "source_page": page.source_page, "floor_id": mark.get("floor_id"),
+            "value": value, "unit": unit, "points": deepcopy(points), "length_metres": length,
+            "pixel_span": span, "metres_per_pixel": metres_per_pixel, "pixels_per_metre": pixels_per_metre,
+            "provenance": "user_provided",
+            "basis": "Derived from the entered length and original-page anchors; not a printed scale or geometry fact."})
+    return hints
+
+
 def _agent_context(document, native_ifc):
     """Bind selected marks to originals while preserving their user-only authority."""
     conversation = deepcopy(document.conversation_context or {})
@@ -283,7 +324,10 @@ def _agent_context(document, native_ifc):
         retrieval["all_records_selected"] = len(inspected) == len(originals)
         retrieval["property_view_complete"] = all(not row.get("omitted_value_count", 0) for row in inspected.values())
     marks = conversation.get("user_annotations", [])
+    document.question_context.pop("annotation_calibrations", None)
     if document.question_context.get("evidence_scope") == "sources_and_user":
+        if not native_ifc:
+            document.question_context["annotation_calibrations"] = _annotation_calibrations(document, marks)
         values = document.question_context.setdefault("user_values", [])
         known = {value.get("id") for value in values}
         for mark in marks:

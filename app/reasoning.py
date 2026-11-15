@@ -87,8 +87,27 @@ def without_user_provided(value):
 
 
 def source_only_question(question):
-    """Conservative extra guard: explicit original-source requests never use supplied values."""
-    authority=r"(?:drawing|drawings|blueprint|blueprints|plan|plans|source|original IFC)"
+    """Keep source authority separate from an object's location in a drawing."""
+    authority=r"(?:drawing|drawings|blueprint|blueprints|plan|plans|sources?|original IFC)"
+    supplied=r"(?:my|our|these|those|(?:the )?(?:user[ -]provided|provided|supplied|attached|marked))"
+    inputs=r"(?:measurements?|dimensions?|values?|inputs?|marks?|annotations?)"
+    input_reference=(r"(?:"+supplied+r" (?:marked |drawn )?"+inputs+r"|"
+                     r"(?:the )?"+inputs+r" (?:I|we) (?:provided|supplied|entered|drew|marked|added))")
+    # An explicit exclusion wins even when the same message also asks to use a
+    # measurement. Do not turn conflicting/source-only instructions into consent.
+    excludes=r"\b(?:ignore|disregard|exclude|without(?: (?:using|considering|relying on))?|do not (?:use|include|consider|rely on)|don't (?:use|include|consider|rely on)|not (?:using|based on)|not) (?:any of )?"+input_reference+r"\b"
+    only_source=(r"\b"+authority+r"[ -]only\b|\b"+authority+r" (?:alone|itself)\b|"
+                 r"\b(?:only|solely|strictly|exclusively) (?:(?:from|on|in|using|according to|based on) )?(?:the |these |this )?(?:original )?"+authority+r"\b|"
+                 r"\b(?:from|using|according to|based on) (?:the |these |this )?(?:original )?"+authority+r" (?:only|alone)\b|"
+                 r"\bbased (?:only|solely|strictly|exclusively) on (?:the |these |this )?(?:original )?"+authority+r"\b")
+    if re.search(excludes+"|"+only_source,question,re.I):return True
+    use_supplied=r"\b(?:based on|using|use|with) "+input_reference+r"\b"
+    if re.search(use_supplied,question,re.I):
+        # 'Building seen in the blueprint' locates the requested outline; it
+        # does not revoke permission to use the attached user dimensions.
+        # The worker/review still distinguish attributed values from facts
+        # observed in original sources. Mixed intent is theirs to clarify.
+        return False
     return bool(re.search(r"\b(?:according to|shown (?:on|in)|printed (?:on|in)|established by|from|in) (?:the |these |this )?(?:original )?"+authority+r"\b|\b"+authority+r".*\b(?:establish|show|specif|state|indicat|provid|say)|\b"+authority+r"[ -]only\b",question,re.I))
 
 
