@@ -100,7 +100,7 @@
   function control(label,action,id){const b=node("button",label);b.type="button";if(id)b.id=id;b.addEventListener("click",()=>act(typeof action==="function"?action():action));return b;}
   const tabs=node("div",null,"workspace-nav-buttons");
   const sources=node("button","Drawings");sources.id="workspace-blueprints";sources.type="button";
-  const drawingPicker=node("section",null,"drawing-file-picker");drawingPicker.id="drawing-file-picker";drawingPicker.hidden=true;drawingPicker.setAttribute("aria-label","Project drawings");
+  const drawingPicker=node("section",null,"drawing-file-picker");drawingPicker.id="drawing-file-picker";drawingPicker.hidden=true;drawingPicker.setAttribute("aria-label","Building drawings");
   sources.setAttribute("aria-controls",drawingPicker.id);sources.setAttribute("aria-expanded","false");
   function setDrawingPicker(open){drawingPicker.hidden=!open;sources.setAttribute("aria-expanded",String(open));}
   sources.addEventListener("click",async()=>{
@@ -125,11 +125,10 @@
   const selection=control("Return to selection",{type:"return_selection"},"workspace-return-selection");
   tabs.append(sources,model,concept);navigation.append(tabs,drawingPicker);
   const actions=node("div",null,"workspace-actions");
-  const attach=control("Import",{type:"attach_sources"},"workspace-attach-sources");
   const exportIfc=control("Download IFC",{type:"download_ifc"},"workspace-download-ifc");
   const sourceFiles=node("select");sourceFiles.id="workspace-download-source-choice";sourceFiles.setAttribute("aria-label","Original source to download");
   const exportSource=control("Download original",()=>({type:"download_source",source_id:sourceFiles.value}),"workspace-download-source");
-  actions.append(exportIfc,sourceFiles,exportSource,attach);filePanel.append(actions);
+  actions.append(exportIfc,sourceFiles,exportSource);filePanel.append(actions);
   const inputs=$("assumptions-panel");inputs.querySelector("summary").textContent="Supplied values and corrections";tools.append(inputs);
   const themeLabel=node("label",null,"workspace-theme");themeLabel.append(node("span","Theme"));
   const theme=node("select");theme.id="workspace-theme";theme.setAttribute("aria-label","Colour theme");
@@ -249,7 +248,7 @@
     const visit=JSON.stringify([state.document?.document_id,state.activeSessionId]);
     if(visit!==controlsVisit){controlsVisit=visit;showEvidence(false);setDrawingPicker(false);showStatus("");nativeRecord.replaceChildren();nativeRecord.hidden=true;for(const [button,panel]of panels){panel.hidden=true;button.setAttribute("aria-expanded","false");}}
     actions.hidden=!state.document;inputs.hidden=!state.document||state.document.kind==="ifc";
-    attach.disabled=!state.document||Boolean(state.document.read_only_model)||Boolean(state.busy)||Boolean(state.taskAccess?.public_demo&&!state.taskAccess.can_work);
+
     exportIfc.disabled=!state.document?.has_scene;
     concept.disabled=!state.scene?.elements.some(e=>e.geometry);
     concept.setAttribute("aria-pressed",String(snap.view_mode==="concept"));
@@ -258,14 +257,14 @@
     sourceFiles.hidden=sourceFiles.options.length<2;exportSource.disabled=!sourceFiles.value;
     try{const choice=localStorage.getItem("blueprint-theme");if(["system","light","dark"].includes(choice))theme.value=choice;}catch{}
     sources.setAttribute("aria-pressed",String(snap.view_mode==="source"));model.setAttribute("aria-pressed",String(snap.view_mode==="model"));
-    sources.title=state.document?.pages?.length?"Choose a drawing from this project":"Original IFC records";
+    sources.title=state.document?.pages?.length?"Choose a drawing from this Building":"Original IFC records";
     if(controlsView!==snap.view_mode){controlsView=snap.view_mode;setDrawingPicker(false);}
     const drawingFiles=window.projectLibrary?.drawingFiles()||[],drawingIndex=currentDrawingIndex(drawingFiles),drawingBusy=Boolean(window.projectLibrary?.drawingBusy()||state.busy||state.sessionOpening);
     sources.disabled=model.disabled=drawingBusy;concept.disabled=drawingBusy||!state.scene?.elements.some(e=>e.geometry);
     const drawingSignature=JSON.stringify([drawingFiles,drawingIndex,drawingBusy]);
     if(drawingPicker.dataset.catalog!==drawingSignature){
       drawingPicker.dataset.catalog=drawingSignature;drawingPicker.replaceChildren();
-      if(!drawingFiles.length)drawingPicker.append(node("p","No drawing pages in this project. Use Files or 3D Model to inspect supplied IFC files.","drawing-picker-empty"));
+      if(!drawingFiles.length)drawingPicker.append(node("p","No drawing pages in this Building. Use 3D Model to inspect supplied IFC records.","drawing-picker-empty"));
       for(const [index,file]of drawingFiles.entries()){
         const choice=node("button",null,"drawing-file-choice");choice.type="button";choice.dataset.drawingKey=file.key;choice.disabled=drawingBusy;
         choice.setAttribute("aria-current",index===drawingIndex?"true":"false");choice.title=file.filename;

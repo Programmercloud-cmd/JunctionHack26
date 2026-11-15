@@ -103,78 +103,36 @@ function resetAnswer() {
 }
 
 async function uploadFromNativePicker() {
-  if (state.busy || !window.chatUI?.isHome()) return;
-  const projectId=state.homeProjectId||null;
-  setError("upload-error");
-  state.busy = "upload";
-  updateControls();
-  try {
-    const result = await request("/api/documents/native-picker", {method: "POST"}, 320000);
-    if (!result.cancelled) {
-      if(projectId)await window.projectLibrary.fileUploaded(result,projectId);
-      await refreshSavedBuildings();
-      announce("Original file saved.");
-    }
-  } catch (error) {
-    await refreshSavedBuildings();
-    setError("upload-error", error.message);
-  } finally {
-    state.busy = null;
-    updateControls();
-  }
+  // Building uploads use the scoped browser picker; the desktop API remains compatibility-only.
+  window.projectLibrary?.chooseUpload();
 }
 
-async function uploadFile(input, append = false, targetProjectId = null) {
-  const files = Array.from(input?.name ? [input] : input || []);
-  if (!files.length || state.busy || (!append&&window.chatUI && !window.chatUI.isHome())) return;
-  const building=append?state.document?.building_id:null;
-  const projectId=append?null:targetProjectId||state.homeProjectId||null;
-  const uploadProject=projectId||state.activeProjectId;
-  if(append&&!building){setError("upload-error","Open a building before attaching sources.");return;}
-  setError("upload-error");
+async function uploadFile(input, append = false, targetScope = null) {
+  const files=Array.from(input?.name?[input]:input||[]);if(!files.length||state.busy)return;
+  const target=targetScope||window.projectLibrary?.captureUploadTarget();
+  if(!target?.owner_project_id||!target.scope_id){setError("upload-error","Create or choose a Building before uploading drawings.");return;}
+  if(!target.upload_allowed){setError("upload-error",target.upload_reason||"Drawing upload is unavailable for this Building.");return;}
   for(const file of files){
-  const maxMB = /\.ifc$/i.test(file.name) ? (state.health?.limits?.max_ifc_mb || 25) : (state.health?.limits?.max_upload_mb || 10);
-  if (file.size > maxMB * 1024 * 1024) {
-    setError("upload-error", `${file.name} exceeds the ${maxMB} MB per-file limit.`);
-    return;
+    const maxMB=/\.ifc$/i.test(file.name)?(state.health?.limits?.max_ifc_mb||25):(state.health?.limits?.max_upload_mb||10);
+    if(file.size>maxMB*1024*1024){setError("upload-error",`${file.name} exceeds the ${maxMB} MB per-file limit.`);return;}
+    if(!/\.(jpe?g|png|pdf|ifc|svg|dxf|dwg)$/i.test(file.name)){setError("upload-error","Choose JPG, PNG, PDF, SVG, DXF or IFC. DWG needs an available converter.");return;}
   }
-  if (!/\.(jpe?g|png|pdf|ifc|svg|dxf|dwg)$/i.test(file.name)) {
-    setError("upload-error", "Choose JPG, PNG, PDF, SVG, DXF or IFC. DWG needs an available converter.");
-    return;
-  }
-  }
-  voice?.cancelAll();
-  state.busy="upload";const version=++state.requestVersion;updateControls();
-  window.chatUI?.onUpload();
-  const form = new FormData();
-  for(const file of files)form.append("files", file);
-  // Desktop file pickers may provide a path. Standard browser uploads only provide a name.
-  if (files.length===1&&typeof files[0].path === "string" && files[0].path) form.append("original_path", files[0].path);
-  try {
-    let result;
-    if(projectId&&files.length>1){
-      for(const file of files){const single=new FormData();single.append("files",file);result=await request("/api/documents",{method:"POST",body:single});await window.projectLibrary.fileUploaded(result,projectId);}
-    }else{
-      result = await request(building?`/api/buildings/${building}/sources`:"/api/documents", {method:"POST", body:form});
-      if(projectId)await window.projectLibrary.fileUploaded(result,projectId);
-    }
-    if (version !== state.requestVersion) return;
-    if (!result.document_id || !Array.isArray(result.pages)) throw new Error("The server did not return a usable source document.");
+  const captured={...target,session:!chatUI.isHome()&&state.activeBuildingScopeId===target.id?state.activeSessionId:null,sessionEpoch:state.sessionEpoch,document:state.document?.document_id};
+  const current=()=>!chatUI.isHome()&&state.activeBuildingScopeId===captured.id&&state.activeProjectId===captured.owner_project_id&&state.activeSessionId===captured.session&&state.sessionEpoch===captured.sessionEpoch;
+  setError("upload-error");voice?.cancelAll();state.busy="upload";updateControls();if(current())chatUI.onUpload();
+  const form=new FormData();for(const file of files)form.append("files",file);
+  try{
+    const result=await request(`/api/projects/${captured.owner_project_id}/scopes/${captured.scope_id}/sources`,{method:"POST",body:form});
+    if(!result.document_id||!Array.isArray(result.pages))throw new Error("The server did not return a usable source document.");
+    for(const job of result.extraction_jobs||[])await projectLibrary.trackTask(job,{project_id:captured.owner_project_id,...(captured.session?{session_id:captured.session}:{})});
     await refreshSavedBuildings();
-    if(building&&state.document?.building_id===building){
-      for(const job of result.extraction_jobs||[])rememberJob(await projectLibrary.trackTask(job,{project_id:uploadProject}));
-      await refreshBuilding();
-      schedulePoll(0);
+    if(current()){
+      if(state.document?.document_id===result.document_id){await refreshBuilding();schedulePoll(0);}
+      else await chatUI.adoptSources(result,current);
     }
-    announce(append?"Related original sources saved.":"Original files saved.");
-  } catch (error) {
-    if(projectId)await refreshSavedBuildings();
-    setError("upload-error", error.message);
-  } finally {
-    state.busy = null;
-    state.uploadMode="new";$("file-input").value="";
-    updateControls();
-  }
+    announce("Drawings saved for every chat in this Building.");
+  }catch(error){await refreshSavedBuildings();if(current()||chatUI.isHome())setError("upload-error",error.message);else announce(`Upload to ${captured.name} failed: ${error.message}`);}
+  finally{state.busy=null;state.uploadTarget=null;$("file-input").value="";updateControls();}
 }
 
 function terminalJob(job) {return ["complete","needs_attention","failed","budget_exhausted","stopped","interrupted"].includes(job.status);}
@@ -189,7 +147,9 @@ async function refreshSavedBuildings() {
   $("refresh-buildings").disabled=true;
   state.savedBuildingsError = false;
   try {
-    const result=await request("/api/buildings",{},15000);state.savedBuildings=result.buildings || [];state.projects=result.projects??state.savedBuildings.map(doc=>({id:doc.building_id||doc.document_id,name:doc.example_title||doc.filename,building_ids:[doc.building_id||doc.document_id],active_building_id:doc.building_id||doc.document_id,read_only:Boolean(doc.read_only_model)}));state.workspaceJobs=result.workspace_jobs||[];window.chatUI?.refreshTasks();
+    const result=await request("/api/buildings",{},15000);state.savedBuildings=result.buildings || [];state.projects=result.projects??state.savedBuildings.map(doc=>({id:doc.building_id||doc.document_id,name:doc.example_title||doc.filename,building_ids:[doc.building_id||doc.document_id],active_building_id:doc.building_id||doc.document_id,read_only:Boolean(doc.read_only_model)}));state.buildingScopes=result.building_scopes??state.projects.flatMap(p=>{
+      const ids=p.building_ids||[],groups=ids.length?ids:[null];return groups.map(id=>{const doc=state.savedBuildings.find(item=>(item.building_id||item.document_id)===id),native=doc?.kind==="ifc"&&!doc.pages?.length;return {id:`${p.id}:${id||"shared"}`,owner_project_id:p.id,scope_id:id||"shared",name:ids.length>1?`${p.name} · ${doc?.filename||"Saved drawings"}`:p.name,source_group_id:id,building_ids:id?[id]:[],active_building_id:id,read_only:Boolean(p.read_only),kind:native?"native_ifc":id?"drawing":null,upload_allowed:!p.read_only&&!native,upload_reason:p.read_only?"This example is read-only.":native?"Native IFC remains separate. Create another Building to upload drawings.":""};});
+    });state.workspaceJobs=result.workspace_jobs||[];window.chatUI?.refreshTasks();
     const selected=$("saved-building-select").value || state.document?.building_id || "";
     $("saved-building-select").replaceChildren(new Option("Choose a saved building", ""));
     for(const item of state.savedBuildings)$("saved-building-select").append(new Option(`${item.filename} · ${item.has_scene?"model available":"source available"}`,item.building_id||item.document_id));
@@ -1341,7 +1301,7 @@ $("question-form").addEventListener("submit", async (event) => {
 $("file-input").addEventListener("change", (event) => {
   const files = Array.from(event.target.files);
   event.target.value = "";
-  uploadFile(files,state.uploadMode==="append");
+  const target=state.uploadTarget||window.projectLibrary?.captureUploadTarget();state.uploadTarget=null;uploadFile(files,false,target);
 });
 $("question").addEventListener("input", updateControls);
 suggestions.forEach((button) => button.addEventListener("click", () => { $("question").value = button.dataset.question; updateControls(); $("question").focus(); }));

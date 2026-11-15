@@ -39,8 +39,8 @@
     const pages=catalog?.pages||state.document?.pages||[];
     return clone({pages,revision_id:catalog?.revision_id||state.document?.revision_id||null,page:pages[state.pageIndex]?.page??pages[0]?.page??null});
   }
-  function contextNow(){return {project_id:state.activeProjectId,session_id:state.activeSessionId,session_epoch:state.sessionEpoch||0,epoch:ui.navigation_epoch,document_epoch:state.epoch,document_id:state.document?.document_id,revision_id:state.document?.revision_id,request_id:crypto.randomUUID(),reply_to:state.clarificationReply,order:++ui.submitOrder};}
-  function sameDocument(context){return ui.activeTab==="details"&&context.session_epoch===(state.sessionEpoch||0)&&context.project_id===state.activeProjectId&&context.session_id===state.activeSessionId&&context.document_epoch===state.epoch&&context.document_id===state.document?.document_id;}
+  function contextNow(){return {project_id:state.activeProjectId,building_scope_id:state.activeBuildingScopeId,session_id:state.activeSessionId,session_epoch:state.sessionEpoch||0,epoch:ui.navigation_epoch,document_epoch:state.epoch,document_id:state.document?.document_id,revision_id:state.document?.revision_id,request_id:crypto.randomUUID(),reply_to:state.clarificationReply,order:++ui.submitOrder};}
+  function sameDocument(context){return ui.activeTab==="details"&&context.session_epoch===(state.sessionEpoch||0)&&context.project_id===state.activeProjectId&&context.building_scope_id===state.activeBuildingScopeId&&context.session_id===state.activeSessionId&&context.document_epoch===state.epoch&&context.document_id===state.document?.document_id;}
   function pause(){clearTimeout(ui.timer);ui.timer=null;ui.tour.running=false;}
   function invalidate(){pause();ui.navigation_epoch++;}
   function snapshot(){
@@ -53,7 +53,7 @@
     syncTabs();
     syncLibrary();
     $("chat-composer").hidden = !chatAvailable();
-    $("question").disabled=state.busy==="upload" || !chatAvailable();$("question").placeholder=state.document?"Ask about the drawing, or tell me what to show…":"Ask a question or attach your blueprints…";
+    $("question").disabled=state.busy==="upload" || !chatAvailable();$("question").placeholder=state.document?"Ask about the drawing, or tell me what to show…":"Ask a question; upload drawings from the Building overview…";
     $("ask-button").disabled=!chatAvailable()||state.busy==="upload"||!state.providerReady||Boolean(voice?.recording)||!$("question").value.trim();$("ask-label").textContent="Send";
     $("chat-connection").textContent=state.providerReady?`${state.health?.provider_label||"Gemini"} · local workspace`:"Provider unavailable";
     if(state.health&&!state.providerReady)note($("provider-message").textContent||"Configure the selected provider to interpret messages. Saved sources remain available.","provider-setup",[["Check connection",{type:"refresh_health"}]]);
@@ -74,8 +74,8 @@
   }
   function syncTabs() {
     const onDetails = ui.activeTab === "details";
-    const skip=document.querySelector(".skip-link");skip.href=onDetails?"#question":"#home-library";skip.textContent=onDetails?"Skip to conversation":"Skip to projects";
-    if($("attach-drawings")){$("attach-drawings").textContent=onDetails?"+ Attach drawings":"+ Upload files";$("attach-drawings").disabled=Boolean(state.busy)||Boolean(state.taskAccess?.public_demo&&!state.taskAccess.can_work)||Boolean(onDetails&&state.document?.read_only_model);}
+    const skip=document.querySelector(".skip-link");skip.href=onDetails?"#question":"#home-library";skip.textContent=onDetails?"Skip to conversation":"Skip to Buildings";
+
     homeTab.setAttribute("aria-current",!onDetails&&!state.homeProjectId?"page":"false");
     $("home-library").hidden=onDetails;
     $("details-panel").hidden=!onDetails;
@@ -192,10 +192,9 @@
     error.hidden = !error.textContent;
   }
   function showHome() {
-    if (ui.activeTab === "details") {
-      voice?.cancelAll();
-      invalidate();
-    }
+    if (ui.activeTab === "details") voice?.cancelAll();
+    // Home is an explicit navigation intent even while a source is still staging.
+    invalidate();
     ui.activeTab = "home";
     syncTabs();
     changed();
@@ -427,7 +426,7 @@
     for(const job of jobs||[])merged.set(job.id,job);
     const catalog=new Map((state.savedBuildings||[]).map(building=>[building.building_id||building.document_id,building]));
     if(state.document)catalog.set(state.document.building_id||state.document.document_id,state.document);
-    const tasks=[...merged.values()].map(job=>{const p=(state.projects||[]).find(p=>job.origin?.project_id?p.id===job.origin.project_id:p.building_ids.includes(job.building_id));return {...job,project_id:p?.id||job.origin?.project_id,project_label:p?.name,building_label:job.building_label||catalog.get(job.building_id)?.example_title||catalog.get(job.building_id)?.filename};});
+    const tasks=[...merged.values()].map(job=>{const p=(state.buildingScopes||[]).find(p=>(!job.origin?.project_id||p.owner_project_id===job.origin.project_id)&&p.source_group_id===job.building_id);return {...job,project_id:p?.id||job.origin?.project_id,owner_project_id:p?.owner_project_id||job.origin?.project_id,project_label:p?.name||"Saved Building",building_label:job.building_label||catalog.get(job.building_id)?.example_title||catalog.get(job.building_id)?.filename};});
     activeTasks?.update(tasks,{building_id:state.document?.building_id,has_scene:Boolean(state.scene),
       usable_revision_id:state.scene?.revision_id,can_work:state.taskAccess?.can_work??false,
       onOpen:job=>projectLibrary.openTask(job),
@@ -591,9 +590,7 @@
       case "list_saved": case "open_saved": case "load_workspace_blueprint":
         return note("Open Home to choose a saved file.", "home-file-navigation");
       case "new_upload": case "attach_sources":
-        if(action.type==="attach_sources"&&!state.document)throw new Error("Open a building before attaching related sources.");
-        if(action.type==="new_upload"&&ui.activeTab!=="home"){const p=(state.projects||[]).find(item=>item.id===state.activeProjectId);if(p)projectLibrary.showFiles(p);else projectLibrary.showProjects();}
-        state.uploadMode=action.type==="attach_sources"?"append":"new";$("file-input").click();return;
+        projectLibrary.showActiveOverview();$("home-upload").focus();return;
       case "download_ifc":if(!state.scene?.ifc_url&&!state.document?.has_scene)throw new Error("No saved IFC is available.");return download(state.scene?.ifc_url||`/api/documents/${context.document_id}/model.ifc`);
       case "download_source":return download(`/api/buildings/${context.document_id}/sources/${action.source_id}/original`);
       case "retry_extraction":{const response=await jsonPost(`/api/buildings/${context.document_id}/extraction`,{retry:true});for(const job of response.jobs||[])rememberJob(job);schedulePoll(0);return;}
@@ -680,7 +677,7 @@
     if(options.isCurrent&&!options.isCurrent())return false;
     voice?.cancelAll();invalidate();state.sessionEpoch=(state.sessionEpoch||0)+1;
     const token=state.sessionEpoch;state.sessionOpening=true;window.blueprintAnnotations?.detach();
-    state.activeProjectId=project.id;state.activeSessionId=session.id;
+    state.activeProjectId=project.owner_project_id||project.id;state.activeBuildingScopeId=project.id;state.activeSessionId=session.id;
     ui.documentId=null;ui.clarification=null;ui.latestSubmissionId=null;ui.latestQuestionOrder=0;
     ui.selected_ids=[];ui.focused_id=null;ui.geometry_revision_id=null;ui.inspection=null;ui.camera=null;ui.tour={ids:[],index:-1,running:false};
     ui.pageCatalogs.clear();ui.sourceCatalog=null;ui.sourcePages.clear();conversationHistory.length=0;
@@ -688,14 +685,16 @@
     $("question").value="";state.conversation=[];state.clarificationReply=null;state.questionRequest=null;state.result=null;state.evidenceRevision=null;state.sourceSelection=null;
     $("live-chat-title").textContent=session.name;ui.activeTab="details";
     try{
-      if(session.building_id){
+      const group=session.effective_building_id!==undefined?session.effective_building_id:session.building_id;
+      if(group){
         if(options.document){
-          const current=()=>token===state.sessionEpoch&&state.activeProjectId===project.id&&state.activeSessionId===session.id&&ui.activeTab==="details";
+          ui.view_mode=options.document.pages?.length?"source":"model";
+          const current=()=>token===state.sessionEpoch&&state.activeProjectId===(project.owner_project_id||project.id)&&state.activeBuildingScopeId===project.id&&state.activeSessionId===session.id&&ui.activeTab==="details";
           if(!await activateDocument(options.document,"source",options.prepared,current))return false;
-        }else if(session.building_id!==state.document?.document_id)await openBuilding(session.building_id,"source");
+        }else if(group!==state.document?.document_id)await openBuilding(group,"source");
         else onDocument(state.document,"source");
         if(token!==state.sessionEpoch)return;
-        if(state.document?.document_id!==session.building_id)throw new Error("This chat's file could not be opened. Reopen it from the project overview.");
+        if(state.document?.document_id!==group)throw new Error("This chat's file could not be opened. Reopen it from the Building overview.");
         await refreshConversation();
       }else{
         clearTimeout(state.pollTimer);state.epoch++;state.document=null;state.jobs=[];state.assumptionRows=[];voice?.newDocument(null);
@@ -710,20 +709,26 @@
   }
   async function openReadOnlyFile(project,id,options={}){
     if(options.isCurrent&&!options.isCurrent())return false;
-    voice?.cancelAll();invalidate();state.sessionEpoch=(state.sessionEpoch||0)+1;state.activeProjectId=project.id;state.activeSessionId=null;ui.documentId=null;window.blueprintAnnotations?.detach();
+    voice?.cancelAll();invalidate();state.sessionEpoch=(state.sessionEpoch||0)+1;state.activeProjectId=project.owner_project_id||project.id;state.activeBuildingScopeId=project.id;state.activeSessionId=null;ui.documentId=null;window.blueprintAnnotations?.detach();
     for(const key of [...ui.entries.keys()])removeEntry(key);
     if(options.document){
-      const token=state.sessionEpoch;ui.activeTab="details";
-      const current=()=>token===state.sessionEpoch&&state.activeProjectId===project.id&&!state.activeSessionId&&ui.activeTab==="details";
+      const token=state.sessionEpoch;state.sessionOpening=true;ui.activeTab="details";ui.view_mode=options.document.pages?.length?"source":"model";
+      const current=()=>token===state.sessionEpoch&&state.activeProjectId===(project.owner_project_id||project.id)&&state.activeBuildingScopeId===project.id&&!state.activeSessionId&&ui.activeTab==="details";
       try{if(!await activateDocument(options.document,"source",options.prepared,current))return false;}finally{if(token===state.sessionEpoch)state.sessionOpening=false;}
     }else if(id!==state.document?.document_id)await openBuilding(id,"source");else onDocument(state.document,"source");
     ui.activeTab="details";syncControls();changed();return true;
   }
+  async function adoptSources(doc,isCurrent){
+    const prepared=await prepareDocument(doc,"source");if(!isCurrent())return false;
+    // An explicit first upload gives this same empty chat its shared source group.
+    // Preserve its draft/history; onDocument must not treat it as another chat.
+    ui.documentId=doc.document_id;ui.view_mode=doc.pages?.length?"source":"model";
+    return activateDocument(doc,"source",prepared,isCurrent);
+  }
   // Reuse the operation adapters without exposing the former toolbar/settings UI.
   $("composer-slot").append($("question-form"));
   const controls=element("div",null,"composer-controls");
-  const attach=button("+ Attach drawings",()=>local({type:ui.activeTab==="details"&&state.document?"attach_sources":"new_upload"}));attach.id="attach-drawings";
-  controls.append(attach,$("ask-button"));
+  controls.append($("ask-button"));
   $("question-form").append(controls);
   $("workspace-content").append($("drawing-pane"),$("model-pane"));
   $("question").setAttribute("aria-label","Message Concrete");$("question").addEventListener("keydown",event=>{if(event.key==="Enter"&&!event.shiftKey){event.preventDefault();$("question-form").requestSubmit();}});
@@ -733,12 +738,7 @@
     event.preventDefault();
     showHome();
   });
-  $("home-upload").addEventListener("click", () => {
-    if (!state.health || state.busy || ui.activeTab !== "home") return;
-    state.uploadMode="new";
-    if (state.health.native_file_picker) uploadFromNativePicker();
-    else $("file-input").click();
-  });
+  $("home-upload").addEventListener("click",()=>{if(!state.health||state.busy||ui.activeTab!=="home")return;try{projectLibrary.chooseUpload();}catch(error){setError("upload-error",error.message);}});
   for (const type of ["dragover", "drop"]) {
     $("chat-shell").addEventListener(type, (event) => {
       if (event.dataTransfer.types.includes("Files")) event.preventDefault();
@@ -751,7 +751,7 @@
     setDrawingZoom(`${Math.max(40, width * (event.deltaY > 0 ? 0.9 : 1.1))}px`);
   }, {passive: false});
   function isLatestSubmission(requestId) { return ui.latestSubmissionId === requestId; }
-  window.chatUI={chatAvailable,focusTaskOrigin,taskContext:contextNow,openReadOnlyFile,openSession,isHome:()=>ui.activeTab==="home",showHome,openSavedFile:openLibraryFile,isLatestSubmission,snapshot,inspection,sourceView,submit,execute:local,invalidateNavigation:invalidate,syncControls,syncHighlights,refreshTasks,onUpload,onDocument,onScene,onSelection,onProposal,onJobs,onError,mergeConversation,openWorkspace};
+  window.chatUI={adoptSources,chatAvailable,focusTaskOrigin,taskContext:contextNow,openReadOnlyFile,openSession,isHome:()=>ui.activeTab==="home",showHome,openSavedFile:openLibraryFile,isLatestSubmission,snapshot,inspection,sourceView,submit,execute:local,invalidateNavigation:invalidate,syncControls,syncHighlights,refreshTasks,onUpload,onDocument,onScene,onSelection,onProposal,onJobs,onError,mergeConversation,openWorkspace};
   let stored="system";try{stored=localStorage.getItem("blueprint-theme")||"system";}catch{}applyTheme(["light","dark","system"].includes(stored)?stored:"system");
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{if(ui.theme==="system")applyTheme("system");});
   syncControls();closeWorkspace();

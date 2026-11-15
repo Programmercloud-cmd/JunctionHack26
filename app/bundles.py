@@ -95,7 +95,7 @@ class BuildingStore:
             if not path.is_file() or path.stat().st_size != stored.stat().st_size:
                 raise DocumentError("That file does not match the saved upload.", 422)
             with path.open("rb") as stream:
-                if hashlib.file_digest(stream, "sha256").hexdigest() != document.id:
+                if hashlib.file_digest(stream, "sha256").hexdigest() != hashlib.sha256(document.source_bytes).hexdigest():
                     raise DocumentError("That file does not match the saved upload.", 422)
         except (OSError, ValueError, RuntimeError):
             raise DocumentError("Concrete could not read that file path.", 422) from None
@@ -112,8 +112,9 @@ class BuildingStore:
             else:
                 marker.touch()
 
-    def add(self,data,filename):
-        building_id=hashlib.sha256(data).hexdigest()
+    def add(self,data,filename,*,group_id=None):
+        source_hash=hashlib.sha256(data).hexdigest()
+        building_id=group_id or source_hash
         with self.lock:
             directory=self.directory(building_id)
             if (directory/"CURRENT.json").exists():
@@ -125,7 +126,7 @@ class BuildingStore:
             with tempfile.TemporaryDirectory(prefix="normalize-",dir=self.root.parent) as tmp:
                 normalizer=DocumentStore(Path(tmp))
                 try:
-                    resource_ready=(self._resource_path(building_id)/"source.json").exists()
+                    resource_ready=(self._resource_path(source_hash)/"source.json").exists()
                     document=self._resource(data,filename) if resource_ready and not data.lstrip().startswith(b"ISO-10303-21;") else normalizer.add(data,filename)
                     staged=self.root/(".pending-"+uuid.uuid4().hex)
                     staged.mkdir();(staged/"pages").mkdir();(staged/"revisions").mkdir();(staged/"jobs").mkdir()
@@ -138,15 +139,15 @@ class BuildingStore:
                     now=time.time()
                     _json(staged/"building.json",{"schema_version":1,"building_id":building_id,
                         "document_id":building_id,"filename":document.filename,"kind":document.kind,
-                        "content_sha256":building_id,"created_at":now,
+                        "content_sha256":source_hash,"created_at":now,
                         "pages":[{"number":p.number,"width":p.width,"height":p.height,
                                   "sha256":hashlib.sha256((staged/"pages"/f"{p.number}.png").read_bytes()).hexdigest()}for p in pages]})
                     document=replace(document,id=building_id,building_id=building_id,pages=pages,source_bytes=data)
                     if not document.sources and not (document.scene and document.scene.derived):
-                        document.sources=[{"source_id":building_id,"filename":document.filename,"filenames":[document.filename],
+                        document.sources=[{"source_id":source_hash,"filename":document.filename,"filenames":[document.filename],
                             "kind":document.kind,"media_type":"application/x-step" if document.kind=="ifc" else "application/octet-stream",
                             "pages":[],"metadata":{}}]
-                        document.source_files={building_id:data}
+                        document.source_files={source_hash:data}
                     for source in document.sources:
                         sid=source["source_id"]
                         source_pages=[replace(p,path=staged/"pages"/f"{p.number}.png") for p in pages if p.source_id==sid]
@@ -429,12 +430,14 @@ class BuildingStore:
         pages=[Page(p["page"],p["width"],p["height"],directory/"pages"/f'{p["source_page"]}.png',sid,p["source_page"],metadata["filename"])for p in metadata["pages"]]
         return Document(sid,metadata["filename"],pages,warnings=metadata.get("warnings",[]),source_bytes=data,sources=[metadata],source_files={sid:data},kind="ifc" if metadata["kind"]=="ifc"else"drawing")
 
-    def add_many(self, files, building_id=None):
+    def add_many(self, files, building_id=None, *, new_group_id=None):
         if not files:raise DocumentError("Choose at least one source file.")
         with self.lock:
             # Preflight before publishing any source membership, including a new batch.
             resources=[self._resource(data,name)for data,name in files]
-            existing=self.get(building_id)if building_id else None
+            target=building_id or new_group_id
+            existing=self.get(target) if target and (self.directory(target)/"CURRENT.json").exists() else None
+            if building_id and existing is None:raise DocumentError('Building not found.',404)
             identities={s['source_id']for r in resources for s in r.sources}
             if existing:identities.update(s['source_id']for s in existing.sources)
             native_incoming=any(r.kind=='ifc'for r in resources)
@@ -444,8 +447,10 @@ class BuildingStore:
             for r in resources:
                 if r.scene and r.scene.derived and not r.sources and (existing or len(files)>1):
                     raise DocumentError('This older derived IFC contains normalized pages but lacks original-file membership. Open it separately; its pages remain available for QA and additional drawing sources.',422)
-            current=existing if existing else self.add(*files[0])
-            additions=files if building_id else files[1:]
+            current=existing if existing else self.add(*files[0],group_id=new_group_id)
+            # A reserved namespace can predate its project pointer after an IO
+            # failure. A retry must append its first incoming file as well.
+            additions=files if existing is not None else files[1:]
             for data,filename in additions:
                 sid=hashlib.sha256(data).hexdigest()
                 if any(s["source_id"]==sid for s in current.sources):

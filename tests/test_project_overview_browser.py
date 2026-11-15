@@ -50,7 +50,7 @@ def test_overview_readonly_preview_rename_resume_delete_and_home_navigation(agen
     expect(page.locator("#project-chat-list [data-session-id]")).to_have_count(0)
     expect(page.locator("#chat-preview .preview-empty")).to_contain_text("Concrete")
     page.get_by_role("button",name="Home",exact=True).click()
-    expect(page.locator("#home-library-title")).to_have_text("Projects")
+    expect(page.locator("#home-library-title")).to_have_text("Buildings")
     expect(page.locator("#chat-preview")).not_to_be_visible()
     expect(page.locator("#question")).not_to_be_visible()
     assert app.state.documents.get(document.id).source_bytes==document.source_bytes

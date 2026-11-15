@@ -1,5 +1,7 @@
 # Project drawing file navigation
 
+Superseded by [Buildings, drawings and chats](BUILDINGS_SHARED_DRAWINGS.md): legacy independent groups now appear as separate flat Building entries, and the picker/arrows browse only that Building's shared group without changing chats. The file-owned session switching below records the earlier release.
+
 Click **Drawings** to expand a file picker immediately below the workspace tabs. It contains drawing-source files from the active project, including individual originals in a grouped drawing bundle. A multipage PDF remains one file entry; the existing View page controls select its pages.
 
 A wide previous chevron above the drawing and next chevron below it switch files. The buttons are disabled at the ends rather than wrapping, fit desktop/mobile and stay outside the image/annotation canvas. Escape, outside clicks and other view tabs close the picker. Supplied native IFC without drawing pages stays available through Files/3D Model; a native model can still open the picker to select other project drawings.

@@ -42,6 +42,10 @@ class NewProjectChat(ProjectName):
     building_id: str | None = None
 
 
+class NewScopedChat(ProjectName):
+    name: str = "New chat"
+
+
 class SceneRequest(StrictModel):
     page: int = Field(default=1, ge=1)
 
@@ -132,7 +136,7 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
     @application.get("/api/health")
     def health(http_request: Request):
         config = settings()
-        return {"status": "ok", "project_deletion_ready": True, "native_file_picker": native_picker_allowed(http_request) and native_picker.available(), "provider_ready": bool(config["api_key"]), "model": config["model"],
+        return {"status": "ok", "project_deletion_ready": True, "building_scopes_ready": True, "native_file_picker": native_picker_allowed(http_request) and native_picker.available(), "provider_ready": bool(config["api_key"]), "model": config["model"],
                 "interpretation_model": config["interpretation_model"], "clarification_model": config["clarification_model"],
                 "basic_model": config["basic_model"], "advanced_model": config["advanced_model"],
                 "router_model": config["router_model"], "ui_model": config["ui_model"],
@@ -164,7 +168,7 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
         try:
             access.require_editor(http_request)
             if not request.project_id or not request.session_id:
-                raise DocumentError("Open a project chat before sending. Refresh an older page to load project sessions.", 422)
+                raise DocumentError("Open a Building chat before sending. Refresh an older page to load Building chats.", 422)
             project = selected_project(http_request, request.project_id)
             session = application.state.project_chats.validate_context(project, request.session_id, request.document_id)
             document = selected_document(http_request, request.document_id, request.revision_id) if request.document_id else None
@@ -319,6 +323,7 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
                 identity=building_id or hashlib.sha256(payloads[0][0]).hexdigest()
                 existed=(store.directory(identity)/"CURRENT.json").exists()
                 before=store.get(identity) if existed else None
+                application.state.projects.require_exclusive_upload(identity)
                 previous={source["source_id"] for source in before.sources} if before else set()
                 document=store.add_many(payloads,building_id=building_id)
                 new_ids=[source["source_id"] for source in document.sources if source["source_id"] not in previous]
@@ -394,19 +399,23 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
     @application.get("/api/buildings")
     def buildings(http_request:Request):
         store = application.state.documents
-        if access.enabled:
-            examples=access.public_buildings(store)
-            private=[access.descriptor(store.get(item["building_id"])) for item in store.list()
-                     if item["building_id"]not in access.examples] if access.is_editor(http_request) else []
-            documents=examples+private
-            return {"buildings":documents,"projects":application.state.projects.catalog(documents,writable=access.is_editor(http_request)),"workspace_jobs":workspace_jobs(http_request)}
-        include_local_paths = local_paths_enabled(http_request)
-        documents = [store.get(item["building_id"]) for item in store.list()]
-        public_documents = [
-            {**document.public(), "local_file_path": store.linked_source_path(document) if include_local_paths else None}
-            for document in documents
-        ]
-        return {"buildings":public_documents,"projects":application.state.projects.catalog(public_documents,writable=True),"workspace_jobs":workspace_jobs(http_request)}
+        writable=access.is_editor(http_request)
+        # Capture bundles and their owner memberships in one store snapshot.
+        # Fetch runner-owned jobs after releasing this lock.
+        with store.lock:
+            if access.enabled:
+                examples=access.public_buildings(store)
+                private=[access.descriptor(store.get(item['building_id'])) for item in store.list()
+                         if item['building_id'] not in access.examples] if writable else []
+                documents=examples+private
+            else:
+                include_local_paths=local_paths_enabled(http_request)
+                documents=[{**document.public(), 'local_file_path':store.linked_source_path(document) if include_local_paths else None}
+                           for document in [store.get(item['building_id']) for item in store.list()]]
+            projects=application.state.projects.catalog(documents,writable=writable)
+            scopes=application.state.projects.scope_catalog(projects,documents,
+                source_free_owners=application.state.project_chats.source_free_owners() if writable else ())
+        return {'buildings':documents,'projects':projects,'building_scopes':scopes,'workspace_jobs':workspace_jobs(http_request)}
 
     @application.post("/api/projects", status_code=201)
     def create_project(request: ProjectName, http_request: Request):
@@ -414,28 +423,140 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
         return application.state.projects.create(request.name)
 
     def selected_project(http_request, identity):
-        project=next((item for item in buildings(http_request)['projects'] if item['id']==identity),None)
-        if project is None:raise DocumentError("Project not found.",404)
-        return project
+        if access.enabled and identity.startswith('example-'):
+            project=next((item for item in application.state.projects.catalog(access.public_buildings(application.state.documents),writable=False)
+                          if item['id']==identity),None)
+            if project is not None:return project
+        if not access.is_editor(http_request):raise DocumentError('Building not found.',404)
+        with application.state.documents.lock:
+            return application.state.projects.get(identity)
+
+    def scope_for_owner(project, scope_id, *, include_deleted=False):
+        store=application.state.documents
+        documents=[access.descriptor(store.get(identity)) for identity in project['building_ids']]
+        scopes=application.state.projects.scope_catalog([project],documents,
+            source_free_owners=application.state.project_chats.source_free_owners(),include_deleted=include_deleted)
+        scope=next((item for item in scopes if item['scope_id']==scope_id),None)
+        if scope is None:raise DocumentError('Building not found.',404)
+        return scope
+
+    def selected_scope(http_request, owner, scope_id, *, include_deleted=False):
+        project=selected_project(http_request,owner)
+        return project,scope_for_owner(project,scope_id,include_deleted=include_deleted)
+
+    def editable_scope(scope):
+        if scope['read_only']:raise DocumentError('This cached Building is read-only.',409)
+
+    @application.get('/api/projects/{owner}/scopes/{scope_id}/chats')
+    def scoped_chats(owner:str,scope_id:str,http_request:Request):
+        access.require_editor(http_request)
+        try:
+            project,scope=selected_scope(http_request,owner,scope_id)
+            return {'chats':application.state.project_chats.scoped_catalog(project,scope)}
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    @application.post('/api/projects/{owner}/scopes/{scope_id}/chats',status_code=201)
+    def create_scoped_chat(owner:str,scope_id:str,request:NewScopedChat,http_request:Request):
+        access.require_editor(http_request)
+        try:
+            project,scope=selected_scope(http_request,owner,scope_id)
+            record=application.state.project_chats.create(project,request.name,scope['source_group_id'])
+            return {**record,'effective_building_id':application.state.project_chats.effective_building_id(project,record)}
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    async def scoped_source_upload(http_request,owner,scope_id,uploads):
+        access.require_editor(http_request)
+        project,scope=selected_scope(http_request,owner,scope_id)
+        editable_scope(scope)
+        if not scope['upload_allowed']:raise DocumentError(scope['upload_reason'],409)
+        payloads=[(await upload.read(MAX_IFC_UPLOAD+1),upload.filename or 'Untitled source') for upload in uploads]
+        access.require_uploadable(http_request,payloads)
+        def save():
+            store=application.state.documents
+            with store.lock:
+                # Re-resolve under the lock: two first uploads join one group.
+                # Do not call buildings()/workspace_jobs here (runner lock order).
+                project=application.state.projects.get(owner)
+                scope=scope_for_owner(project,scope_id)
+                editable_scope(scope)
+                if not scope['upload_allowed']:raise DocumentError(scope['upload_reason'],409)
+                target=scope['source_group_id']
+                identity=target or application.state.projects.shared_group_id(owner)
+                existed=(store.directory(identity)/'CURRENT.json').exists()
+                previous=store.get(identity) if existed else None
+                prior_sources={source['source_id'] for source in previous.sources} if previous else set()
+                application.state.projects.require_exclusive_upload(identity)
+                document=store.add_many(payloads,building_id=target,new_group_id=None if target else identity)
+                if scope_id=='shared':project=application.state.projects.establish_shared_group(owner,document.id)
+                new_ids=[source['source_id'] for source in document.sources if source['source_id'] not in prior_sources]
+                updated_scope=scope_for_owner(project,scope_id)
+            jobs=application.state.jobs.extract(document.id,new_ids,retry=False) if new_ids and document.interpretation_status!='complete' else []
+            return {**document.public(),'is_new_upload':not existed,'added_source_ids':new_ids,
+                    'extraction_jobs':jobs,'building_scope':updated_scope}
+        return await run_in_threadpool(save)
+
+    @application.post('/api/projects/{owner}/scopes/{scope_id}/sources')
+    async def upload_scoped_sources(owner:str,scope_id:str,http_request:Request,
+        file:UploadFile|None=File(None),files:list[UploadFile]|None=File(None)):
+        uploads=([file] if file else [])+(files or [])
+        try:
+            if not uploads:raise DocumentError('Choose at least one source file.',422)
+            return await scoped_source_upload(http_request,owner,scope_id,uploads)
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+        finally:
+            for upload in uploads:await upload.close()
+
+    @application.patch('/api/projects/{owner}/scopes/{scope_id}')
+    def rename_scope(owner:str,scope_id:str,request:ProjectName,http_request:Request):
+        access.require_editor(http_request)
+        try:
+            project,scope=selected_scope(http_request,owner,scope_id);editable_scope(scope)
+            updated=application.state.projects.update_scope(owner,scope_id,name=request.name)
+            return scope_for_owner(updated,scope_id)
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    @application.delete('/api/projects/{owner}/scopes/{scope_id}')
+    def delete_scope(owner:str,scope_id:str,http_request:Request):
+        access.require_editor(http_request)
+        try:
+            project,scope=selected_scope(http_request,owner,scope_id);editable_scope(scope)
+            application.state.projects.update_scope(owner,scope_id,deleted=True)
+            return {**scope,'deleted':True}
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    @application.post('/api/projects/{owner}/scopes/{scope_id}/restore')
+    def restore_scope(owner:str,scope_id:str,http_request:Request):
+        access.require_editor(http_request)
+        try:
+            project,scope=selected_scope(http_request,owner,scope_id,include_deleted=True);editable_scope(scope)
+            updated=application.state.projects.update_scope(owner,scope_id,deleted=False)
+            return scope_for_owner(updated,scope_id)
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
 
     @application.get("/api/projects/{project_id}/chats")
     def project_chats(project_id: str, http_request: Request):
         access.require_editor(http_request)
-        try:return {"chats":application.state.project_chats.catalog(selected_project(http_request,project_id))}
+        try:
+            project=selected_project(http_request,project_id)
+            return {"chats":[application.state.project_chats.descriptor(project,r) for r in application.state.project_chats.catalog(project)]}
         except DocumentError as error:raise HTTPException(error.status,error.message) from None
 
     @application.post("/api/projects/{project_id}/chats", status_code=201)
     def create_project_chat(project_id: str, request: NewProjectChat, http_request: Request):
         access.require_editor(http_request)
-        try:return application.state.project_chats.create(selected_project(http_request,project_id),request.name,request.building_id)
+        try:
+            project=selected_project(http_request,project_id)
+            record=application.state.project_chats.create(project,request.name,request.building_id)
+            return {**record,'effective_building_id':application.state.project_chats.effective_building_id(project,record)}
         except DocumentError as error:raise HTTPException(error.status,error.message) from None
 
     @application.get("/api/projects/{project_id}/chats/{session_id}")
     def project_chat(project_id: str, session_id: str, http_request: Request):
         access.require_editor(http_request)
         try:
-            selected_project(http_request,project_id)
-            return application.state.project_chats.get(project_id,session_id)
+            project=selected_project(http_request,project_id)
+            record=application.state.project_chats.get(project_id,session_id)
+            return {**record,'effective_building_id':application.state.project_chats.effective_building_id(project,record)}
         except DocumentError as error:raise HTTPException(error.status,error.message) from None
 
     @application.patch("/api/projects/{project_id}/chats/{session_id}")
@@ -553,14 +674,14 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
             job=application.state.jobs.get(job_id)
             project=selected_project(http_request,request.project_id)
             if job['building_id'] not in project['building_ids']:
-                raise DocumentError("The task's file is not in this project.",422)
+                raise DocumentError("The task's sources are not in this Building.",422)
             if request.session_id:
                 session=application.state.project_chats.validate_context(project,request.session_id,job['building_id'])
                 if request.message_id and not any(message['id']==request.message_id and message['role']=='user'
                     and message.get('request_id')==request.request_id for message in session['messages']):
                     raise DocumentError("The initiating message is not in this chat.",422)
             elif request.message_id or request.request_id:
-                raise DocumentError("A message reference requires its project chat.",422)
+                raise DocumentError("A message reference requires its Building chat.",422)
             return application.state.jobs.set_origin(job_id,request.model_dump(exclude_none=True))
         except DocumentError as error:raise HTTPException(error.status,error.message) from None
 

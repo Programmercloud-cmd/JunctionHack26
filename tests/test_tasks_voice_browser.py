@@ -17,7 +17,8 @@ def test_tasks_group_by_project_jump_to_exact_message_and_dismiss_without_naviga
     a=app.state.projects.catalog([document.public()],writable=True)[0]
     a=app.state.projects.update(a["id"],name="Project A")
     other=app.state.documents.add(source_bytes()+b"task-other-project","other.png")
-    b=app.state.projects.create("Project B");app.state.projects.update(b["id"],add=other.id)
+    b=next(p for p in app.state.projects.catalog([document.public(),other.public()],writable=True) if other.id in p["building_ids"])
+    b=app.state.projects.update(b["id"],name="Project B")
     runner=app.state.jobs
     with runner.lock:
         pending=runner._new(other,"extraction");runner.set_origin(pending,{"project_id":b["id"]})
@@ -25,7 +26,7 @@ def test_tasks_group_by_project_jump_to_exact_message_and_dismiss_without_naviga
         runner.set_origin(complete,{"project_id":b["id"]})
     state["pause"]=True
     try:
-        page.goto(url);page.locator(f'tr[data-project-id="{a["id"]}"] .home-file').click();page.locator("#new-project-chat").click()
+        page.goto(url);page.locator(f'tr[data-project-id="{a["id"]}:{document.id}"] .home-file').click();page.locator("#new-project-chat").click()
         page.locator("#question").fill("Render my plan for project A.");page.locator("#ask-button").click()
         assert state["entered"].wait(8)
         page.wait_for_function("state.jobs.some(job=>job.kind==='render'&&job.origin?.message_id)")
@@ -35,6 +36,7 @@ def test_tasks_group_by_project_jump_to_exact_message_and_dismiss_without_naviga
         card.locator(":scope>summary").click()
         expect(page.locator("#chat-log .task-origin-focus")).to_contain_text("Render my plan for project A.")
         assert page.evaluate("state.activeProjectId")==a["id"]
+        assert page.evaluate("state.activeBuildingScopeId")==a["id"]+":"+document.id
         assert not runner.get(job["id"]).get("activity_dismissed")
         state["release"].set()
         page.wait_for_function("id=>state.jobs.some(job=>job.id===id&&job.status==='complete')",arg=job["id"])
@@ -86,8 +88,23 @@ def test_tasks_collapse_to_right_edge_and_restore_with_arrow(agent_server,scene_
 
 def voice_ready(page,url):
     from playwright.sync_api import expect
-    page.goto(url);page.locator("#file-input").set_input_files({"name":"voice.png","mimeType":"image/png","buffer":source_bytes()})
-    page.locator("#home-library-list .home-file").first.click();page.locator("#home-library-list .home-file").first.click()
+    page.goto(url);page.locator("#home-new-project").click()
+    page.locator("#project-create-name").fill("Voice Building")
+    page.locator("#project-create-form button[type=submit]").click()
+    expect(page.locator("#home-project-name")).to_have_text("Voice Building")
+    scope=page.evaluate("state.homeProjectId")
+    owner=scope.split(":")[0]
+    assert scope==owner+":shared"
+    with page.expect_file_chooser() as chooser:page.locator("#home-upload").click()
+    with page.expect_response(lambda response:response.url.endswith(f"/api/projects/{owner}/scopes/shared/sources")) as uploaded:
+        chooser.value.set_files({"name":"voice.png","mimeType":"image/png","buffer":source_bytes()})
+    assert uploaded.value.ok,uploaded.value.text()
+    group=uploaded.value.json()["document_id"]
+    page.wait_for_function("!state.busy")
+    page.locator("#new-project-chat").click()
+    page.wait_for_function("id=>!state.sessionOpening&&state.document?.document_id===id",arg=group)
+    assert page.evaluate("state.activeBuildingScopeId")==scope
+    assert page.evaluate("state.activeProjectId")==owner
     expect(page.locator("#voice-record")).to_be_enabled()
 
 

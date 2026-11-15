@@ -45,6 +45,10 @@ def setup_routes(page,scene=None):
     messages=[];requests=[];jobs=[];sessions=[]
     def handle(route):
         path=route.request.url.split('/api/',1)[1];requests.append((route.request.method,path,route.request.post_data))
+        scoped_chat='/scopes/' in path and '/chats' in path
+        scoped_group=path.split('/scopes/',1)[1].split('/',1)[0] if scoped_chat else None
+        if scoped_chat:
+            owner, rest=path.split('/scopes/',1);path=owner+'/chats'+rest.split('/chats',1)[1]
         if path=='access':data={'public_demo':False,'can_work':True,'shared_workspace':False}
         elif path=='chat/actions':
             import json
@@ -57,7 +61,7 @@ def setup_routes(page,scene=None):
             import json
             parts=path.split('/');session_id=parts[3] if len(parts)>3 else None
             if route.request.method=='POST':
-                body=json.loads(route.request.post_data);data={'id':format(len(sessions)+1,'032x'),'project_id':parts[1],'name':body.get('name','Fixture chat'),'building_id':body.get('building_id'),'created_at':time.time(),'last_active':time.time(),'messages':messages};sessions.append(data)
+                body=json.loads(route.request.post_data);data={'id':format(len(sessions)+1,'032x'),'project_id':parts[1],'name':body.get('name','Fixture chat'),'building_id':body.get('building_id',(scoped_group if scoped_group!='shared' else document['document_id']) if scoped_chat else None),'created_at':time.time(),'last_active':time.time(),'messages':messages};sessions.append(data)
             elif session_id:
                 data=next((item for item in sessions if item['id']==session_id),None)
                 if data is None:return route.fulfill(status=404,json={'detail':'Fixture chat missing'})

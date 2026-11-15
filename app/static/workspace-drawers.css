@@ -65,3 +65,7 @@
 @media(max-width:700px){.drawing-file-choice{align-items:flex-start;flex-direction:column;gap:3px}.drawing-file-choice small{white-space:normal;overflow-wrap:anywhere}.drawing-file-arrow{height:44px;min-height:44px}.drawing-file-picker{max-height:26dvh}}
 /* Error text must not prevent retrying the file controls beneath it. */
 .workspace-control-status{pointer-events:none}
+
+.building-scope-notice{color:var(--muted);font-size:12px;line-height:1.5;margin:10px 0}
+.home-files tbody th .home-file{overflow-wrap:anywhere;white-space:normal;text-align:left}
+.composer-controls:has(>#ask-button:only-child){justify-content:flex-end}
