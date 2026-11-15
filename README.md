@@ -1,93 +1,69 @@
 # Concrete
 
-Junction hackathon prototype: upload JPG/PNG/PDF/SVG/DXF drawings or a native IFC and ask reviewed questions with original evidence. Drawing uploads save source interpretation automatically; an orbitable Three.js model is an explicit optional step. Related drawings can share a building, and source-linked conversations and attributed user inputs persist locally. Inspection and concept modes share the same geometry; decorative proposals remain separate from evidence. Unknown scale stays unscaled.
+Concrete turns building drawings into an interactive workspace. Upload a floor plan, ask the Gemini vision-language model questions about what it shows, and reconstruct a schematic 3D model you can inspect alongside the original.
 
-## Quick start
+## Get started
 
-Requires Python 3.12+, curl and system Cairo for SVG/DXF preview rendering. No Node, database or cloud setup.
+- **Hosted demo.** Open the [Concrete demo](https://agentic.95.133.254.90.sslip.io/). You can browse the saved examples from **Buildings**. To upload, build a model, or ask a question, enter the demo code under **Access code** and select **Unlock workspace** if prompted. The hosted workspace is shared, so use a sample drawing or a file you can share.
+- **Local app.** Follow [Run Concrete locally](#run-concrete-locally) to use your own Gemini credentials.
+- **Sample floor plan.** Download [cubicasa5k-preview.zip](https://github.com/Programmercloud-cmd/JunctionHack26/releases/download/v0.1.0/cubicasa5k-preview.zip), unzip it, and try `cubicasa5k/colorful-11397.png`. The archive includes all 241 CubiCasa5K PNGs in the Junction preview dataset and their credits in `LICENSE.md`. The images are licensed [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).
+
+## Upload an image, build a model, and ask a question
+
+1. **Create a Building.** On **Buildings**, click **New Building**, enter a **Building name**, and click **Create Building**. This opens its overview.
+2. **Upload your floor plan.** Click **Upload drawings** and choose a PNG or JPG, or drop it in the upload area. Concrete saves the original and starts interpreting it automatically. When the filename appears under **Drawings**, click it to open the drawing and its chat. You can also start a fresh conversation with **New chat** under **Chats**.
+3. **Reconstruct it in 3D.** Select **3D Model** above the drawing, then click **Build model** in the conversation. Follow progress in **Active tasks**. Open the task card and click **Stop task** to end the job. When a model is ready, open **3D Model** to view it, drag to orbit, and scroll to zoom. Open **View settings** to choose a floor or slice the view with **Visible height**.
+4. **Ask the VLM about the original.** Type a question in **Message Concrete**, such as “What labeled spaces are shown on this drawing?” and click **Send** or press Enter. Click a citation in the answer to open the referenced region of the original. Expand **Evidence and checks** for the support review, calculations, or missing information when available. You can also ask questions while 3D reconstruction is running.
+
+Use **Building overview** to return to your drawings and saved chats. Each chat has its own history and can use the Building’s shared drawings. Switching the visible drawing keeps the same chat.
+
+## What you can do
+
+- **Inspect drawings.** Upload JPG, PNG, PDF, SVG, or DXF. Add related drawings to one Building, browse the originals with **Drawings**, and use **View settings** to switch pages in a PDF.
+- **Ask about the source.** Try visible room labels, counts, or dimensions printed on a plan. The technical answer cites drawing regions or original IFC records when the source supports the answer. Concrete can ask for clarification or identify missing evidence.
+- **Explore and export a reconstruction.** Inspect schematic floors, walls, openings, and other features derived from the drawings. Use **Concept** for a styled view or **Files** → **Download IFC** to export the model. To overlay saved geometry on the original, ask Concrete to compare the model with the drawing. Inferred geometry and dimensions can be incomplete, and unknown scale stays unscaled. Use the original drawing to verify details.
+- **Open a supplied IFC.** Upload a native IFC as its own Building to explore and ask about its original objects and properties, such as “How many windows are in this IFC model?”
+- **Mark up the view.** Open the hammer menu to **Point**, **Draw**, or **Measure** on the drawing or model, then attach a saved mark to a message. Enter measurement values and units where needed. These marks are saved as user input. [Projects and marks](docs/PROJECTS_AND_MARKS.md)
+- **Use voice.** Click the microphone to start dictating and click again to stop. Review the transcript before sending. With ElevenLabs configured, enable **Read answers aloud** to hear new replies. [Voice setup](docs/VOICE.md)
+
+## Run Concrete locally
+
+Use a Bash shell with Git, Python 3.12+, and curl. Install system Cairo if you plan to open SVG or DXF files.
 
 ```sh
+git clone --branch feat/agentic-chat https://github.com/Programmercloud-cmd/JunctionHack26.git
+cd JunctionHack26
 bash scripts/bootstrap.sh
-# Add GEMINI_API_KEY to .env.local using your editor; do not overwrite existing keys.
-# Optional model overrides are listed in .env.example.
+```
+
+In the repository root, create or edit `.env.local` and set `GEMINI_API_KEY` to your Gemini API key. Keep the key in that local file. If your account uses different model IDs, set the corresponding overrides listed in [`.env.example`](.env.example). Then start the server and open [http://127.0.0.1:8000](http://127.0.0.1:8000).
+
+```sh
 bash scripts/dev.sh
 ```
 
-Open http://127.0.0.1:8000. Uploads, previews and IFC import/viewing work without a key. Credentials stay on the server. Questions send source images or extracted IFC records to Gemini. Source interpretation and image reconstruction also use Gemini. Three.js is pinned locally; there is no rendering service or CDN dependency.
+Restart the server after editing `.env.local`. Uploads, drawing previews, and native IFC viewing work without a key. Automatic interpretation, 3D reconstruction, and answers use server-side Gemini. Drawing requests send source images to Gemini, and native IFC questions can send extracted records. Local originals, models, and chats are saved under `.runtime` by default. Run `.venv/bin/python scripts/doctor.py` to check dependencies and whether credentials are configured.
 
-## Try the two demo flows
+## Limits and troubleshooting
 
-1. Upload `duplex_arc.ifc` from the dataset's `ifc_bench` folder. Drag to orbit, scroll to zoom. Ask **How many windows are in this IFC model?** Supported source objects highlight while other elements fade to 10% opacity. Click a highlighted object or its evidence row to inspect its GlobalId, STEP reference and properties. Rooms mean supplied IFC spaces. Select supplied storeys and adjust the cutaway percentage; geometry is clipped, never shrunk.
-2. Upload unchanged `colorful-1794.png` or `colorful-11397.png`. Source interpretation starts automatically and is saved before any IFC work; questions inspect original drawings even without a model. Select **Generate 3D** to enrich missing geometry and build/reopen a derived IFC. Sections/elevations remain evidence; possible repeated floor views do not automatically create storeys. Use the conversation's citations to locate the original file/page, and inspect **Assumptions and missing inputs** before applying supplied values. User heights never establish horizontal scale or become dimensions observed in the blueprint.
+- Drawings are limited to 10 MiB each, with up to five pages per PDF. Input images over 40 megapixels are rejected. Uncompressed IFC STEP uploads are limited to 25 MiB, 4,000 render-catalog elements, and one million triangles. For DWG, export to a supported format before uploading. [Source formats](docs/SOURCE_FORMATS.md)
+- **Build model** can run multiple generation and review rounds. Each round can incur provider usage, and the render job has no total time or cost cap. Use **Stop task** to retain the last usable model and original drawings. [Rendering contract](docs/AGENTIC_CHAT_CONTRACT.md#rendering)
+- If Gemini reports an error, check your key and model access. The agentic path has separately configurable models for interpretation, routing, basic and advanced QA, UI actions, reconstruction, and support review. The doctor checks key presence only. [Model settings](.env.example)
+- For details on shared Buildings, model fidelity, or deployment, see [Buildings and shared drawings](docs/BUILDINGS_SHARED_DRAWINGS.md), [fidelity results](docs/SCHEMATIC_FIDELITY_RESULTS.md), and [agentic deployment](docs/AGENTIC_DEPLOYMENT.md).
 
-Select a file from **Home** to reopen it without inference, including after restart. Repeat uploads are recognized by content. Explicit refinement starts a new job; asking questions never reconstructs the model. See [source-first verification](docs/SOURCE_FIRST_VERIFICATION.md) and [the API contract](docs/SOURCE_FIRST_CONTRACT.md) for tested flows and remaining limitations. Genuine native IFC currently stays a separate building; mixed native/drawing grouping is explicitly rejected. DWG requires a converter that is not available here.
-
-**Concrete** opens on the project list, with previews and editable project names. Clicking a project opens its overview: **Files** above **Chats**, a rounded read-only chat preview in the middle, and Active tasks on the right. Upload/drop files here, then open a file or choose **New chat**. Each chat belongs to that project and its explicitly selected file; empty-project chats have no inherited source. Click a chat name to resume it, its eye icon to preview it, the pencil to rename it, or the red trash icon to delete it. Last-active date/time appears on each row. The home icon beside the theme selector returns to all projects. There is no chat input on the project list or in the preview. Existing saved entries and older conversations are retained. A multi-page PDF stays one file; related drawing attachments share their source group, while native IFC stays separate.
-
-Click the hammer circle at the top left of the drawing/model viewer to expand its tool palette. **Point**, **Draw** and **Measure** add user marks; measurement values and labels appear in a second row when needed. **Eraser** removes whole marks; the arrow icons **Undo** and **Redo** restore drawing/erasing actions. Undo history resets on reload, file switch or source/model revision replacement. Click an active tool again to restore camera controls and drawing scrolling. The tag icon lists saved marks; choosing one highlights its drawing, with a separate option to attach it to your next message. The fullscreen icon sits in the viewer's top-right corner. See [projects and marks](docs/PROJECTS_AND_MARKS.md) for persistence and verification details.
-
-The viewer's slim top bar contains **Drawings**, **3D Model** and **Concept**. The Files icon opens saved downloads and Import; the View icon below it holds source/page, fit and overlay controls. The arrow at the chat/viewer boundary opens supplied-value corrections and the evidence legend. Component details can collapse to their label and stay collapsed until manually reopened. Project rows have a red delete icon with Undo; deleting a project retains its saved chats, originals and models.
-
-Rendering uses one Hydrogen creator followed by two independent reviews running in parallel: three calls per valid full round. Both reviewers must support the same generated IFC before it is published; both must also be satisfied to finish. Otherwise combined feedback goes into the next creation round. Stop retains original sources and the last usable published model. See the [render contract](docs/AGENTIC_CHAT_CONTRACT.md#rendering).
-
-Drag files onto a project row to add them directly, or open its Files page and use the drop area. Multiple files become separate entries in that project. Existing format/access checks and upload deduplication also apply to dropped files.
-
-**Source comparison** overlays the actual reopened IFC footprints, wall sections and openings on the original page. Toggle layers to check missing features, invented walls and displaced openings. The interpreted inventory links every generated or unresolved record to its source; it is not a claim that every source feature was found. Stairs, furnishings and fixtures use simple schematic geometry. Terraces/balconies are outdoor spaces; room polygons never create walls.
-
-Furniture and fixtures use raised schematic blocks, tops and basin symbols with labeled assumed heights. Supported stair relationships can form continuous schematic connections; unknown rise remains an explicit display assumption. Orbit toward an overhead view to inspect features hidden behind walls. Click a **?** marker to inspect an unresolved source region; these annotations are separate from model geometry and answer highlights. A floor badge means a precise location is unavailable. See [the fidelity results](docs/SCHEMATIC_FIDELITY_RESULTS.md) for known extraction errors.
-
-**Highlight answer** and **Show assumptions** are independent controls. A scene is cached once for all pages; asking questions only updates highlights. Download its generated IFC and upload it in a fresh session: stable object IDs, original source PNGs, assumptions and provenance travel with the file. Unmapped answers keep their source evidence and do not invent a 3D selection.
-
-## Gemini setup
-
-Set `GEMINI_API_KEY` in `.env.local` and restart the server. Agentic chat routes the original message to conversation, basic technical QA, advanced technical QA, rendering, or UI interaction. Conversation/basic QA default to Gemini 3.8 Flash; advanced QA defaults to Hydrogen. `GEMINI_BASIC_MODEL`, `GEMINI_ADVANCED_MODEL`, `GEMINI_ROUTER_MODEL` and `GEMINI_UI_MODEL` configure them independently. Technical workers inspect original evidence directly, with no Decisions sufficiency preflight; Decisions remains factual support review. Both technical workers and normal conversation can call the shared UI capability. Existing model overrides in `.env.local` take precedence. The app uses Gemini regardless of any existing `AI_PROVIDER` setting.
-
-Chat rendering and **Build model** use two independent Hydrogen instances (`GEMINI_RENDER_MODEL`). Both must be satisfied with the same reopened IFC candidate before completion. Rendering has no total deadline, iteration limit, or cost cap: use **Stop** to interrupt it. Operational failures retry visibly while preserving saved sources and the last usable model. Legacy reconstruction routes retain their separate model and budgets. See [the agentic chat contract](docs/AGENTIC_CHAT_CONTRACT.md).
-
-Use **Point**, **Draw**, or **Measure** in the drawing/model workspace to attach a mark to a message. Enter measurement values and units explicitly; they remain user-provided. A blueprint measurement with an explicitly selected floor can calibrate generation. Model marks stay attached to their saved object and revision through camera/floor view changes. Original files remain unchanged; marks are saved locally and are not included in portable IFC downloads.
+## Development checks
 
 ```sh
-.venv/bin/python scripts/doctor.py
 bash scripts/test.sh
 ```
 
-Optional browser checks (real local HTTP flow with a clearly injected test provider, no Google calls):
+To run browser checks with injected providers and Chromium, install the optional browser requirements.
 
 ```sh
 .venv/bin/python -m pip install -r requirements-browser.txt
 .venv/bin/python -m playwright install chromium
-RUN_BROWSER_TESTS=1 bash scripts/test.sh tests/test_browser.py tests/test_browser_3d.py tests/test_browser_v2.py tests/test_browser_v3.py
-# Optional actual-dataset import validation:
-IFC_SAMPLE=/path/to/duplex_arc.ifc bash scripts/test.sh tests/test_ifc_import.py
+RUN_BROWSER_TESTS=1 bash scripts/test.sh tests/test_buildings_shared_browser.py tests/test_agent_e2e_browser.py
 ```
-
-Browser tests skip by default. They cover both 3D acceptance flows plus PDF/citation navigation, replacement, insufficient/unclear/error states, mobile layout, busy-state locking, and preview without credentials. The real IFC browser case requires the local duplex sample; provider calls in browser tests are explicitly injected fixtures.
-
-The bootstrap creates a local `.venv` and installs pinned `requirements.txt`. On hosts lacking ensurepip, it bootstraps pip from the official PyPA endpoint. Never install into system Python. `requirements.in` records direct dependencies; regenerate the lock in a clean project environment after intentional dependency updates.
-
-## Scope and behavior
-
-Historical Gemini compatibility diagnosis is in [GEMINI_FIX.md](docs/GEMINI_FIX.md). Existing per-call transport/output settings remain 300 seconds/65,536 output tokens per reconstruction or patch and 120 seconds/16,384 tokens per render review. The legacy reconstruction route additionally has a 900-second job budget and two patch attempts; these limits do not apply to the agentic render loop. QA has a 180-second total budget, 90 seconds per Gemini draft or correction, at most two support reviews and one correction. Budget exhaustion is operational, not proof of missing evidence. See `.env.example` and [the agentic contract](docs/AGENTIC_CHAT_CONTRACT.md).
-
-The API wire schema and necessary local validation remain separate. Invalid/ambiguous geometry stays as a source-linked unresolved record; an all-unresolved result explicitly says no 3D geometry was reconstructed. Valid walls/features do not depend on room polygons surviving. Source-based answers remain available.
-- Related JPG/PNG/PDF/SVG/DXF sources can be uploaded together or appended. Existing per-file drawing limits remain 10 MiB and, for PDF, five pages; oversized PDFs are rejected, not silently truncated. These are not whole-building page limits.
-- Uncompressed IFC STEP up to 25 MiB, 4,000 render-catalog elements and one million triangles. GlobalIds and source units are preserved; native world geometry is in metres. The shared reasoning catalog retains relevant geometry-less semantic records and original properties/relationships. Question retrieval reports coverage and omitted values. Native evidence citations open the complete pinned original record, beyond the legacy scene-property summary.
-- For genuinely supplied IFC only, whole-model counts use deterministic original semantic catalog calculations. Counts describe the uploaded model, not physical-building completeness.
-- The selected technical worker inspects evidence and answers, clarifies, or reports insufficient/unclear support. There is no separate sufficiency preflight on `/api/chat`; legacy direct QA compatibility retains its earlier contract.
-- Draft answers and refusals receive one overall post-draft support review plus deterministic reference/calculation checks. A meaningful correction may inspect new evidence, repair a bound calculation/citation or narrow unsupported claims. Reviewer agreement is not proof of correctness. See [live QA results](docs/QA_REVIEW_VERIFICATION.md).
-- Building use is not assumed residential. Preserve source labels and meaningful non-residential features; concept mode uses neutral fallbacks for uncertain uses. Unsupported sections, elevations and site plans remain source-linked unresolved views without placeholder floors.
-- Missing scale/dimensions remain unknown. Assumptions are labeled proposals, never facts about the uploaded building. Similar-building retrieval is deferred.
-- Drawing reconstruction describes explicitly depicted floors, indoor/outdoor footprints, independent physical walls/shared boundaries, hosted doors/windows, stairs, furnishings and fixtures. Every description entry survives as reconstructed, schematic or unresolved; model omissions remain possible and need source comparison. There are no extraction floor/room/vertex caps. Existing upload, IFC and provider budgets still apply. Unknown scale uses IFC `UNSCALED_DISPLAY_UNIT`, never metres; an explicitly cited physical dimension can calibrate footprints. Heights/thicknesses and missing vertical opening dimensions remain display assumptions. Unsupported alignment remains schematic. Generated IFC preserves explicit storey elevations (display assumptions when unknown); exploded view adds separate viewer spacing.
-- Generated IFC is derived visualization, never authoritative evidence—even after reopening. It embeds original normalized source PNGs and a validated provenance manifest, including the exact description used by the generator. V5 also preserves original source files when available; legacy artifacts may retain only normalized source pages, without recoverable original bytes. Missing originals are never fabricated. QA inspects those originals; generated inventory, dimensions and assumed heights do not enter factual context. Invalid or contradictory recognizable generated metadata is rejected rather than reclassified as supplied IFC. This is consistency validation, not cryptographic authenticity.
-- API/configuration errors are displayed as operational errors, never as evidence insufficiency. No hidden fixture mode or provider fallback.
-
-This is a local hackathon app, not a production service. Bind to loopback. It has no authentication or durable database. Runtime files are ignored by Git. See the API contract for exact source handling and limits.
-
-Uploads are normalized to PNG with a maximum 4096-pixel edge (input images over 40 megapixels are rejected). Versioned bundles persist under `.runtime/buildings` or `BLUEPRINT_STORAGE_ROOT/buildings`: originals, pages, exact descriptions/native records, reasoning, IFC, viewer geometry, identities/frames and review/job metadata. A single application process owns the store. Restart marks unfinished jobs interrupted and reopens saved models without inference. Initial provider images use a 1600-pixel edge; fine text can remain unreadable. Neither normalization nor server arithmetic guarantees correct source interpretation.
-
-## For subsequent agents
-
-Read [AGENTS.md](AGENTS.md), [the active source-first specification](docs/SOURCE_FIRST_SPEC.md), [reviewed plan](docs/SOURCE_FIRST_PLAN.md), [API contract](docs/SOURCE_FIRST_CONTRACT.md), and [handoff](docs/HANDOFF.md). Root owns contracts/environment/integration; bounded implementers and independent reviewers follow the established workflow. Tests use injected providers and are not a model-quality evaluation. DWG without a validated converter, photorealism, Blender/MCP and cloud/HPC rendering remain deferred. SVG and DXF previews are supported with the documented limitations.
 
 ## Counting benchmark
 
@@ -102,9 +78,3 @@ The default run samples three PDF and three PNG counting questions and scores ex
 The benchmark uploads the originals to an isolated app store, waits for interpretation, and runs chat routing and QA. The terminal shows model-call progress, separate upload and question timings, and scores. The run directory printed at startup contains the sample manifest and per-case results.
 
 For the two-call experiment, add `--pipeline interpretation-only`. It samples ten questions per group (PDF count, PNG count, PDF length, and PDF area). Gemini 4 Hydrogen builds a question-independent interpretation from each original drawing, then receives the saved `interpretations.json` and exact question to produce a structured numeric answer. The second call uses the JSON as its evidence. This mode skips chat routing, intent resolution, Gemini Decisions, and answer review. Its run directory includes `results.html` with a combined counting score and per-case results.
-
-## Voice interaction
-
-The microphone icon beside the prompt starts muted. Click to start dictating and click again to stop, then review and edit the transcript before sending. Enable **Read answers aloud** beside the microphone to hear new answers via ElevenLabs. See [voice setup](docs/VOICE.md).
-
-Peer-review access for the separate agentic deployment: `bash scripts/peer-review-access.sh status`. The one-time Helsinki window and immediate code restoration command are documented in [AGENTIC_DEPLOYMENT.md](docs/AGENTIC_DEPLOYMENT.md#peer-review-access-window).
