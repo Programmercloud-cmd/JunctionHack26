@@ -79,9 +79,9 @@ Detailed runtime/browser reports and screenshots are local under `/tmp/junction-
 
 ## Peer-review access window
 
-The user initially requested 09:30–14:00, confirmed an extension to 14:30, then extended peer review until 22:00 tonight. The current one-time window is **Sunday 15 November 2026, 09:30–22:00 Europe/Helsinki** (07:30–20:00 UTC): code-free shared-workspace access opens at 09:30 inclusive, and the access code is required again at 22:00. Any visitor during the window has the existing code-holder visibility/actions, including saved uploads and chats. The nine pinned examples remain read-only. Existing code-holder cookies remain valid after the window; previously accepted jobs continue under their normal Stop/consensus policy.
+**Access code required now.** The user canceled the peer-review window on 15 November 2026. The persisted policy is `code`; anonymous public HTTPS verification reports `access_code_required=true`, `can_work=false`, `shared_workspace=false` and no scheduled access window. Independent read-only verification passed. No restart or paid inference was needed.
 
-**22:00 extension verified (15 November, 11:20 UTC).** The persisted policy and anonymous public HTTPS status both report the original 07:30 UTC opening and new 20:00 UTC closing/next transition. The existing policy evaluator requires the code at exactly 22:00 Helsinki. Both application processes retained their PIDs; no restart or paid inference was needed. Earlier verification timestamps below describe the previous schedules.
+Previously, the same-day window was extended from 09:30–14:00 to 14:30 and then 22:00 Europe/Helsinki (07:30–20:00 UTC). Those schedules are canceled. Existing code-holder cookies remain valid; previously accepted jobs continue under their normal Stop/consensus policy. The nine pinned examples remain read-only. Earlier verification timestamps below describe the previous schedules.
 
 The operator-owned `/etc/blueprint-agentic/access-mode` policy is read on requests, so opening and closing need no app restart, cron job or running assistant. The one-time JSON policy has aware opening/closing timestamps. A missing, unreadable or invalid configured file requires the code. `BLUEPRINT_PUBLIC_DEMO=1` stays enabled so source pins, read-only guards and same-origin checks remain active. The code verifier and session secret are retained.
 
