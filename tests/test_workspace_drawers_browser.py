@@ -14,7 +14,7 @@ pytestmark=pytest.mark.skipif(os.getenv("RUN_BROWSER_TESTS")!="1",reason="opt-in
 def test_slim_tabs_files_view_and_evidence_drawers_keep_existing_operations(static_server,scene_page):
     from playwright.sync_api import expect
     page=scene_page;document,scene,calls,pending=chat_fixture(page,static_server)
-    expect(page.locator("#workspace-navigation button")).to_have_text(["Drawings","3D Model","Concept"])
+    expect(page.locator("#workspace-navigation .workspace-nav-buttons button")).to_have_text(["Drawings","3D Model","Concept"])
     expect(page.locator(".workspace-caption")).not_to_be_visible()
     expect(page.locator("#workspace-tools")).not_to_be_visible()
     expect(page.locator("#workspace-download-ifc")).not_to_be_visible()

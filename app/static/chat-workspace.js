@@ -676,7 +676,8 @@
     }catch(error){if(sameDocument(context))note(error.message,pending);}
     finally{projectLibrary?.onChatSaved(context.project_id);syncControls();changed();}
   }
-  async function openSession(project,session){
+  async function openSession(project,session,options={}){
+    if(options.isCurrent&&!options.isCurrent())return false;
     voice?.cancelAll();invalidate();state.sessionEpoch=(state.sessionEpoch||0)+1;
     const token=state.sessionEpoch;state.sessionOpening=true;window.blueprintAnnotations?.detach();
     state.activeProjectId=project.id;state.activeSessionId=session.id;
@@ -688,7 +689,10 @@
     $("live-chat-title").textContent=session.name;ui.activeTab="details";
     try{
       if(session.building_id){
-        if(session.building_id!==state.document?.document_id)await openBuilding(session.building_id,"source");
+        if(options.document){
+          const current=()=>token===state.sessionEpoch&&state.activeProjectId===project.id&&state.activeSessionId===session.id&&ui.activeTab==="details";
+          if(!await activateDocument(options.document,"source",options.prepared,current))return false;
+        }else if(session.building_id!==state.document?.document_id)await openBuilding(session.building_id,"source");
         else onDocument(state.document,"source");
         if(token!==state.sessionEpoch)return;
         if(state.document?.document_id!==session.building_id)throw new Error("This chat's file could not be opened. Reopen it from the project overview.");
@@ -698,16 +702,22 @@
         clearScene();ui.view_mode="chat";$("attachment-summary").hidden=true;
         await refreshConversation();
       }
-      if(token===state.sessionEpoch){ui.activeTab="details";if(state.document)renderJobs();}
+      if(token===state.sessionEpoch&&ui.activeTab==="details"&&state.document)renderJobs();
     }catch(error){if(token===state.sessionEpoch){state.activeSessionId=null;projectLibrary.showFiles(project);}throw error;}
     finally{if(token===state.sessionEpoch){state.sessionOpening=false;syncControls();changed();}}
-    if(token===state.sessionEpoch)$("question").focus();
+    if(token===state.sessionEpoch&&ui.activeTab==="details")$("question").focus();
+    return token===state.sessionEpoch&&ui.activeTab==="details";
   }
-  async function openReadOnlyFile(project,id){
+  async function openReadOnlyFile(project,id,options={}){
+    if(options.isCurrent&&!options.isCurrent())return false;
     voice?.cancelAll();invalidate();state.sessionEpoch=(state.sessionEpoch||0)+1;state.activeProjectId=project.id;state.activeSessionId=null;ui.documentId=null;window.blueprintAnnotations?.detach();
     for(const key of [...ui.entries.keys()])removeEntry(key);
-    if(id!==state.document?.document_id)await openBuilding(id,"source");else onDocument(state.document,"source");
-    ui.activeTab="details";syncControls();changed();
+    if(options.document){
+      const token=state.sessionEpoch;ui.activeTab="details";
+      const current=()=>token===state.sessionEpoch&&state.activeProjectId===project.id&&!state.activeSessionId&&ui.activeTab==="details";
+      try{if(!await activateDocument(options.document,"source",options.prepared,current))return false;}finally{if(token===state.sessionEpoch)state.sessionOpening=false;}
+    }else if(id!==state.document?.document_id)await openBuilding(id,"source");else onDocument(state.document,"source");
+    ui.activeTab="details";syncControls();changed();return true;
   }
   // Reuse the operation adapters without exposing the former toolbar/settings UI.
   $("composer-slot").append($("question-form"));

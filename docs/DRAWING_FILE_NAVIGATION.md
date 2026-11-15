@@ -1,0 +1,13 @@
+# Project drawing file navigation
+
+Click **Drawings** to expand a file picker immediately below the workspace tabs. It contains drawing-source files from the active project, including individual originals in a grouped drawing bundle. A multipage PDF remains one file entry; the existing View page controls select its pages.
+
+A wide previous chevron above the drawing and next chevron below it switch files. The buttons are disabled at the ends rather than wrapping, fit desktop/mobile and stay outside the image/annotation canvas. Escape, outside clicks and other view tabs close the picker. Supplied native IFC without drawing pages stays available through Files/3D Model; a native model can still open the picker to select other project drawings.
+
+Cross-building navigation resumes or creates the target file's own project chat. Grouped source files retain their shared building/chat. No session is rebound to a different building. Metadata and the selected first source image are staged before committing the new project/file/session/page; canceled or failed loads retain the prior file, chat and marks. Home cancels pending navigation, old answers stay in their originating session, and exact read-only source revisions remain pinned. A different-file commit clears the old assumption rows/source choices before the new ancillary request, so a failure cannot display old-file values under the new file.
+
+Navigation starts no inference or reconstruction. Chat/session/active-file metadata may be saved through the existing authorized project paths.
+
+Six new real-HTTP/synthetic-provider browser cases cover project-only choices and owned sessions, PDF file/page separation, failed/canceled image loading, late old-chat answers, native/pinned navigation, mobile arrow bounds and stale assumption cleanup. Nineteen focused existing/new checks passed, followed by the added assumption failure case and affected drawer rerun. The independent reviewer passed all six final navigation cases and 21 broader browser checks, and reviewed desktop/mobile screenshots. These fixtures establish UI/backend behavior rather than live inference.
+
+Final committed-snapshot and public verification results are recorded in the deployment handoff after publication. An unrelated concurrent `styles.css` focus-outline edit is preserved locally and excluded from this change/release.

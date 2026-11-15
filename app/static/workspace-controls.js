@@ -99,11 +99,31 @@
   async function act(action){showStatus("");try{await chatUI.execute(action);}catch(error){showStatus(error.message);}finally{refresh();}}
   function control(label,action,id){const b=node("button",label);b.type="button";if(id)b.id=id;b.addEventListener("click",()=>act(typeof action==="function"?action():action));return b;}
   const tabs=node("div",null,"workspace-nav-buttons");
-  const sources=control("Drawings",{type:"browse_source"},"workspace-blueprints");
+  const sources=node("button","Drawings");sources.id="workspace-blueprints";sources.type="button";
+  const drawingPicker=node("section",null,"drawing-file-picker");drawingPicker.id="drawing-file-picker";drawingPicker.hidden=true;drawingPicker.setAttribute("aria-label","Project drawings");
+  sources.setAttribute("aria-controls",drawingPicker.id);sources.setAttribute("aria-expanded","false");
+  function setDrawingPicker(open){drawingPicker.hidden=!open;sources.setAttribute("aria-expanded",String(open));}
+  sources.addEventListener("click",async()=>{
+    const open=drawingPicker.hidden;showStatus("");
+    try{if(open)showEvidence(false);if(state.document?.pages?.length&&chatUI.snapshot().view_mode!=="source")await chatUI.execute({type:"browse_source"});}
+    catch(error){showStatus(error.message);}finally{refresh();setDrawingPicker(open);}
+  });
+  document.addEventListener("click",event=>{if(!drawingPicker.hidden&&!drawingPicker.contains(event.target)&&!sources.contains(event.target))setDrawingPicker(false);});
+  document.addEventListener("keydown",event=>{if(event.key==="Escape"&&!drawingPicker.hidden){setDrawingPicker(false);sources.focus();}});
+  async function inspectDrawing(key){showStatus("");setDrawingPicker(false);try{await projectLibrary.inspectDrawing(key);}catch(error){showStatus(error.message);}finally{refresh();}}
+  function fileArrow(id,label,path){const b=iconControl(label,id,path);b.className="drawing-file-arrow";b.querySelector("svg").setAttribute("preserveAspectRatio","none");b.addEventListener("click",()=>{
+    const files=projectLibrary.drawingFiles(),index=currentDrawingIndex(files),offset=id==="drawing-previous-file"?-1:1;
+    if(index>=0&&files[index+offset])inspectDrawing(files[index+offset].key);
+  });return b;}
+  const previousFile=fileArrow("drawing-previous-file","Previous drawing file","m17 3-12 9 12 9");
+  const nextFile=fileArrow("drawing-next-file","Next drawing file","m7 3 12 9-12 9");
+  $("drawing-pane").insertBefore(previousFile,$("viewer"));$("drawing-pane").append(nextFile);
+  function currentDrawingIndex(files){const view=chatUI.sourceView(),page=view.pages.find(item=>item.page===view.page);return files.findIndex(item=>item.building_id===state.document?.document_id&&(item.source_id||null)===(page?.source_id||null));}
+
   const model=control("3D Model",{type:"switch_model"},"workspace-model");
   const concept=control("Concept",{type:"switch_concept"},"workspace-concept");
   const selection=control("Return to selection",{type:"return_selection"},"workspace-return-selection");
-  tabs.append(sources,model,concept);navigation.append(tabs);
+  tabs.append(sources,model,concept);navigation.append(tabs,drawingPicker);
   const actions=node("div",null,"workspace-actions");
   const attach=control("Import",{type:"attach_sources"},"workspace-attach-sources");
   const exportIfc=control("Download IFC",{type:"download_ifc"},"workspace-download-ifc");
@@ -223,11 +243,11 @@
     if(!(record.properties?.length||record.assumptions?.length))details.append(node("p","No additional property evidence is stored for this object. Missing provenance does not establish a fact.","property-basis"));
     details.append(node("p",`Stable object ID: ${record.id}`,"selection-source"));summary.append(details);
   }
-  let controlsVisit=null;
+  let controlsVisit=null,controlsView=null;
   function refresh(){
     if(!window.chatUI)return;const snap=chatUI.snapshot();navigation.hidden=!state.document;
     const visit=JSON.stringify([state.document?.document_id,state.activeSessionId]);
-    if(visit!==controlsVisit){controlsVisit=visit;showEvidence(false);showStatus("");nativeRecord.replaceChildren();nativeRecord.hidden=true;for(const [button,panel]of panels){panel.hidden=true;button.setAttribute("aria-expanded","false");}}
+    if(visit!==controlsVisit){controlsVisit=visit;showEvidence(false);setDrawingPicker(false);showStatus("");nativeRecord.replaceChildren();nativeRecord.hidden=true;for(const [button,panel]of panels){panel.hidden=true;button.setAttribute("aria-expanded","false");}}
     actions.hidden=!state.document;inputs.hidden=!state.document||state.document.kind==="ifc";
     attach.disabled=!state.document||Boolean(state.document.read_only_model)||Boolean(state.busy)||Boolean(state.taskAccess?.public_demo&&!state.taskAccess.can_work);
     exportIfc.disabled=!state.document?.has_scene;
@@ -238,7 +258,26 @@
     sourceFiles.hidden=sourceFiles.options.length<2;exportSource.disabled=!sourceFiles.value;
     try{const choice=localStorage.getItem("blueprint-theme");if(["system","light","dark"].includes(choice))theme.value=choice;}catch{}
     sources.setAttribute("aria-pressed",String(snap.view_mode==="source"));model.setAttribute("aria-pressed",String(snap.view_mode==="model"));
-    sources.title=state.document?.pages?.length?"Supplied drawings":"Original IFC records";
+    sources.title=state.document?.pages?.length?"Choose a drawing from this project":"Original IFC records";
+    if(controlsView!==snap.view_mode){controlsView=snap.view_mode;setDrawingPicker(false);}
+    const drawingFiles=window.projectLibrary?.drawingFiles()||[],drawingIndex=currentDrawingIndex(drawingFiles),drawingBusy=Boolean(window.projectLibrary?.drawingBusy()||state.busy||state.sessionOpening);
+    sources.disabled=model.disabled=drawingBusy;concept.disabled=drawingBusy||!state.scene?.elements.some(e=>e.geometry);
+    const drawingSignature=JSON.stringify([drawingFiles,drawingIndex,drawingBusy]);
+    if(drawingPicker.dataset.catalog!==drawingSignature){
+      drawingPicker.dataset.catalog=drawingSignature;drawingPicker.replaceChildren();
+      if(!drawingFiles.length)drawingPicker.append(node("p","No drawing pages in this project. Use Files or 3D Model to inspect supplied IFC files.","drawing-picker-empty"));
+      for(const [index,file]of drawingFiles.entries()){
+        const choice=node("button",null,"drawing-file-choice");choice.type="button";choice.dataset.drawingKey=file.key;choice.disabled=drawingBusy;
+        choice.setAttribute("aria-current",index===drawingIndex?"true":"false");choice.title=file.filename;
+        choice.append(node("span",file.filename),node("small",`${file.pages.length} ${file.pages.length===1?"page":"pages"}${file.building_filename!==file.filename?` · ${file.building_filename}`:""}`));
+        choice.addEventListener("click",()=>inspectDrawing(file.key));drawingPicker.append(choice);
+      }
+    }
+    previousFile.hidden=nextFile.hidden=snap.view_mode!=="source"||!drawingFiles.length;
+    previousFile.disabled=drawingBusy||drawingIndex<=0;nextFile.disabled=drawingBusy||drawingIndex<0||drawingIndex===drawingFiles.length-1;
+    previousFile.title=drawingIndex>0?`Previous drawing: ${drawingFiles[drawingIndex-1].filename}`:"First drawing file";
+    nextFile.title=drawingIndex>=0&&drawingIndex<drawingFiles.length-1?`Next drawing: ${drawingFiles[drawingIndex+1].filename}`:"Last drawing file";
+
     selection.disabled=!(snap.focused_id?state.viewer?.meshes.has(snap.focused_id):snap.selected_ids.some(id=>state.viewer?.meshes.has(id)));
     selection.title=selection.disabled?"No renderable selection. Use Show in original for source-only objects.":"Frame the current selection without changing its source";
     checks.answer_highlights.checked=snap.answer_highlighting;checks.navigation_highlights.checked=snap.highlighting;checks.assumptions.checked=snap.show_assumptions;

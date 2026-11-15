@@ -199,13 +199,13 @@ async function refreshSavedBuildings() {
   finally{state.savedBuildingsLoaded = true;$("refresh-buildings").disabled=false;updateControls();
     if(state.workspaceJobs?.some(job=>!terminalJob(job))){if(progressiveDocument())schedulePoll(0);else state.workspacePollTimer=setTimeout(refreshSavedBuildings,1000);}}
 }
-async function activateDocument(result, workspaceMode = null) {
-  // Preload the initial view before replacing the building. Keep the old
-  // drawing and model if an original or saved scene cannot be retrieved.
+async function prepareDocument(result, workspaceMode = null, sourcePage = null) {
+  // File navigation stages the chosen original before committing its chat/view.
   const sceneUrl=result.scene_url||(result.kind==="ifc"?`/api/documents/${result.document_id}/scene`:null);
   let stagedScene=null,stagedSceneError=null;
   if(workspaceMode){
-    const page=result.pages?.[0];
+    const page=sourcePage==null?result.pages?.[0]:result.pages?.find(item=>item.page===sourcePage);
+    if(sourcePage!=null&&!page)throw new Error("The selected source page is no longer available. Your previous view is still open.");
     if(page&&(workspaceMode==="source"||!sceneUrl)){
       const url=new URL(page.image_url,location.origin);
       if(url.origin!==location.origin)throw new Error("The page preview URL is invalid.");
@@ -217,8 +217,16 @@ async function activateDocument(result, workspaceMode = null) {
       catch(error){if(!page||workspaceMode!=="source")throw error;stagedSceneError=error;}
     }
   }
+  return {sceneUrl,stagedScene,stagedSceneError,sourcePage};
+}
+async function activateDocument(result, workspaceMode = null, prepared = null, isCurrent = null) {
+  const staged=prepared||await prepareDocument(result,workspaceMode);
+  if(isCurrent&&!isCurrent())return false;
+  const {sceneUrl,stagedScene,stagedSceneError,sourcePage}=staged;
+  const documentChanged=state.document?.document_id!==result.document_id;
   clearTimeout(state.pollTimer);state.epoch++;state.jobs=result.jobs || [];state.questionRequest=null;state.askSubmitting=false;state.reconstructionSubmitting=false;
-  clearScene();state.document=result;voice?.newDocument(result.document_id);state.pageIndex=0;state.conversation=[];state.clarificationReply=null;state.assumptionEdits.clear();state.evidenceRevision=null;resetAnswer();setError("building-poll-error");
+  clearScene();state.document=result;voice?.newDocument(result.document_id);state.pageIndex=Math.max(0,(result.pages||[]).findIndex(page=>page.page===sourcePage));state.conversation=[];state.clarificationReply=null;state.assumptionEdits.clear();state.evidenceRevision=null;resetAnswer();setError("building-poll-error");
+  if(documentChanged){state.assumptionRows=[];state.assumptionsRevision=null;state.assumptionDataRevision=null;renderAssumptions();setError("assumption-error");}
   $("filename").textContent=result.filename;$("filename").title=result.filename;
   $("page-count").textContent=result.kind==="ifc"?"IFC model":`${result.pages.length} ${result.pages.length===1?"page":"pages"}`;
   $("document-warnings").textContent=(result.warnings || []).join(" ");$("document-warnings").hidden=!$("document-warnings").textContent;
@@ -233,10 +241,12 @@ async function activateDocument(result, workspaceMode = null) {
     suggestions[1].dataset.question="What dimensions are explicitly shown?";suggestions[1].textContent="Inspect dimensions";
     if(stagedScene||(!workspaceMode&&sceneUrl))await loadScene(stagedScene||await request(sceneUrl));
   }
+  if(isCurrent&&!isCurrent())return false;
   renderSourceList();renderBuildingStatus();renderJobs();updateControls();
   window.chatUI?.onDocument(result,workspaceMode);
   if(stagedSceneError)setError("scene-error",stagedSceneError.message);
-  if(progressiveDocument()){await Promise.allSettled([refreshConversation(),refreshAssumptions()]);schedulePoll(0);}
+  if(progressiveDocument()){await Promise.allSettled([refreshConversation(),refreshAssumptions()]);if(!isCurrent||isCurrent())schedulePoll(0);}
+  return !isCurrent||isCurrent();
 }
 async function openBuilding(id, workspaceMode = null) {
   if(!id||state.busy)return;

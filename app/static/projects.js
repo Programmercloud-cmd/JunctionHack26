@@ -39,12 +39,56 @@
     state.activeProjectId=p.id;
     if(!p.read_only&&p.id.length===32){const next=await request(`/api/projects/${p.id}/active-file/${id}`,{method:"PUT"});Object.assign(p,next);Object.assign(project(p.id)||p,next);}
   }
-  async function openFile(p,id){
-    await remember(p,id);
-    if(!canWork())return chatUI.openReadOnlyFile(p,id);
+  async function openFile(p,id,options={}){
+    if(options.isCurrent&&!options.isCurrent())return false;
+    if(!options.document)await remember(p,id);
+    if(!canWork())return chatUI.openReadOnlyFile(p,id,options);
     const saved=await request(`/api/projects/${p.id}/chats`);
+    if(options.isCurrent&&!options.isCurrent())return false;
     const session=saved.chats.find(item=>item.building_id===id)||await request(`/api/projects/${p.id}/chats`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({building_id:id})});
-    return openChat(p,session);
+    if(options.isCurrent&&!options.isCurrent())return false;
+    const opened=await openChat(p,session,options);
+    if(options.document&&opened&&state.activeProjectId===p.id&&state.document?.document_id===id&&!chatUI.isHome())await remember(p,id);
+    return opened;
+  }
+  let drawingPending=false;
+  function drawingFiles(){
+    const p=project(state.activeProjectId);if(!p)return [];
+    const files=[];
+    for(const id of p.building_ids||[]){
+      const doc=id===state.document?.document_id?state.document:state.savedBuildings.find(item=>(item.building_id||item.document_id)===id);
+      const pages=doc?.pages||[];if(!pages.length)continue;
+      const sourceIds=[...new Set([...(doc.sources||[]).map(source=>source.source_id),...pages.map(page=>page.source_id||null)])];
+      for(const sourceId of sourceIds){
+        const sourcePages=pages.filter(page=>(page.source_id||null)===sourceId);if(!sourcePages.length)continue;
+        const source=(doc.sources||[]).find(item=>item.source_id===sourceId);
+        files.push({key:`${id}:${sourceId||"original"}`,building_id:id,source_id:sourceId,
+          filename:source?.filename||sourcePages[0].source_filename||doc.filename,
+          building_filename:doc.filename,pages:sourcePages,revision_id:doc.revision_id});
+      }
+    }
+    return files;
+  }
+  async function inspectDrawing(key){
+    if(drawingPending||pending||state.busy||state.sessionOpening)return false;
+    const p=project(state.activeProjectId),file=drawingFiles().find(item=>item.key===key);
+    if(!p||!file)return false;
+    chatUI.invalidateNavigation();
+    const captured={project:p.id,session:state.activeSessionId,sessionEpoch:state.sessionEpoch,documentEpoch:state.epoch,navigationEpoch:chatUI.snapshot().navigation_epoch};
+    const current=()=>!chatUI.isHome()&&state.activeProjectId===captured.project&&state.activeSessionId===captured.session&&state.sessionEpoch===captured.sessionEpoch&&state.epoch===captured.documentEpoch&&chatUI.snapshot().navigation_epoch===captured.navigationEpoch&&Boolean(project(p.id)?.building_ids.includes(file.building_id));
+    drawingPending=true;pending=true;state.sessionOpening=true;chatUI.syncControls();refresh();window.dispatchEvent(new CustomEvent("blueprint:workspace"));
+    try{
+      if(file.building_id===state.document?.document_id){
+        return await chatUI.execute({type:"browse_source",page:file.pages[0].page,source_revision_id:state.document.revision_id});
+      }
+      const doc=await request(`/api/buildings/${file.building_id}`);
+      if(doc.document_id!==file.building_id||!Array.isArray(doc.pages))throw new Error("That file could not be opened. Your previous view is still open.");
+      const page=(doc.pages||[]).find(item=>(item.source_id||null)===file.source_id);
+      if(!page)throw new Error("That drawing is no longer available. Your previous view is still open.");
+      const prepared=await prepareDocument(doc,"source",page.page);
+      if(!current())return false;
+      return await openFile(p,file.building_id,{document:doc,prepared,isCurrent:current});
+    }finally{drawingPending=false;pending=false;if(state.sessionEpoch===captured.sessionEpoch)state.sessionOpening=false;chatUI.syncControls();refresh();window.dispatchEvent(new CustomEvent("blueprint:workspace"));}
   }
   function openProject(p){showFiles(p);}
 
@@ -120,9 +164,9 @@
     else for(const message of record.messages)previewContent.append(previewTurn(message,record));
     renderChats(p);
   }
-  async function openChat(p,session){
+  async function openChat(p,session,options={}){
     if(session.building_id&&!p.building_ids.includes(session.building_id))throw new Error("This chat's file was removed from the project. You can still preview the saved conversation.");
-    return chatUI.openSession(p,session);
+    return chatUI.openSession(p,session,options);
   }
   async function trackTask(job,scope){
     if(!scope?.project_id||job.origin)return job;
@@ -217,7 +261,7 @@
   back.addEventListener("click",showProjects);$("home-tab").addEventListener("click",()=>{state.homeProjectId=null;editing=null;refresh();});
   $("home-undo-remove").addEventListener("click",async()=>{if(!removed||pending)return;pending=true;const item=removed;try{await request(`/api/projects/${item.project_id}/files/${item.document.building_id||item.document.document_id}`,{method:"PUT"});removed=null;await refreshSavedBuildings();report("File restored to project.");}catch(error){report(error.message);}finally{pending=false;refresh();}});
   $("home-undo-project").addEventListener("click",async()=>{if(!deletedProject||pending)return;pending=true;refresh();try{await request(`/api/projects/${deletedProject.id}/restore`,{method:"POST"});deletedProject=null;await refreshSavedBuildings();report("Project restored with its files and chats.");}catch(error){report(error.message);}finally{pending=false;refresh();}});
-  window.projectLibrary={refresh,showFiles,showProjects,openFile,openTask,trackTask,
+  window.projectLibrary={refresh,showFiles,showProjects,openFile,openTask,trackTask,drawingFiles,inspectDrawing,drawingBusy:()=>drawingPending,
     openBuilding:async id=>{let p=project(state.activeProjectId);if(!p?.building_ids.includes(id))p=(state.projects||[]).find(item=>item.building_ids.includes(id));if(!p)throw new Error("Choose the project that owns this file.");return openFile(p,id);},
     onChatSaved:id=>{if(chatScope?.startsWith(id+":"))chatScope=null;},fileUploaded:async(result,id)=>{await request(`/api/projects/${id}/files/${result.building_id||result.document_id}`,{method:"PUT"});for(const job of result.extraction_jobs||[])await trackTask(job,{project_id:id});}};
   document.querySelector(".chat-brand").addEventListener("click",event=>{if(event.defaultPrevented)showProjects();});
