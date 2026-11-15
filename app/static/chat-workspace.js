@@ -2,8 +2,9 @@
 "use strict";
 (() => {
   const log = $("chat-log"), scroll = $("chat-scroll");
-  const homeTab = $("home-tab"), detailsTab = $("details-tab");
+  const homeTab = $("home-tab");
   const debugQuestionJobs = new Set();
+  const conversationHistory = [];
   const ui = {documentId:null, activeTab:"home", view_mode:"chat", selected_ids:[], focused_id:null, geometry_revision_id:null,
     navigation_epoch:0, highlighting:true, answer_highlighting:true, show_assumptions:false,
     tour:{ids:[],index:-1,running:false}, timer:null, camera:null, entries:new Map(), clarification:null,
@@ -12,20 +13,24 @@
   const element = (tag, text, className) => {const node=document.createElement(tag);if(text!=null)node.textContent=text;if(className)node.className=className;return node;};
   const button = (label, fn, className="chat-inline-button") => {const node=element("button",label,className);node.type="button";node.addEventListener("click",()=>Promise.resolve(fn()).catch(error=>note(error.message,"error:"+crypto.randomUUID())));return node;};
   const jsonPost = (path,data) => request(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)});
+  const nearBottom = () => scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight < 48;
+  function followChat(follow){if(follow)requestAnimationFrame(()=>{scroll.scrollTop=scroll.scrollHeight;});}
   function entry(key,role="assistant") {
     if(ui.entries.has(key))return ui.entries.get(key);
+    const follow=nearBottom();
     const node=element("article",null,`chat-turn chat-${role}`);node.dataset.entry=key;
-    node.append(element("p",role==="user"?"You":"Blueprint","chat-role"));log.append(node);ui.entries.set(key,node);
+    node.append(element("p",role==="user"?"You":"Concrete","chat-role"));log.append(node);ui.entries.set(key,node);
     // Provider setup is status, not a conversation: cached buildings must stay
     // discoverable before a document is open even when inference is unavailable.
-    if(key!=="provider-setup" && (ui.activeTab === "details" || !key.startsWith("job:")))scroll.scrollTop=scroll.scrollHeight;
+    if(key!=="provider-setup" && (ui.activeTab === "details" || !key.startsWith("job:")))followChat(follow);
     return node;
   }
   function removeEntry(key){ui.entries.get(key)?.remove();ui.entries.delete(key);}
   function note(message,key="note:"+crypto.randomUUID(),actions=[]){
-    const node=entry(key),signature=JSON.stringify([message,actions]);if(node.dataset.note===signature)return node;node.dataset.note=signature;node.replaceChildren(element("p","Blueprint","chat-role"),element("p",message));
+    const follow=nearBottom();
+    const node=entry(key),signature=JSON.stringify([message,actions]);if(node.dataset.note===signature)return node;node.dataset.note=signature;node.replaceChildren(element("p","Concrete","chat-role"),element("p",message));
     if(actions.length){const controls=element("div",null,"chat-actions");for(const [label,action] of actions)controls.append(button(label,()=>local(action)));node.append(controls);}
-    if(key!=="provider-setup")scroll.scrollTop=scroll.scrollHeight;return node;
+    if(key!=="provider-setup")followChat(follow);return node;
   }
   function changed(){window.dispatchEvent(new CustomEvent("blueprint:workspace"));}
   function inspection(){return ui.inspection?clone(ui.inspection):null;}
@@ -34,8 +39,8 @@
     const pages=catalog?.pages||state.document?.pages||[];
     return clone({pages,revision_id:catalog?.revision_id||state.document?.revision_id||null,page:pages[state.pageIndex]?.page??pages[0]?.page??null});
   }
-  function contextNow(){return {epoch:ui.navigation_epoch,document_epoch:state.epoch,document_id:state.document?.document_id,revision_id:state.document?.revision_id,request_id:crypto.randomUUID(),reply_to:state.clarificationReply,order:++ui.submitOrder};}
-  function sameDocument(context){return context.document_epoch===state.epoch&&context.document_id===state.document?.document_id;}
+  function contextNow(){return {project_id:state.activeProjectId,session_id:state.activeSessionId,session_epoch:state.sessionEpoch||0,epoch:ui.navigation_epoch,document_epoch:state.epoch,document_id:state.document?.document_id,revision_id:state.document?.revision_id,request_id:crypto.randomUUID(),reply_to:state.clarificationReply,order:++ui.submitOrder};}
+  function sameDocument(context){return ui.activeTab==="details"&&context.session_epoch===(state.sessionEpoch||0)&&context.project_id===state.activeProjectId&&context.session_id===state.activeSessionId&&context.document_epoch===state.epoch&&context.document_id===state.document?.document_id;}
   function pause(){clearTimeout(ui.timer);ui.timer=null;ui.tour.running=false;}
   function invalidate(){pause();ui.navigation_epoch++;}
   function snapshot(){
@@ -53,6 +58,7 @@
     $("chat-connection").textContent=state.providerReady?`${state.health?.provider_label||"Gemini"} · local workspace`:"Provider unavailable";
     if(state.health&&!state.providerReady)note($("provider-message").textContent||"Configure the selected provider to interpret messages. Saved sources remain available.","provider-setup",[["Check connection",{type:"refresh_health"}]]);
     else removeEntry("provider-setup");
+    voice?.syncControls();
   }
   function applyTheme(choice){
     ui.theme=choice;let theme=choice==="system"?(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"):choice;
@@ -68,18 +74,20 @@
   }
   function syncTabs() {
     const onDetails = ui.activeTab === "details";
-    homeTab.setAttribute("aria-selected", String(!onDetails));
-    detailsTab.setAttribute("aria-selected", String(onDetails));
-    homeTab.tabIndex = onDetails ? -1 : 0;
-    detailsTab.tabIndex = onDetails ? 0 : -1;
-    detailsTab.disabled = !onDetails;
-    $("home-library").hidden = onDetails;
-    $("details-panel").hidden = !onDetails;
-    $("visual-workspace").hidden = !onDetails;
+    const skip=document.querySelector(".skip-link");skip.href=onDetails?"#question":"#home-library";skip.textContent=onDetails?"Skip to conversation":"Skip to projects";
+    if($("attach-drawings")){$("attach-drawings").textContent=onDetails?"+ Attach drawings":"+ Upload files";$("attach-drawings").disabled=Boolean(state.busy)||Boolean(state.taskAccess?.public_demo&&!state.taskAccess.can_work)||Boolean(onDetails&&state.document?.read_only_model);}
+    homeTab.setAttribute("aria-current",!onDetails&&!state.homeProjectId?"page":"false");
+    $("home-library").hidden=onDetails;
+    $("details-panel").hidden=!onDetails;
+    $("chat-column").hidden=!onDetails||!state.activeSessionId;
+    $("chat-divider").hidden=!onDetails||!state.document||!state.activeSessionId;
+    $("visual-workspace").hidden=!onDetails||!state.document;
+    $("details-panel").classList.toggle("project-chat-only",!state.document);
+    $("details-panel").classList.toggle("read-only-workspace",onDetails&&!state.activeSessionId);
     $("chat-shell").classList.toggle("workspace-open", onDetails);
   }
   function chatAvailable() {
-    return Boolean(state.document && (state.document.sources?.length || 0) <= 1);
+    return ui.activeTab==="details"&&!state.sessionOpening&&Boolean(state.activeProjectId&&state.activeSessionId);
   }
   function openLibraryFile(id) {
     if (state.busy || ui.activeTab !== "home") return;
@@ -117,6 +125,7 @@
   });
 
   function syncLibrary() {
+    if(window.projectLibrary){projectLibrary.refresh();return;}
     const list = $("home-library-list");
     const items = state.savedBuildings;
     const signature = JSON.stringify(items.map(doc => [
@@ -129,7 +138,7 @@
         const file = element("th");
         file.scope = "row";
         const open = button(doc.example_title || doc.filename, () => openLibraryFile(doc.building_id || doc.document_id), "home-file");
-        if ((doc.sources?.length || 0) > 1) open.append(element("span", "File group · View only", "home-file-note"));
+        if ((doc.sources?.length || 0) > 1) open.append(element("span", "Related drawings", "home-file-note"));
         const actions = element("div", null, "home-file-actions");
         actions.append(open);
         if (doc.local_file_path) {
@@ -193,8 +202,9 @@
     window.scrollTo(0, 0);
   }
   function showDetails() {
-    if (!state.document) return;
+    if (!state.document&&!state.activeSessionId) return;
     ui.activeTab = "details";
+    if(!state.document){syncControls();changed();return;}
     if (ui.view_mode === "chat") {
       if (state.document.pages?.length) {
         // Rendering a saved drawing does not start reconstruction.
@@ -214,7 +224,6 @@
     if(ui.activeTab !== "details" || (mode!=="source"&&mode!=="model"&&mode!=="concept"))return;
     ui.view_mode=mode;
     syncTabs();
-    scroll.scrollTop = scroll.scrollHeight;
     setView(mode==="source"?"drawing":mode);$("workspace-title").textContent=mode==="source"?"Original drawing":mode==="concept"?"Concept · display proposals":"Saved model · interpretation";
     syncWorkspaceStatus();
     window.scrollTo(0, 0);
@@ -295,7 +304,6 @@
       if(doc.pages?.length&&(workspaceMode==="source"||!state.viewer))openWorkspace("source");
       else switchModel();
     }
-    if (!chatAvailable()) note("This file group is view only. Open an individual file from Home to chat.","single-file");
     syncWorkspaceStatus();
     syncControls();
   }
@@ -310,16 +318,11 @@
   }
   function sourceButton(source,label,revision){return button(label,()=>local({type:"show_source",source,source_revision_id:revision}),"chat-citation");}
   function renderAnswer(answer,key){
-    const node=entry(key);node.classList.add("chat-answer");node.replaceChildren(element("p","Blueprint","chat-role"));
+    const node=entry(key);node.classList.add("chat-answer");node.replaceChildren(element("p","Concrete","chat-role"));
     node.append(element("p",({answered:"Source-grounded answer",insufficient:"Insufficient source evidence",unclear:"Source evidence remains unclear",clarification:"Clarify your question"}[answer.status]||answer.status),"chat-status"),element("p",answer.answer));
     for(const evidence of answer.evidence||[])node.append(sourceButton(evidence,evidence.label||`Original page ${evidence.page}`,answer.answered_revision_id));
     for(const evidence of answer.model_evidence||[])node.append(button(evidence.label||evidence.element_id,()=>openNative(evidence.element_id,answer.answered_revision_id,evidence.label),"chat-citation"));
-    if(answer.clarification){const actions=element("div",null,"chat-actions");for(const text of answer.clarification.suggestions||[])actions.append(button(text,async()=>{
-      const context=contextNow();if(!node.dataset.messageId)await refreshConversation();
-      if(!sameDocument(context))return;
-      if(!node.dataset.messageId)throw new Error("This clarification is still being saved. Refresh its conversation before replying.");
-      state.clarificationReply=node.dataset.messageId;return submit(text,null);
-    }));node.append(actions);}
+    if(answer.clarification){const actions=element("div",null,"chat-actions");for(const text of answer.clarification.suggestions||[])actions.append(button(text,()=>submit(text,null)));node.append(actions);}
     const detail=element("details"),summary=element("summary","Evidence and checks");detail.append(summary);
     for(const text of [answer.support_summary,answer.review_note,...(answer.missing_information||[]),answer.next_action])if(text)detail.append(element("p",text));
     if(answer.proposal)detail.append(element("p",`Proposal, not source fact: ${answer.proposal.text}`));
@@ -330,7 +333,7 @@
       detail.append(element("p","This answer has no reliable 3D mapping. Original source evidence remains available; no object highlight was invented."));
     if(state.viewer?.floorFilter&&mappedIds.some(id=>state.scene?.elements.some(item=>item.id===id&&item.storey_id!==state.viewer.floorFilter)))
       detail.append(element("p","Linked objects are on another floor. Your view is preserved; show all floors or inspect the original source evidence to locate them."));
-    detail.append(element("p",`Evidence sufficiency: ${answer.gate?.decision||"not assessed for clarification"}. Sufficiency and review do not guarantee answer correctness.`));node.append(detail);return node;
+    detail.append(element("p",answer.status==="clarification"?"Clarification requested; no factual answer was published.":answer.gate?`Evidence sufficiency: ${answer.gate.decision}. Review does not guarantee answer correctness.`:"The technical worker inspected evidence directly. Support review does not guarantee answer correctness."));node.append(detail);return node;
   }
   function mergeConversation(messages){
     for(const message of messages||[]){
@@ -345,6 +348,12 @@
           (message.request_id?node.dataset.qaRequest===message.request_id:node.dataset.question===message.question));
         if(local){local.dataset.messageId=message.id;continue;}
         const node=entry(key,"user");node.dataset.question=message.question;node.dataset.messageId=message.id;node.append(element("p",message.question));
+      }else if(message.answer?.status==="conversation"||(message.answer?.status==="clarification"&&message.answer.tool)){
+        const text=message.answer.answer||"";
+        const local=[...ui.entries.values()].find(node=>!node.dataset.messageId&&node.dataset.messageText===text&&(!message.request_id||node.dataset.requestId===message.request_id));
+        const node=local||note(text,key);node.classList.add("chat-conversation");node.dataset.messageId=message.id;node.dataset.messageText=text;
+        if(message.request_id)node.dataset.requestId=message.request_id;
+        if(!local&&message.answer.clarification?.suggestions?.length){const actions=element("div",null,"chat-actions");for(const suggestion of message.answer.clarification.suggestions)actions.append(button(suggestion,()=>submit(suggestion,null)));node.append(actions);}
       }else if(message.answer){
         const signature=JSON.stringify(message.answer);
         const local=[...ui.entries.values()].find(node=>node.classList.contains("chat-answer")&&!node.dataset.messageId&&
@@ -360,18 +369,23 @@
     }
   }
   function onJobs(jobs){
+    refreshTasks(jobs);
     syncWorkspaceStatus();
     const intended=jobs?.find(j=>j.kind==="question"&&j.status==="complete"&&j.answer&&(state.questionRequest?.id?j.request_id===state.questionRequest.id:true));
     for(const job of jobs||[]){
+      if(state.activeSessionId&&["question","agent"].includes(job.kind))continue;
+      if(job.origin?.project_id&&job.origin.project_id!==state.activeProjectId)continue;
+      if(job.origin?.session_id&&job.origin.session_id!==state.activeSessionId)continue;
       const {debug_hydrogen_outputs: debugOutputs, ...jobState} = job;
       if(terminalJob(job) && debugQuestionJobs.delete(job.id) && job.status==="complete"){
         for(const output of debugOutputs || []) console.log(output);
       }
       if(terminalJob(job)&&ui.entries.get("pending-model")?.dataset.modelJobId===job.id)removeEntry("pending-model");
       const key="job:"+job.id,node=entry(key);const signature=JSON.stringify(jobState);if(node.dataset.jobState===signature)continue;node.dataset.jobState=signature;
-      node.classList.add("chat-operational");node.replaceChildren(element("p",({extraction:"Reading your drawings…",question:"Inspecting source",refinement:"Reviewing your submitted changes",reconstruction:"Building the saved model"}[job.kind]||"Operation"),"chat-role"));
+      node.classList.add("chat-operational");node.replaceChildren(element("p",({extraction:"Reading your drawings…",question:"Inspecting source",refinement:"Reviewing your submitted changes",reconstruction:"Building the saved model",render:"Hydrogen rendering and review"}[job.kind]||"Operation"),"chat-role"));
       const status=element("p",`${(job.status||"").replaceAll("_"," ")} · ${(job.phase||"").replaceAll("_"," ")}`,"chat-status");status.dataset.status=job.status;node.append(status,element("p",job.message||""));
       if(!terminalJob(job))node.append(button("Stop this operation",()=>local({type:"stop_job",job_id:job.id})));
+      for(const vote of job.reviewer_votes||[])node.append(element("p",`${vote.role==="reviewer"?"Reviewer":`Reviewer ${vote.reviewer}`}: ${vote.satisfied?"satisfied":"refinement requested"} · ${vote.candidate_supported?"source-supported":"support unresolved"}`,"chat-status"));
       if(terminalJob(job)&&job.kind!=="question")node.append(element("p",job.status==="complete"?"Operation completed; consult the review outcome and remaining issues.":state.scene?"The usable saved model remains available. This outcome is not a source-sufficiency judgment.":"Original sources remain saved. No usable model has been confirmed.","chat-status"));
       if(job.diagnostic_message)node.append(element("p",job.diagnostic_message));
       if(job.submitted_values?.length){
@@ -408,12 +422,35 @@
       }
     }
   }
+  function refreshTasks(jobs=state.jobs){
+    const merged=new Map((state.workspaceJobs||[]).map(job=>[job.id,job]));
+    for(const job of jobs||[])merged.set(job.id,job);
+    const catalog=new Map((state.savedBuildings||[]).map(building=>[building.building_id||building.document_id,building]));
+    if(state.document)catalog.set(state.document.building_id||state.document.document_id,state.document);
+    const tasks=[...merged.values()].map(job=>{const p=(state.projects||[]).find(p=>job.origin?.project_id?p.id===job.origin.project_id:p.building_ids.includes(job.building_id));return {...job,project_id:p?.id||job.origin?.project_id,project_label:p?.name,building_label:job.building_label||catalog.get(job.building_id)?.example_title||catalog.get(job.building_id)?.filename};});
+    activeTasks?.update(tasks,{building_id:state.document?.building_id,has_scene:Boolean(state.scene),
+      usable_revision_id:state.scene?.revision_id,can_work:state.taskAccess?.can_work??false,
+      onOpen:job=>projectLibrary.openTask(job),
+      onDismiss:async job=>{const updated=await request(`/api/jobs/${job.id}/dismiss`,{method:"POST"});state.workspaceJobs=(state.workspaceJobs||[]).map(item=>item.id===job.id?updated:item);state.jobs=(state.jobs||[]).map(item=>item.id===job.id?updated:item);refreshTasks();},
+      onStop:async job=>{const stopped=await request(`/api/jobs/${job.id}/stop`,{method:"POST"});state.workspaceJobs=(state.workspaceJobs||[]).map(item=>item.id===job.id?stopped:item);if(job.building_id===state.document?.building_id)rememberJob(stopped);refreshTasks();},
+      onSource:async ref=>{if(ref.building_id!==state.document?.building_id||!state.activeSessionId)await projectLibrary.openBuilding(ref.building_id);return local({type:"show_source",source:ref.source,source_revision_id:ref.source_revision_id});}});
+  }
+  function focusTaskOrigin(job){
+    const origin=job.origin||{},nodes=[...log.querySelectorAll(".chat-turn")];
+    const target=nodes.find(node=>origin.message_id&&node.dataset.messageId===origin.message_id)
+      ||nodes.find(node=>origin.request_id&&node.dataset.qaRequest===origin.request_id)
+      ||nodes.find(node=>node.dataset.entry==="job:"+job.id);
+    for(const node of nodes)node.classList.remove("task-origin-focus");
+    if(target){target.classList.add("task-origin-focus");target.tabIndex=-1;target.scrollIntoView({block:"center"});target.focus({preventScroll:true});}
+    else note("This task has no saved initiating message in this chat.","task-origin-unavailable");
+  }
   async function openNative(id,revision,label,context=contextNow()){
     if(!sameDocument(context))return;
     pause();await inspectNativeEvidence({element_id:id,label},revision);
     if(!sameDocument(context))return;
-    const node=note("Original supplied IFC record. It describes the supplied model, not as-built reality.");
-    const copy=$("native-record-inspector").cloneNode(true);copy.removeAttribute("id");copy.hidden=false;for(const child of copy.querySelectorAll("[id]"))child.removeAttribute("id");node.append(copy);
+    const copy=$("native-record-inspector").cloneNode(true);copy.removeAttribute("id");copy.hidden=false;for(const child of copy.querySelectorAll("[id]"))child.removeAttribute("id");
+    if(!state.activeSessionId&&window.workspaceControls?.showNativeRecord){workspaceControls.showNativeRecord(copy);return;}
+    const node=note("Original supplied IFC record. It describes the supplied model, not as-built reality.");node.append(copy);
   }
   async function openSource(action,context=contextNow()){
     if(!sameDocument(context))return;
@@ -443,22 +480,27 @@
     note(source.bbox?"Original source region from the saved revision. Its stored bounds have not been tightened.":"Original drawing page. Choose any supplied page above; this whole-page view does not add an evidence region.","source-navigation",[["Back to model",{type:"switch_model"}]]);
   }
   function alive(context){return sameDocument(context)&&context.epoch===ui.navigation_epoch;}
-  function switchModel(){
-    if(state.scene&&!state.viewer){openWorkspace("model");return;}
+  async function switchModel(){
+    if(!state.scene&&state.document?.has_scene){
+      const epoch=state.epoch,identity=state.document.document_id;
+      try{const scene=await request(`/api/documents/${identity}/scene`);if(epoch!==state.epoch||state.document?.document_id!==identity)return;await loadScene(scene);}
+      catch(error){if(epoch===state.epoch)note(error.message,"saved-model-load");}
+    }
+    if(state.scene&&!state.viewer)await loadScene(state.scene);
     if(!state.scene&&state.document?.has_scene){
       openWorkspace("model");$("no-model-geometry").hidden=false;$("no-model-geometry").textContent="The saved 3D model could not be loaded. Reopen this blueprint to try again or browse its original sources.";return;
     }
     if(!state.scene||!state.viewer){
       openWorkspace("model");$("no-model-geometry").hidden=false;$("no-model-geometry").textContent="No saved 3D model. Use Build model in the conversation to request reconstruction; switching views does not generate geometry.";
-      note("No saved 3D model is available. Original drawings remain available; building a model is a separate operation.","no-saved-model",[["Build model",{type:"show_model"}]]);return;
+      note("No saved 3D model is available. Original drawings remain available; building a model is a separate operation.","no-saved-model",[["Build model",{type:"build_model"}]]);return;
     }
     $("no-model-geometry").hidden=Boolean(state.viewer.meshes.size);openWorkspace("model");if(ui.camera){state.viewer.setCameraState(ui.camera);ui.camera=null;}changed();
   }
   async function model(context){
     if(state.scene){switchModel();return;}
     if(!state.document)throw new Error("Attach drawings or open a saved building first.");
-    let job=state.jobs.find(j=>j.kind==="reconstruction"&&!terminalJob(j));
-    if(!job){job=await jsonPost(`/api/buildings/${state.document.building_id}/reconstruction`,{base_revision_id:context.revision_id,mode:"reconstruct"});if(!alive(context))return;rememberJob(job);}
+    let job=state.jobs.find(j=>j.kind==="render"&&!terminalJob(j));
+    if(!job){job=await jsonPost(`/api/buildings/${state.document.building_id}/render`,{base_revision_id:context.revision_id,message:"Generate the interactive building model.",annotation_ids:window.blueprintAnnotations?.selectedIds()||[]});if(!sameDocument(context))return;job=await projectLibrary.trackTask(job,context);rememberJob(job);}
     schedulePoll(0);const progress=note("Building your model using the saved interpretation. Progress and review outcomes appear here.","pending-model");progress.dataset.modelJobId=job.id;
     while(alive(context)){
       if(state.scene)openWorkspace("model");
@@ -513,30 +555,19 @@
     openWorkspace("model");if(command==="next"||command==="previous"){pause();focusTour(ui.tour.index+(command==="next"?1:-1));return;}
     ui.tour.running=true;focusTour(Math.max(0,ui.tour.index));scheduleTour();
   }
-  async function ask(action,context){
-    if(!sameDocument(context)||context.questionDispatched)return;
-    context.questionDispatched=true;
-    const user=ui.entries.get("user:"+context.request_id);if(user)user.dataset.qaRequest=context.request_id;
-    let question=action.question;if(action.navigation_reference)question+=`\nNavigation reference (not a factual claim): ${JSON.stringify(action.navigation_reference)}`;
-    if(question.length>2000)throw new Error("The question and source reference exceed the existing question length limit. Please shorten the question.");
-    const job=await jsonPost("/api/questions",{document_id:context.document_id,revision_id:action.revision_id||context.revision_id,question,request_id:context.request_id,conversation_id:context.document_id,reply_to:context.reply_to,clarification_response:context.reply_to?action.question:null});
-    if(!sameDocument(context))return;
-    if(context.order>=ui.latestQuestionOrder){ui.latestQuestionOrder=context.order;state.questionRequest={id:context.request_id,building:context.document_id,pending:true};}
-    if(state.clarificationReply===context.reply_to)state.clarificationReply=null;
-    debugQuestionJobs.add(job.id);
-    rememberJob(job);schedulePoll(0);await refreshConversation();
-  }
   function requireModelView(){
     if(!state.viewer||!state.scene)throw new Error("This control needs a saved model. Ask to show a 3D model first; no generation was started.");
     openWorkspace(state.viewer.mode==="concept"?"concept":"model");
   }
   async function execute(action,context){
     switch(action.type){
-      case "show_model":return model(context);
+      case "show_model":return switchModel();
+      case "build_model":return model(context);
       case "select":return select(action);
       case "show_source":return openSource(action,context);
       case "browse_source":return openSource({page:action.page,source_revision_id:action.source_revision_id||context.revision_id},context);
       case "switch_model":return switchModel();
+      case "switch_concept":await switchModel();if(state.viewer)openWorkspace("concept");return;
       case "return_selection":{
         if(!state.viewer||!state.scene)throw new Error("No saved model is available to frame.");
         const ids=ui.focused_id?[ui.focused_id]:ui.selected_ids;
@@ -548,18 +579,21 @@
       case "tour":return tour(action.command);
       case "set_visibility":if(action.target==="assumptions")ui.show_assumptions=action.enabled;else if(action.target==="answer_highlights")ui.answer_highlighting=action.enabled;else ui.highlighting=action.enabled;syncHighlights();note(`${action.target.replaceAll("_"," ")} ${action.enabled?"shown":"hidden"}.`);return;
       case "set_theme":applyTheme(action.theme);note(`Using ${action.theme} theme.`);return;
-      case "set_view":if(action.mode==="source")return openSource({},context);await model(context);if(alive(context))openWorkspace(action.mode);return;
+      case "set_view":if(action.mode==="source")return openSource({},context);await switchModel();if(state.scene&&alive(context))openWorkspace(action.mode);return;
       case "set_floor":requireModelView();setFloorFilter(action.floor_id||"");note(action.floor_id?"Showing the selected saved floor.":"Showing all saved floors.");return;
       case "set_separation":requireModelView();state.viewer.setExploded(action.enabled);$("explode-floors").checked=action.enabled;updateLayoutNote();note(action.enabled?"Floors separated for inspection; spacing is a display choice.":"Showing saved storey elevations.");return;
       case "set_cutaway":requireModelView();state.viewer.setCutawayPercent(action.percent);$("cutaway-percent").value=action.percent;updateCutawayNote();note($("cutaway-note").textContent);return;
-      case "question":return ask(action,context);
+      case "question":return submit(action.question,null);
       case "refine":case "reconstruct":{
         if(!sameDocument(context)||context.revision_id!==state.document?.revision_id)throw new Error("The building revision changed. Resubmit the requested change against the current revision.");
-        const body=action.type==="refine"?{base_revision_id:context.revision_id,edits:action.edits,supporting_source_ids:action.supporting_source_ids||[]}:{base_revision_id:context.revision_id,mode:action.mode};
-        const job=await jsonPost(`/api/buildings/${context.document_id}/${action.type==="refine"?"refinements":"reconstruction"}`,body);if(sameDocument(context)){rememberJob(job);schedulePoll(0);}return;}
+        const body=action.type==="refine"?{base_revision_id:context.revision_id,edits:action.edits,supporting_source_ids:action.supporting_source_ids||[]}:{base_revision_id:context.revision_id,message:"Refine the interactive building model.",annotation_ids:window.blueprintAnnotations?.selectedIds()||[]};
+        let job=await jsonPost(`/api/buildings/${context.document_id}/${action.type==="refine"?"refinements":"render"}`,body);job=await projectLibrary.trackTask(job,context);if(sameDocument(context)){rememberJob(job);schedulePoll(0);}return;}
       case "list_saved": case "open_saved": case "load_workspace_blueprint":
+        return note("Open Home to choose a saved file.", "home-file-navigation");
       case "new_upload": case "attach_sources":
-        return note("Open Home to choose or upload a file.", "home-file-navigation");
+        if(action.type==="attach_sources"&&!state.document)throw new Error("Open a building before attaching related sources.");
+        if(action.type==="new_upload"&&ui.activeTab!=="home"){const p=(state.projects||[]).find(item=>item.id===state.activeProjectId);if(p)projectLibrary.showFiles(p);else projectLibrary.showProjects();}
+        state.uploadMode=action.type==="attach_sources"?"append":"new";$("file-input").click();return;
       case "download_ifc":if(!state.scene?.ifc_url&&!state.document?.has_scene)throw new Error("No saved IFC is available.");return download(state.scene?.ifc_url||`/api/documents/${context.document_id}/model.ifc`);
       case "download_source":return download(`/api/buildings/${context.document_id}/sources/${action.source_id}/original`);
       case "retry_extraction":{const response=await jsonPost(`/api/buildings/${context.document_id}/extraction`,{retry:true});for(const job of response.jobs||[])rememberJob(job);schedulePoll(0);return;}
@@ -602,71 +636,96 @@
   function download(url){const anchor=element("a");anchor.href=url;anchor.download="";anchor.click();note("Downloading the saved artifact. No reconstruction was requested.");}
   async function local(action){if(!["set_visibility","set_theme","inspect_assumptions","inspect_inventory","refresh_health","load_workspace_blueprint"].includes(action.type))invalidate();const context=contextNow();try{return await execute(action,context);}finally{changed();}}
   async function submit(supplied,clarificationContext=undefined){
-    const display=supplied??$("question").value.trim();if(!display||voice?.recording||!chatAvailable()||ui.activeTab!=="details")return;
+    const display=supplied??$("question").value.trim();if(!display||voice?.recording||!chatAvailable())return;
     voice?.cancelAll();
     invalidate();const captured=snapshot(),context=contextNow();
     const clarifying=clarificationContext===undefined?ui.clarification:clarificationContext;ui.clarification=null;
-    let message=display;if(clarifying)message=`Original request: ${clarifying.message}\nUser clarification: ${display}`;
+    const message=display;
     ui.latestSubmissionId=context.request_id;
     if(state.clarificationReply===context.reply_to)state.clarificationReply=null;
-    const user=entry("user:"+context.request_id,"user");user.dataset.question=message;user.append(element("p",display));$("question").value="";syncControls();
+    const user=entry("user:"+context.request_id,"user");user.dataset.question=message;user.dataset.qaRequest=context.request_id;user.append(element("p",display));$("question").value="";syncControls();
     const pending="routing:"+context.request_id;note("Interpreting your request…",pending);
     try{
-      const response=await jsonPost("/api/chat/actions",{message,request_id:context.request_id,document_id:context.document_id||null,revision_id:context.revision_id||null,workspace:captured});
-      if(response.request_id!==context.request_id||response.document_id!==(context.document_id||null)||response.revision_id!==(context.revision_id||null)||response.geometry_revision_id!==captured.geometry_revision_id||response.navigation_epoch!==captured.navigation_epoch||!["ready","clarification"].includes(response.status))throw new Error("The action response did not match the captured workspace. No action was applied.");
+      const response=await jsonPost("/api/chat",{project_id:context.project_id,session_id:context.session_id,message,request_id:context.request_id,document_id:context.document_id||null,revision_id:context.revision_id||null,workspace:captured,annotation_ids:window.blueprintAnnotations?.selectedIds()||[],history:context.document_id?[]:conversationHistory});
+      if(response.project_id!==context.project_id||response.session_id!==context.session_id||response.request_id!==context.request_id||response.document_id!==(context.document_id||null)||response.revision_id!==(context.revision_id||null)||response.geometry_revision_id!==captured.geometry_revision_id||response.navigation_epoch!==captured.navigation_epoch||!["ready","clarification"].includes(response.status))throw new Error("The action response did not match the captured workspace. No action was applied.");
       if(!sameDocument(context))return;
       removeEntry(pending);
+      if(!context.document_id){conversationHistory.push({role:"user",content:message});if(response.message)conversationHistory.push({role:"assistant",content:response.message});}
+      if(response.answer){const rendered=renderAnswer(response.answer,"agent-answer:"+context.request_id);rendered.dataset.requestId=context.request_id;rendered.dataset.answer=JSON.stringify(response.answer);if(ui.latestSubmissionId===context.request_id&&context.order>=ui.latestQuestionOrder){ui.latestQuestionOrder=context.order;state.result=answerForDisplayedRevision(response.answer);syncHighlights();voice?.answerReady(response.answer);}}
+      else if(response.message&&response.status!=="clarification"){const rendered=note(response.message,"agent-message:"+context.request_id);rendered.dataset.requestId=context.request_id;rendered.dataset.messageText=response.message;}
+      if(response.job){rememberJob(response.job);schedulePoll(0);}
       if(response.status==="clarification"){
         if(ui.latestSubmissionId===context.request_id)ui.clarification={message};
+        if(response.answer)return;
         const node=note(response.clarification?.message||response.message,"clarification:"+context.request_id),controls=element("div",null,"chat-actions");
+        node.dataset.requestId=context.request_id;node.dataset.messageText=response.clarification?.message||response.message;
         for(const suggestion of response.clarification?.suggestions||[])controls.append(button(suggestion,()=>{if(sameDocument(context))return submit(suggestion,{message});}));
         node.append(controls);return;
       }
-      // Factual work is independent of delayed viewer effects. All question
-      // actions preserve the server-resolved submission context, even in mixed
-      // batches whose navigation became stale while the user explored.
       const actions=response.actions||[];
-      for(const action of actions.filter(action=>action.type==="question")){
-        if(!sameDocument(context))return;
-        await execute(action,context);
-      }
       let navigationSkipped=false;
-      for(const action of actions.filter(action=>action.type!=="question")){
+      for(const action of actions){
+        if(["question","reconstruct","refine","retry_extraction"].includes(action.type))throw new Error("A worker returned an operation that must be scheduled on the server. No operation was executed.");
         if(!sameDocument(context))return;
         const persistent=["refine","reconstruct","retry_extraction","stop_job"].includes(action.type);
         if(!persistent&&context.epoch!==ui.navigation_epoch){navigationSkipped=true;continue;}
-        if(persistent&&context.revision_id!==state.document?.revision_id)throw new Error("The building revision changed. Resubmit the requested change against the current revision.");
+        if(persistent&&action.type!=="stop_job"&&context.revision_id!==state.document?.revision_id)throw new Error("The building revision changed. Resubmit the requested change against the current revision.");
         await execute(action,context);
       }
       if(navigationSkipped&&!actions.some(action=>action.type==="question"))note("Your current view was kept. The delayed navigation was not applied.",pending);
     }catch(error){if(sameDocument(context))note(error.message,pending);}
-    finally{syncControls();changed();}
+    finally{projectLibrary?.onChatSaved(context.project_id);syncControls();changed();}
+  }
+  async function openSession(project,session){
+    voice?.cancelAll();invalidate();state.sessionEpoch=(state.sessionEpoch||0)+1;
+    const token=state.sessionEpoch;state.sessionOpening=true;window.blueprintAnnotations?.detach();
+    state.activeProjectId=project.id;state.activeSessionId=session.id;
+    ui.documentId=null;ui.clarification=null;ui.latestSubmissionId=null;ui.latestQuestionOrder=0;
+    ui.selected_ids=[];ui.focused_id=null;ui.geometry_revision_id=null;ui.inspection=null;ui.camera=null;ui.tour={ids:[],index:-1,running:false};
+    ui.pageCatalogs.clear();ui.sourceCatalog=null;ui.sourcePages.clear();conversationHistory.length=0;
+    for(const key of [...ui.entries.keys()])removeEntry(key);
+    $("question").value="";state.conversation=[];state.clarificationReply=null;state.questionRequest=null;state.result=null;state.evidenceRevision=null;state.sourceSelection=null;
+    $("live-chat-title").textContent=session.name;ui.activeTab="details";
+    try{
+      if(session.building_id){
+        if(session.building_id!==state.document?.document_id)await openBuilding(session.building_id,"source");
+        else onDocument(state.document,"source");
+        if(token!==state.sessionEpoch)return;
+        if(state.document?.document_id!==session.building_id)throw new Error("This chat's file could not be opened. Reopen it from the project overview.");
+        await refreshConversation();
+      }else{
+        clearTimeout(state.pollTimer);state.epoch++;state.document=null;state.jobs=[];state.assumptionRows=[];voice?.newDocument(null);
+        clearScene();ui.view_mode="chat";$("attachment-summary").hidden=true;
+        await refreshConversation();
+      }
+      if(token===state.sessionEpoch){ui.activeTab="details";if(state.document)renderJobs();}
+    }catch(error){if(token===state.sessionEpoch){state.activeSessionId=null;projectLibrary.showFiles(project);}throw error;}
+    finally{if(token===state.sessionEpoch){state.sessionOpening=false;syncControls();changed();}}
+    if(token===state.sessionEpoch)$("question").focus();
+  }
+  async function openReadOnlyFile(project,id){
+    voice?.cancelAll();invalidate();state.sessionEpoch=(state.sessionEpoch||0)+1;state.activeProjectId=project.id;state.activeSessionId=null;ui.documentId=null;window.blueprintAnnotations?.detach();
+    for(const key of [...ui.entries.keys()])removeEntry(key);
+    if(id!==state.document?.document_id)await openBuilding(id,"source");else onDocument(state.document,"source");
+    ui.activeTab="details";syncControls();changed();
   }
   // Reuse the operation adapters without exposing the former toolbar/settings UI.
   $("composer-slot").append($("question-form"));
   const controls=element("div",null,"composer-controls");
-  controls.append($("ask-button"));
+  const attach=button("+ Attach drawings",()=>local({type:ui.activeTab==="details"&&state.document?"attach_sources":"new_upload"}));attach.id="attach-drawings";
+  controls.append(attach,$("ask-button"));
   $("question-form").append(controls);
   $("workspace-content").append($("drawing-pane"),$("model-pane"));
-  $("question").setAttribute("aria-label","Message Blueprint");$("question").addEventListener("keydown",event=>{if(event.key==="Enter"&&!event.shiftKey){event.preventDefault();$("question-form").requestSubmit();}});
+  $("question").setAttribute("aria-label","Message Concrete");$("question").addEventListener("keydown",event=>{if(event.key==="Enter"&&!event.shiftKey){event.preventDefault();$("question-form").requestSubmit();}});
   homeTab.addEventListener("click", showHome);
   document.querySelector(".chat-brand").addEventListener("click", (event) => {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     showHome();
   });
-  for (const tab of [homeTab, detailsTab]) {
-    tab.addEventListener("keydown", (event) => {
-      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-      event.preventDefault();
-      const target = event.key === "Home" || detailsTab.disabled ? homeTab
-        : event.key === "End" || tab === homeTab ? detailsTab : homeTab;
-      target.focus();
-      target.click();
-    });
-  }
   $("home-upload").addEventListener("click", () => {
     if (!state.health || state.busy || ui.activeTab !== "home") return;
+    state.uploadMode="new";
     if (state.health.native_file_picker) uploadFromNativePicker();
     else $("file-input").click();
   });
@@ -682,7 +741,7 @@
     setDrawingZoom(`${Math.max(40, width * (event.deltaY > 0 ? 0.9 : 1.1))}px`);
   }, {passive: false});
   function isLatestSubmission(requestId) { return ui.latestSubmissionId === requestId; }
-  window.chatUI={chatAvailable,isHome:()=>ui.activeTab==="home",isLatestSubmission,snapshot,inspection,sourceView,submit,execute:local,syncControls,syncHighlights,onUpload,onDocument,onScene,onSelection,onProposal,onJobs,onError,mergeConversation,openWorkspace};
+  window.chatUI={chatAvailable,focusTaskOrigin,taskContext:contextNow,openReadOnlyFile,openSession,isHome:()=>ui.activeTab==="home",showHome,openSavedFile:openLibraryFile,isLatestSubmission,snapshot,inspection,sourceView,submit,execute:local,invalidateNavigation:invalidate,syncControls,syncHighlights,refreshTasks,onUpload,onDocument,onScene,onSelection,onProposal,onJobs,onError,mergeConversation,openWorkspace};
   let stored="system";try{stored=localStorage.getItem("blueprint-theme")||"system";}catch{}applyTheme(["light","dark","system"].includes(stored)?stored:"system");
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{if(ui.theme==="system")applyTheme("system");});
   syncControls();closeWorkspace();

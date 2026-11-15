@@ -67,14 +67,15 @@ def chat_fixture(page, url, *, model=True):
     page.goto(url)
     page.locator('#file-input').set_input_files({'name': 'fixture.png', 'mimeType': 'image/png', 'buffer': source_bytes()})
     page.locator('#home-library-list button').filter(has_text=doc['filename']).click()
-    page.wait_for_function('state.document !== null')
+    page.locator('#home-library-list .home-file').filter(has_text=doc['filename']).click()
+    page.wait_for_function('state.document !== null && !state.sessionOpening && state.busy===null')
     if model:
         page.wait_for_function('window.blueprintViewer?.meshes.size === 3')
     return doc, scene, calls, pending
 
 
 def response(body, actions):
-    return {'request_id': body['request_id'], 'document_id': body.get('document_id'),
+    return {'project_id':body.get('project_id'),'session_id':body.get('session_id'),'request_id': body['request_id'], 'document_id': body.get('document_id'),
             'revision_id': body.get('revision_id'), 'geometry_revision_id': body['workspace'].get('geometry_revision_id'),
             'navigation_epoch': body['workspace']['navigation_epoch'], 'status': 'ready', 'actions': actions,
             'message': 'Deterministic interaction fixture; no live inference.', 'clarification': None, 'usage': {}}

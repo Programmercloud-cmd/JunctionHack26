@@ -493,6 +493,7 @@ export class BlueprintViewer {
   }
 
   pick(event) {
+    if(this.userAnnotationMode)return;
     if (!this.pointerDown || Math.hypot(event.clientX-this.pointerDown[0], event.clientY-this.pointerDown[1]) > 5 || event.button !== 0) return;
     this.pointerDown = null;
     const bounds = this.renderer.domElement.getBoundingClientRect();
@@ -504,6 +505,36 @@ export class BlueprintViewer {
     if (hit) this.select(hit.object.userData.elementId);
   }
 
+  setUserAnnotationMode(enabled) {
+    if(enabled&&!this.userAnnotationMode)this.annotationControlsEnabled=this.controls.enabled;
+    this.userAnnotationMode=Boolean(enabled);
+    this.controls.enabled=enabled?false:this.annotationControlsEnabled!==false;
+    this.pointerDown=null;
+  }
+
+  pickUserAnchor(event) {
+    if(this.mode!=='inspection')return null;
+    const bounds=this.renderer.domElement.getBoundingClientRect();
+    this.raycaster.setFromCamera(new THREE.Vector2((event.clientX-bounds.left)/bounds.width*2-1,-(event.clientY-bounds.top)/bounds.height*2+1),this.camera);
+    const hit=this.raycaster.intersectObjects([...this.meshes.values()].filter(mesh=>mesh.visible),false)
+      .find(item=>!item.object.material.clippingPlanes?.some(plane=>plane.distanceToPoint(item.point)<0));
+    if(!hit)return null;
+    const objectId=hit.object.userData.elementId,mesh=this.meshes.get(objectId);
+    if(!mesh)return null;
+    mesh.updateMatrixWorld(true);
+    return {object_id:objectId,floor_id:this.elements.get(objectId)?.storey_id||null,
+      point:mesh.worldToLocal(hit.point.clone()).toArray()};
+  }
+
+  projectUserAnchor(objectId,point) {
+    const mesh=this.meshes.get(objectId);
+    if(!mesh?.visible||this.mode!=='inspection')return null;
+    mesh.updateMatrixWorld(true);
+    const projected=mesh.localToWorld(new THREE.Vector3(...point)).project(this.camera);
+    if(projected.z < -1 || projected.z > 1)return null;
+    return [(projected.x+1)/2,(1-projected.y)/2];
+  }
+
   resize() {
     const width = this.container.clientWidth, height = this.container.clientHeight;
     if (!width || !height) return;
@@ -512,7 +543,7 @@ export class BlueprintViewer {
     this.renderer.setSize(width,height);
     this.render();
   }
-  render() {this.needsRender=true;this.camera.updateMatrixWorld();this.positionAnnotations();}
+  render() {this.needsRender=true;this.camera.updateMatrixWorld();this.positionAnnotations();this.container.dispatchEvent(new CustomEvent('blueprint:camera'));}
   getSnapshot() {
     return {theme:this.theme,camera_state:this.getCameraState(),last_focus:this.lastFocus||null,mode:this.mode,cutaway:this.cutaway,cutaway_percent:this.cutawayPercent,clipping_references:(this.data?.floors||[]).map(f=>({id:f.id,...this.clippingReference(f.id)})),concept_build_count:this.conceptBuildCount,concept_records:[...(this.concept?.records.values() || [])],concept_placements:this.concept?.placements || {},render_info:{calls:this.renderer.info.render.calls,triangles:this.renderer.info.render.triangles,frames:this.renderCount},camera_target:this.controls.target.toArray(),revision_changes:this.revisionChanges,building_id:this.data?.building_id,revision_id:this.data?.revision_id,revision_number:this.data?.revision_number,document_id:this.data?.document_id, mesh_count:this.meshes.size, element_count:this.elements.size, selected_id:this.selectedId, highlight_ids:[...this.highlightIds], highlights_enabled:this.highlightsEnabled, show_assumptions:this.showAssumptions, floor_filter:this.floorFilter, exploded:this.exploded, camera_position:this.camera.position.toArray(), up_axis:this.camera.up.toArray(), annotations:this.annotations.map((item)=>({element_ids:item.elementIds,floor_id:item.floorId,floor_level:item.floorLevel,visible:!item.button.hidden})), elements:[...this.meshes].map(([id,mesh])=>({id,visible:mesh.visible,opacity:mesh.material.opacity,clipping_planes:(mesh.material.clippingPlanes||[]).map(p=>p.constant),display_offset_z:mesh.position.z-mesh.userData.baseZ}))};
   }

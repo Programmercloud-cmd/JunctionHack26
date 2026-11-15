@@ -173,3 +173,17 @@ class Answer(StrictModel):
     support_summary: str = ""
     user_value_evidence: list[str] = Field(default_factory=list)
     user_value_attributions: list[dict] = Field(default_factory=list)
+    ui_request: str | None = None
+
+
+class AgentTechnicalResponse(StrictModel):
+    """Evidence answer and optional navigation request from one technical worker."""
+    draft: DraftAnswer | None = None
+    clarification: Clarification | None = None
+    ui_request: str | None = None
+
+    @model_validator(mode="after")
+    def one_outcome(self):
+        if (self.draft is None) == (self.clarification is None):
+            raise ValueError("Return either an evidence draft or an intent clarification")
+        return self

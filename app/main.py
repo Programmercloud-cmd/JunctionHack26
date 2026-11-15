@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
+from copy import deepcopy
 import threading
 import hashlib
 import os
@@ -18,18 +19,27 @@ from .providers.gemini import create_provider, ProviderError, settings
 from .schemas import Answer, AskRequest
 from .vlm import VLM
 from .bundles import BuildingStore
+from .projects import ProjectStore, ProjectName
+from .project_chats import ProjectChats
 from . import native_picker
 from .jobs import JobRunner
 from .public_access import PublicAccess
 from .user_inputs import RefinementRequest, assumptions
 from .conversation import question_context, user_message, assistant_message
 from .chat_actions import ChatActionRequest, chat_actions
+from .agent_chat import AgentChatRequest, agent_chat
+from .annotations import AnnotationRequest, AnnotationStateRequest, list_annotations, save_annotation, selected_annotations, change_annotations
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 class AccessRequest(StrictModel):
     code: str
+
+
+class NewProjectChat(ProjectName):
+    name: str = "New chat"
+    building_id: str | None = None
 
 
 class SceneRequest(StrictModel):
@@ -46,12 +56,27 @@ class ExtractionRequest(StrictModel):
     retry: bool = True
 
 
+class RenderRequest(StrictModel):
+    base_revision_id: str
+    message: str = Field(default="Generate the interactive building model.", min_length=1, max_length=2000)
+    annotation_ids: list[str] = Field(default_factory=list)
+
+
+class TaskOriginRequest(StrictModel):
+    project_id: str
+    session_id: str | None = None
+    request_id: str | None = None
+    message_id: str | None = None
+
+
 def create_app(*, provider_factory=create_provider, storage_root=None,
                transcription_factory=None, speech_factory=None):
     access=PublicAccess.from_environment()
     @asynccontextmanager
     async def lifespan(application):
         application.state.documents = BuildingStore(Path(storage_root or os.getenv("BLUEPRINT_STORAGE_ROOT") or ROOT / ".runtime"))
+        application.state.projects = ProjectStore(application.state.documents)
+        application.state.project_chats = ProjectChats(application.state.documents, application.state.projects)
         access.validate_store(application.state.documents)
         application.state.jobs = JobRunner(application.state.documents, application.state.provider_factory,
                                            debug_answers=not access.enabled)
@@ -59,7 +84,7 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
         application.state.jobs.close()
         application.state.documents.close()
 
-    application = FastAPI(title="Blueprint QA", lifespan=lifespan)
+    application = FastAPI(title="Concrete", lifespan=lifespan)
     application.state.access=access
     application.state.provider_factory = provider_factory
     application.state.inference_slots = threading.BoundedSemaphore(2)
@@ -107,8 +132,11 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
     @application.get("/api/health")
     def health(http_request: Request):
         config = settings()
-        return {"status": "ok", "native_file_picker": native_picker_allowed(http_request) and native_picker.available(), "provider_ready": bool(config["api_key"]), "model": config["model"],
+        return {"status": "ok", "project_deletion_ready": True, "native_file_picker": native_picker_allowed(http_request) and native_picker.available(), "provider_ready": bool(config["api_key"]), "model": config["model"],
                 "interpretation_model": config["interpretation_model"], "clarification_model": config["clarification_model"],
+                "basic_model": config["basic_model"], "advanced_model": config["advanced_model"],
+                "router_model": config["router_model"], "ui_model": config["ui_model"],
+                "render_model": os.getenv("GEMINI_RENDER_MODEL", "gemini-4-hydrogen"), "chat_gate_kind": "answer_time",
                 "reconstruction_model": config["reconstruction_model"],
                 "provider": config["name"], "provider_label": config["label"],
                 "credential_env": config["credential_env"], "gate_kind": config["gate_kind"],
@@ -128,6 +156,82 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
                                            for action in result.get("actions",[])):
                 access.require_editable(http_request,request.document_id)
             return result
+        except (DocumentError, ProviderError) as error:
+            raise HTTPException(error.status, error.message) from None
+
+    @application.post("/api/chat")
+    def chat(request: AgentChatRequest, http_request: Request):
+        try:
+            access.require_editor(http_request)
+            if not request.project_id or not request.session_id:
+                raise DocumentError("Open a project chat before sending. Refresh an older page to load project sessions.", 422)
+            project = selected_project(http_request, request.project_id)
+            session = application.state.project_chats.validate_context(project, request.session_id, request.document_id)
+            document = selected_document(http_request, request.document_id, request.revision_id) if request.document_id else None
+            if request.workspace.geometry_revision_id:
+                if document is None:
+                    raise DocumentError("A model view requires an open building.", 422)
+                selected_document(http_request, document.id, request.workspace.geometry_revision_id)
+            annotations = selected_annotations(application.state.documents, document, request.annotation_ids,
+                                               geometry_revision_id=request.workspace.geometry_revision_id)
+            def authorize_tool(tool):
+                if tool in {"render","refine"}:
+                    if document is None:
+                        raise DocumentError("Open a blueprint before generating its model.", 422)
+                    try:
+                        access.require_editable(http_request, document.id)
+                    except HTTPException as error:
+                        # Keep access denials in the coordinator's known-error path;
+                        # they are not upstream provider failures to retry.
+                        raise DocumentError(error.detail, error.status_code) from None
+            def remember_chat(document,submission,result):
+                user_id=application.state.project_chats.append(
+                    selected_project(http_request,project['id']),session['id'],document,submission,result)
+                if result.get('job'):
+                    result['job']=application.state.jobs.set_origin(result['job']['id'],{
+                        'project_id':project['id'],'session_id':session['id'],
+                        'request_id':submission.request_id,'message_id':user_id},message=submission.message)
+            return agent_chat(application.state.documents, application.state.jobs,
+                application.state.provider_factory, request, document=document, annotations=annotations,
+                authorize_tool=authorize_tool,
+                session=session,
+                remember=remember_chat,
+                pin_display=access.enabled and request.document_id in access.examples)
+        except (DocumentError, ProviderError) as error:
+            raise HTTPException(error.status, error.message) from None
+
+    @application.get("/api/buildings/{building_id}/annotations")
+    def annotations(building_id: str, http_request: Request):
+        try:
+            access.require_editor(http_request)
+            selected_document(http_request, building_id)
+            return {"annotations": list_annotations(application.state.documents, building_id)}
+        except DocumentError as error:
+            raise HTTPException(error.status, error.message) from None
+
+    @application.post("/api/buildings/{building_id}/annotations")
+    def annotate(building_id: str, request: AnnotationRequest, http_request: Request):
+        try:
+            access.require_editable(http_request, building_id)
+            return save_annotation(application.state.documents, building_id, request)
+        except DocumentError as error:
+            raise HTTPException(error.status, error.message) from None
+
+    @application.patch("/api/buildings/{building_id}/annotations")
+    def edit_annotations(building_id: str, request: AnnotationStateRequest, http_request: Request):
+        try:
+            access.require_editable(http_request, building_id)
+            return change_annotations(application.state.documents, building_id, request)
+        except DocumentError as error:
+            raise HTTPException(error.status, error.message) from None
+
+    @application.post("/api/buildings/{building_id}/render", status_code=202)
+    def render_model(building_id: str, request: RenderRequest, http_request: Request):
+        try:
+            access.require_editable(http_request, building_id)
+            selected_document(http_request, building_id, request.base_revision_id)
+            return application.state.jobs.render(building_id, request.base_revision_id, request.message,
+                                                  annotation_ids=request.annotation_ids)
         except (DocumentError, ProviderError) as error:
             raise HTTPException(error.status, error.message) from None
 
@@ -167,7 +271,7 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
         if not native_picker_allowed(http_request) or not native_picker.available():
             raise HTTPException(404, "Desktop file picker unavailable.")
         if http_request.headers.get("origin") != str(http_request.base_url).rstrip("/"):
-            raise HTTPException(403, "Open the file picker from Blueprint.")
+            raise HTTPException(403, "Open the file picker from Concrete.")
         if not picker_lock.acquire(blocking=False):
             raise HTTPException(409, "The desktop file picker is already open.")
         try:
@@ -193,13 +297,9 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
     ):
         uploads = ([file] if file else []) + (files or [])
         try:
-            if len(uploads) != 1:
-                # Preserve the public example guard for rejected batches.
-                if access.enabled and uploads:
-                    access.require_uploadable(http_request, [
-                        (await item.read(MAX_IFC_UPLOAD + 1), item.filename) for item in uploads
-                    ])
-                raise HTTPException(422, "Upload one file at a time from Home.")
+            if not uploads:raise HTTPException(422,"Choose at least one source file.")
+            if len(uploads)>1:
+                return await save_group(http_request, uploads)
             item = uploads[0]
             payload = await item.read(MAX_IFC_UPLOAD + 1)
             return await run_in_threadpool(save_file, http_request, payload, item.filename or "Untitled source", original_path)
@@ -209,13 +309,33 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
             for item in uploads:
                 await item.close()
 
+    async def save_group(http_request, uploads, building_id=None):
+        payloads=[(await upload.read(MAX_IFC_UPLOAD+1),upload.filename or "Untitled source") for upload in uploads]
+        access.require_uploadable(http_request,payloads)
+        if building_id:access.require_editable(http_request,building_id)
+        def save():
+            store=application.state.documents
+            with store.lock:
+                identity=building_id or hashlib.sha256(payloads[0][0]).hexdigest()
+                existed=(store.directory(identity)/"CURRENT.json").exists()
+                before=store.get(identity) if existed else None
+                previous={source["source_id"] for source in before.sources} if before else set()
+                document=store.add_many(payloads,building_id=building_id)
+                new_ids=[source["source_id"] for source in document.sources if source["source_id"] not in previous]
+            jobs=application.state.jobs.extract(document.id,new_ids,retry=False) if new_ids and document.interpretation_status!="complete" else []
+            return {**document.public(),"is_new_upload":not existed,"added_source_ids":new_ids,"extraction_jobs":jobs}
+        return await run_in_threadpool(save)
+
     @application.post("/api/buildings/{building_id}/sources")
     async def add_sources(building_id: str,http_request:Request,file: UploadFile | None = File(None),files: list[UploadFile] | None = File(None)):
+        uploads=([file] if file else [])+(files or [])
         try:
             access.require_editable(http_request, building_id)
-            raise HTTPException(422, "Upload a separate file from Home.")
+            if not uploads:raise HTTPException(422,"Choose at least one source file.")
+            return await save_group(http_request,uploads,building_id)
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
         finally:
-            for upload in ([file] if file else []) + (files or []):
+            for upload in uploads:
                 await upload.close()
 
     @application.get("/api/documents/{document_id}/pages/{page}")
@@ -256,7 +376,7 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
     @application.get("/api/buildings/{building_id}/conversation")
     def conversation(building_id: str):
         try:
-            require_single_file_chat(application.state.documents.get(building_id))
+            application.state.documents.get(building_id)
             return {"conversation_id":building_id,"messages":application.state.documents.conversation(building_id)}
         except DocumentError as error:raise HTTPException(error.status,error.message) from None
 
@@ -278,13 +398,102 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
             examples=access.public_buildings(store)
             private=[access.descriptor(store.get(item["building_id"])) for item in store.list()
                      if item["building_id"]not in access.examples] if access.is_editor(http_request) else []
-            return {"buildings":examples+private}
+            documents=examples+private
+            return {"buildings":documents,"projects":application.state.projects.catalog(documents,writable=access.is_editor(http_request)),"workspace_jobs":workspace_jobs(http_request)}
         include_local_paths = local_paths_enabled(http_request)
         documents = [store.get(item["building_id"]) for item in store.list()]
-        return {"buildings": [
+        public_documents = [
             {**document.public(), "local_file_path": store.linked_source_path(document) if include_local_paths else None}
             for document in documents
-        ]}
+        ]
+        return {"buildings":public_documents,"projects":application.state.projects.catalog(public_documents,writable=True),"workspace_jobs":workspace_jobs(http_request)}
+
+    @application.post("/api/projects", status_code=201)
+    def create_project(request: ProjectName, http_request: Request):
+        access.require_editor(http_request)
+        return application.state.projects.create(request.name)
+
+    def selected_project(http_request, identity):
+        project=next((item for item in buildings(http_request)['projects'] if item['id']==identity),None)
+        if project is None:raise DocumentError("Project not found.",404)
+        return project
+
+    @application.get("/api/projects/{project_id}/chats")
+    def project_chats(project_id: str, http_request: Request):
+        access.require_editor(http_request)
+        try:return {"chats":application.state.project_chats.catalog(selected_project(http_request,project_id))}
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    @application.post("/api/projects/{project_id}/chats", status_code=201)
+    def create_project_chat(project_id: str, request: NewProjectChat, http_request: Request):
+        access.require_editor(http_request)
+        try:return application.state.project_chats.create(selected_project(http_request,project_id),request.name,request.building_id)
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    @application.get("/api/projects/{project_id}/chats/{session_id}")
+    def project_chat(project_id: str, session_id: str, http_request: Request):
+        access.require_editor(http_request)
+        try:
+            selected_project(http_request,project_id)
+            return application.state.project_chats.get(project_id,session_id)
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    @application.patch("/api/projects/{project_id}/chats/{session_id}")
+    def rename_project_chat(project_id: str, session_id: str, request: ProjectName, http_request: Request):
+        access.require_editor(http_request)
+        try:
+            selected_project(http_request,project_id)
+            return application.state.project_chats.update(project_id,session_id,name=request.name)
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    @application.delete("/api/projects/{project_id}/chats/{session_id}")
+    def delete_project_chat(project_id: str, session_id: str, http_request: Request):
+        access.require_editor(http_request)
+        try:
+            selected_project(http_request,project_id)
+            return application.state.project_chats.update(project_id,session_id,delete=True)
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    @application.patch("/api/projects/{project_id}")
+    def rename_project(project_id: str, request: ProjectName, http_request: Request):
+        access.require_editor(http_request)
+        try:return application.state.projects.update(project_id,name=request.name)
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    @application.put("/api/projects/{project_id}/files/{building_id}")
+    def add_project_file(project_id: str, building_id: str, http_request: Request):
+        access.require_editable(http_request,building_id)
+        try:return application.state.projects.update(project_id,add=building_id)
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    @application.delete("/api/projects/{project_id}")
+    def delete_project(project_id: str, http_request: Request):
+        access.require_editor(http_request)
+        try:return application.state.projects.delete(project_id)
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    @application.post("/api/projects/{project_id}/restore")
+    def restore_project(project_id: str, http_request: Request):
+        access.require_editor(http_request)
+        try:return application.state.projects.delete(project_id,restore=True)
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    @application.delete("/api/projects/{project_id}/files/{building_id}")
+    def remove_project_file(project_id: str, building_id: str, http_request: Request):
+        access.require_editor(http_request)
+        try:return application.state.projects.update(project_id,remove=building_id)
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    @application.put("/api/projects/{project_id}/active-file/{building_id}")
+    def activate_project_file(project_id: str, building_id: str, http_request: Request):
+        access.require_editor(http_request)
+        try:return application.state.projects.update(project_id,active=building_id)
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    def workspace_jobs(http_request):
+        if not access.is_editor(http_request):return []
+        runner=application.state.jobs
+        with runner.lock:return [deepcopy(job) for job in runner.jobs.values()]
 
     @application.put("/api/buildings/{building_id}/library")
     def set_library_visibility(building_id: str, visible: bool, http_request: Request):
@@ -302,7 +511,7 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
             jobs = application.state.jobs.for_building(building_id, include_debug_answers=True) if access.is_editor(http_request) else []
             if len(document.sources) > 1:
                 jobs = [job for job in jobs if job["kind"] != "question"]
-            return {**access.descriptor(document), "jobs": jobs}
+            return {**access.descriptor(document), "jobs": jobs,"workspace_jobs":workspace_jobs(http_request)}
         except DocumentError as error:
             raise HTTPException(error.status, error.message) from None
 
@@ -336,6 +545,30 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
             return application.state.jobs.get(job_id)
         except DocumentError as error:
             raise HTTPException(error.status, error.message) from None
+
+    @application.post("/api/jobs/{job_id}/origin")
+    def task_origin(job_id: str, request: TaskOriginRequest, http_request: Request):
+        access.require_editor(http_request)
+        try:
+            job=application.state.jobs.get(job_id)
+            project=selected_project(http_request,request.project_id)
+            if job['building_id'] not in project['building_ids']:
+                raise DocumentError("The task's file is not in this project.",422)
+            if request.session_id:
+                session=application.state.project_chats.validate_context(project,request.session_id,job['building_id'])
+                if request.message_id and not any(message['id']==request.message_id and message['role']=='user'
+                    and message.get('request_id')==request.request_id for message in session['messages']):
+                    raise DocumentError("The initiating message is not in this chat.",422)
+            elif request.message_id or request.request_id:
+                raise DocumentError("A message reference requires its project chat.",422)
+            return application.state.jobs.set_origin(job_id,request.model_dump(exclude_none=True))
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
+
+    @application.post("/api/jobs/{job_id}/dismiss")
+    def dismiss_task_activity(job_id: str, http_request: Request):
+        access.require_editor(http_request)
+        try:return application.state.jobs.dismiss_activity(job_id)
+        except DocumentError as error:raise HTTPException(error.status,error.message) from None
 
     @application.post("/api/jobs/{job_id}/stop")
     def stop_job(job_id: str):

@@ -53,6 +53,7 @@ class JobRunner:
         self.debug_answers = debug_answers
         self.debug_answer_outputs: dict[str, list[str]] = {}
         self.executor=ThreadPoolExecutor(max_workers=2,thread_name_prefix="building")
+        self.render_executor=ThreadPoolExecutor(max_workers=2,thread_name_prefix="render")
         self.lock=threading.RLock();self.jobs={};self.events={};self.futures={};self.active={};self.deadlines={};self.closing=False;self.source_locks={}
         for building in store.list():
             for job in store.saved_jobs(building["building_id"]):self.jobs[job["id"]]=job
@@ -64,6 +65,7 @@ class JobRunner:
                 self.events.get(identity,threading.Event()).set()
                 self._update(identity,status="interrupted",phase="interrupted",message="Application stopped; usable revision retained.")
         self.executor.shutdown(wait=False,cancel_futures=True)
+        self.render_executor.shutdown(wait=False,cancel_futures=True)
 
     def _bind_provider(self,identity,provider):
         provider.provider_calls=[]
@@ -306,6 +308,28 @@ class JobRunner:
             if identity not in self.jobs:raise DocumentError("Job not found.",404)
             return deepcopy(self.jobs[identity])
 
+    def set_origin(self,identity,origin,*,message=None):
+        """Navigation metadata cannot change task status, clocks or publication."""
+        with self.lock:
+            job=self.jobs.get(identity)
+            if job is None:raise DocumentError("Job not found.",404)
+            if job.get("origin") and job["origin"]!=origin:
+                raise DocumentError("The task already has its initiating context.",409)
+            job["origin"]=deepcopy(origin)
+            if message is not None:job["initiating_message"]=message
+            self.store.save_job(job["building_id"],deepcopy(job))
+            return deepcopy(job)
+
+    def dismiss_activity(self,identity):
+        with self.lock:
+            job=self.jobs.get(identity)
+            if job is None:raise DocumentError("Job not found.",404)
+            if job["status"] not in TERMINAL:
+                raise DocumentError("Active tasks stay visible until they finish or are stopped.",409)
+            job["activity_dismissed"]=True
+            self.store.save_job(job["building_id"],deepcopy(job))
+            return deepcopy(job)
+
     def for_building(self,building_id,*,include_debug_answers=False):
         with self.lock:
             jobs = [deepcopy(job) for job in self.jobs.values() if job["building_id"] == building_id]
@@ -338,6 +362,30 @@ class JobRunner:
             identity=self._new(document,"reconstruction")
             self.active[building_id]=identity
             self.futures[identity]=self.executor.submit(self._reconstruct,identity,document.snapshot(),mode)
+            return self.get(identity)
+
+    def render(self, building_id, base_revision_id=None, message="Generate the interactive building model.", *, annotation_ids=None):
+        from .annotations import selected_annotations, apply_measurements
+        from .agent_render import run_render
+        document = self.store.get(building_id)
+        if document.kind == "ifc" and document.scene and not document.scene.derived:
+            raise DocumentError("The supplied IFC already has original geometry; rendering does not rewrite native source records.", 422)
+        if base_revision_id and base_revision_id != document.revision_id:
+            raise DocumentError("The building changed; refresh before rendering.", 409)
+        annotations = selected_annotations(self.store, document, annotation_ids or [], mutation=True)
+        # Preflight input scope before returning a running job. Applied values stay private until review/publication.
+        if document.description:
+            apply_measurements(document, annotations)
+        elif any(a["kind"] == "measurement" and a["space"] == "source" for a in annotations):
+            raise DocumentError("Wait for source interpretation and choose the measurement's floor before rendering.", 422)
+        with self.lock:
+            active = self.active.get(building_id)
+            if active and self.jobs[active]["status"] not in TERMINAL:
+                raise DocumentError("Stop the active building operation before starting another render.", 409)
+            identity = self._new(document, "render")
+            self.active[building_id] = identity
+            self._update(identity, original_message=message, annotation_ids=[a["id"] for a in annotations])
+            self.futures[identity] = self.render_executor.submit(run_render, self, identity, document.snapshot(), message, annotations)
             return self.get(identity)
 
     def extract(self,building_id,source_ids=None,*,retry=False):
@@ -458,7 +506,7 @@ class JobRunner:
     def _valid(self,identity):
         job=self.jobs[identity]
         return not self.closing and not self.events[identity].is_set() and (
-            job["kind"] not in {"reconstruction","refinement"} or self.active.get(job["building_id"])==identity)
+            job["kind"] not in {"reconstruction","refinement","render"} or self.active.get(job["building_id"])==identity)
 
     def _check(self,identity,deadline):
         if not self._valid(identity):raise JobStopped()

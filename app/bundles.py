@@ -91,14 +91,14 @@ class BuildingStore:
             path = path.resolve(strict=True)
             stored = self.directory(building_id) / "source.original"
             if self.root.parent.resolve() in path.parents:
-                raise DocumentError("Choose the original file outside Blueprint storage.", 422)
+                raise DocumentError("Choose the original file outside Concrete storage.", 422)
             if not path.is_file() or path.stat().st_size != stored.stat().st_size:
                 raise DocumentError("That file does not match the saved upload.", 422)
             with path.open("rb") as stream:
                 if hashlib.file_digest(stream, "sha256").hexdigest() != document.id:
                     raise DocumentError("That file does not match the saved upload.", 422)
         except (OSError, ValueError, RuntimeError):
-            raise DocumentError("Blueprint could not read that file path.", 422) from None
+            raise DocumentError("Concrete could not read that file path.", 422) from None
         with self.lock:
             _atomic_json(self.directory(building_id) / "original-path.json", str(path))
         return str(path)

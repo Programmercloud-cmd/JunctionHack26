@@ -1,0 +1,40 @@
+/* Drawing controls belong to the displayed page/model, above either canvas. */
+#workspace-content .editor-palette{position:absolute;top:12px;left:12px;z-index:9;width:min(340px,calc(100% - 76px));display:block;padding:0;pointer-events:none}
+.palette-row{position:relative;height:44px}
+.editor-palette button{display:grid;place-items:center;min-height:36px;padding:7px;color:var(--text);background:var(--surface);border:1px solid var(--line);border-radius:9px;font-size:11px;pointer-events:auto}
+.editor-palette button:hover:not(:disabled){border-color:var(--accent);background:color-mix(in srgb,var(--accent) 9%,var(--surface))}
+.editor-palette button[aria-pressed="true"]{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 15%,var(--surface))}
+.editor-palette button svg{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
+#annotation-toggle{position:absolute;left:0;top:0;width:44px;height:44px;min-height:44px;padding:10px;border-radius:50%;box-shadow:0 3px 14px #0002;transition:left .32s ease,transform .32s ease;z-index:2}
+.editor-palette.expanded #annotation-toggle{left:calc(100% - 44px);transform:rotate(360deg);border-color:var(--accent)}
+.palette-tool-row{height:44px;width:calc(100% - 49px);display:flex;align-items:center;gap:2px;padding:3px 5px;border:1px solid var(--line);border-radius:22px;background:var(--surface);box-shadow:0 3px 14px #0002;clip-path:inset(0 100% 0 0 round 22px);visibility:hidden;transition:clip-path .32s ease,visibility .32s}
+.editor-palette.expanded .palette-tool-row{clip-path:inset(0 0 0 0 round 22px);visibility:visible;pointer-events:auto}
+.palette-tool-row button{min-width:0;width:36px;height:36px;flex:1;padding:6px;border-color:transparent;border-radius:50%}
+#annotation-point,#annotation-draw{color:#e04444}
+.palette-parameters{margin-top:8px;padding:12px;border:1px solid var(--line);border-radius:14px;background:var(--surface);box-shadow:0 4px 18px #0002;pointer-events:auto;max-height:min(270px,45dvh);overflow:auto}
+.palette-fields{display:flex;flex-wrap:wrap;gap:10px}
+.palette-fields label{display:flex;flex-direction:column;align-items:flex-start;gap:5px;font-size:11px;color:var(--muted);flex:1 1 90px}
+.palette-fields input,.palette-fields select{width:100%;min-width:0;max-width:none;min-height:32px;padding:6px;color:var(--text);background:var(--background);border:1px solid var(--line);border-radius:6px}
+.palette-saved-marks{display:flex;flex-direction:column;gap:6px;max-height:170px;overflow:auto}
+.palette-saved-marks button{display:flex;justify-content:space-between;gap:10px;text-align:left;overflow-wrap:anywhere}
+.palette-saved-marks small,.palette-saved-marks p{color:var(--muted);font-size:10px}
+.palette-saved-marks small{white-space:nowrap}
+.palette-mark-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
+.palette-mark-actions button{flex:1}
+.editor-palette #annotation-status{display:none;margin-top:8px;padding:7px 10px;background:var(--surface);border:1px solid var(--line);border-radius:9px;box-shadow:0 3px 12px #0001;font-size:11px;color:var(--muted);line-height:1.5}
+.editor-palette.expanded #annotation-status:not(:empty){display:block}
+.user-mark-overlay .tag-highlight polyline,.user-mark-overlay .tag-highlight circle{stroke:#e04444;stroke-width:6px;filter:drop-shadow(0 0 3px var(--surface))}
+.user-mark-overlay .tag-highlight circle{fill:#e04444;stroke:var(--text);stroke-width:3px}
+#workspace-content #workspace-fullscreen{position:absolute;top:12px;right:12px;z-index:9;display:grid;place-items:center;width:36px;height:36px;padding:7px;background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:9px;box-shadow:0 3px 14px #0002}
+#workspace-fullscreen:hover{border-color:var(--accent)}
+#workspace-fullscreen .fullscreen-contract,#workspace-fullscreen.is-fullscreen .fullscreen-expand{display:none}
+#workspace-fullscreen.is-fullscreen .fullscreen-contract{display:block}
+@media(max-width:480px){#workspace-content .editor-palette{top:8px;left:8px;width:min(340px,calc(100% - 60px))}.palette-tool-row{gap:0;padding:3px}.palette-tool-row button{padding:4px}.palette-tool-row button svg{width:19px;height:19px}#workspace-content #workspace-fullscreen{top:8px;right:8px}}
+/* On narrow screens, keep the parameter row above the canvas instead of covering it. */
+@media(max-width:700px){
+  .workspace-open .visual-workspace:has(.editor-palette:not([hidden])){height:auto;min-height:70dvh}
+  #workspace-content:has(.editor-palette:not([hidden])){display:flex;flex-direction:column;min-height:420px;flex:none}
+  #workspace-content .editor-palette{position:relative;top:auto;left:auto;order:-1;margin:8px;flex:none}
+  #workspace-content:has(.editor-palette:not([hidden])) #drawing-pane,#workspace-content:has(.editor-palette:not([hidden])) #model-pane{height:320px;min-height:320px;flex:1 0 320px}
+}
+@media(prefers-reduced-motion:reduce){#annotation-toggle,.palette-tool-row{transition:none}}

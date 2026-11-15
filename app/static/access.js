@@ -5,7 +5,7 @@
 (() => {
   let access = null;
   let pending = false;
-  const editIds = new Set(["append-sources", "retry-extraction", "generate-scene", "refine-building", "reconstruct-building", "apply-assumptions"]);
+  const editIds = new Set(["append-sources", "attach-drawings", "workspace-attach-sources", "retry-extraction", "generate-scene", "refine-building", "reconstruct-building", "apply-assumptions"]);
   const panel = document.createElement("section");
   panel.id = "access-panel"; panel.className = "access-panel"; panel.hidden = true;
   panel.setAttribute("aria-label", "Demo access");
@@ -27,7 +27,7 @@
       document.querySelectorAll("[data-question]").forEach(button => { button.disabled = true; });
       if (element("question-help")) element("question-help").textContent = "Inspect cached examples freely. Enter the access code to ask a question or upload your own sources.";
     }
-    for (const id of editIds) if ((locked() || readOnly()) && element(id)) element(id).disabled = true;
+    for (const id of editIds) if ((locked() || readOnly()&&(id!=="attach-drawings"||!window.chatUI?.isHome())) && element(id)) element(id).disabled = true;
     document.querySelectorAll("#assumption-rows input, #assumption-rows select, #assumption-support").forEach(input => {
       input.disabled = Boolean(locked() || readOnly());
     });
@@ -35,6 +35,7 @@
 
   }
   function renderAccess() {
+    state.taskAccess=access;window.activeTasks?.setAccess(access||{});window.chatUI?.refreshTasks();
     panel.hidden = !access?.public_demo;
     if (!access?.public_demo) return;
     element("access-title").textContent = locked() ? "Explore the public examples" : "Workspace unlocked";
@@ -68,13 +69,13 @@
     return originalConversation(...args);
   };
   const originalUpload = uploadFile;
-  uploadFile = async function (input) {
+  uploadFile = async function (input, ...args) {
     await initialAccess;
     if (locked()) {
       message("Enter the access code, then upload the file from Home.");
       return;
     }
-    return originalUpload(input);
+    return originalUpload(input, ...args);
   };
   function blockAction(event, editing = false) {
     if (!locked() && !(editing && readOnly())) return false;
@@ -89,8 +90,8 @@
   document.addEventListener("click", event => {
     const target = event.target.closest("button, #drop-zone");
     if (!target) return;
-    if (editIds.has(target.id)) blockAction(event, true);
-    else if (target.id === "home-upload") blockAction(event);
+    if (editIds.has(target.id)) blockAction(event, target.id!=="attach-drawings"||!window.chatUI?.isHome());
+    else if (["home-upload","home-new-project"].includes(target.id)) blockAction(event);
   }, true);
   document.addEventListener("submit", event => { if (event.target.id === "question-form") blockAction(event); }, true);
   document.addEventListener("change", event => { if (event.target.id === "file-input") blockAction(event); }, true);

@@ -6,7 +6,7 @@ window.BlueprintVoice = class BlueprintVoice {
     this.host = host;
     this.documentId = null;
     this.mic = null;
-    this.hold = null;
+    this.unmuted = false;
     this.mode = "idle";
     this.ready = false;
     this.configVersion = 0;
@@ -29,39 +29,13 @@ window.BlueprintVoice = class BlueprintVoice {
     this.feedback = document.getElementById("voice-status");
     this.errorMessage = document.getElementById("voice-error");
 
-    this.button.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0 || !event.isPrimary || !this.canStart()) return;
-      event.preventDefault();
-      this.button.focus();
-      this.button.setPointerCapture(event.pointerId);
-      this.hold = {pointer: event.pointerId};
-      this.startRecording();
+    this.button.addEventListener("click", () => {
+      if(this.mode==="finalizing")return;
+      if(this.mic)this.mute();
+      else if(this.canStart()){this.unmuted=true;this.startRecording();}
     });
-    for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
-      this.button.addEventListener(type, (event) => {
-        if (this.hold?.pointer === event.pointerId) this.releaseHold();
-      });
-    }
-
-    this.button.addEventListener("keydown", (event) => {
-      if (event.key !== " " && event.key !== "Enter") return;
-      event.preventDefault();
-      if (event.repeat || !this.canStart()) return;
-      this.hold = {key: event.key};
-      this.startRecording();
-    });
-    window.addEventListener("keyup", (event) => {
-      if (this.hold?.key !== event.key) return;
-      event.preventDefault();
-      this.releaseHold();
-    });
-    this.button.addEventListener("contextmenu", (event) => event.preventDefault());
-    this.button.addEventListener("blur", () => this.releaseHold());
-    window.addEventListener("blur", () => this.releaseHold());
     window.addEventListener("pagehide", () => this.cancelAll());
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden) this.releaseHold();
-    });
+    document.addEventListener("visibilitychange", () => {if(document.hidden)this.mute();});
 
     this.checkConfig();
   }
@@ -69,17 +43,14 @@ window.BlueprintVoice = class BlueprintVoice {
   get recording() { return Boolean(this.mic); }
 
   canStart() {
-    return !this.button.disabled && !this.mic && !this.hold && !document.hidden;
+    return !this.button.disabled && !this.mic && !document.hidden;
   }
 
-  releaseHold() {
-    if (!this.hold) return;
-    this.hold = null;
-    if (this.mode === "connecting") {
-      this.cancelAll("Hold the button until the microphone is listening.");
-    } else if (this.mode === "listening") {
-      this.stopRecording();
-    }
+  mute() {
+    this.unmuted=false;
+    if(this.mode==="connecting")this.cancelAll("Microphone muted.");
+    else if(this.mode==="listening")this.stopRecording();
+    else this.syncControls();
   }
 
   status(message, mode = "idle") {
@@ -88,7 +59,7 @@ window.BlueprintVoice = class BlueprintVoice {
     this.feedback.dataset.state = mode;
     this.button.dataset.state = mode;
     const label = {connecting: "Starting…", listening: "Listening…", finalizing: "Finishing…"};
-    this.label.textContent = label[mode] || "Hold to talk";
+    this.label.textContent = label[mode] || "Microphone muted";
     this.host.updateControls();
   }
 
@@ -100,11 +71,13 @@ window.BlueprintVoice = class BlueprintVoice {
   syncControls() {
     const state = this.host.state();
     const chatAvailable = window.chatUI?.chatAvailable() ?? Boolean(this.documentId);
-    this.button.disabled = !chatAvailable || Boolean(state.busy) || !this.ready;
+    this.button.disabled = !chatAvailable || Boolean(state.busy) || !this.ready || this.mode==="finalizing";
     this.button.setAttribute("aria-disabled", String(this.button.disabled || this.mode === "finalizing"));
-    this.button.title = this.ready
-      ? this.documentId ? "Hold to talk" : "Open a blueprint to use voice"
-      : "Voice transcription is unavailable";
+    const active=this.unmuted&&Boolean(this.mic);
+    this.button.setAttribute("aria-pressed",String(active));
+    this.button.setAttribute("aria-label",active?"Mute microphone":"Unmute microphone");
+    document.getElementById("voice-mute-slash").toggleAttribute("hidden",active);
+    this.button.title=this.ready?(active?"Mute microphone and finish transcription":"Unmute microphone to start recording"):"Voice transcription is unavailable";
     this.question.readOnly = this.recording;
     this.syncSpeechToggle();
   }
@@ -212,7 +185,7 @@ window.BlueprintVoice = class BlueprintVoice {
   }
 
   capture(mic) {
-    if (this.mic !== mic || !this.hold || mic.node) return;
+    if (this.mic !== mic || !this.unmuted || mic.node) return;
     try {
       mic.node = new AudioWorkletNode(mic.context, "blueprint-pcm", {
         numberOfInputs: 1,
@@ -229,9 +202,9 @@ window.BlueprintVoice = class BlueprintVoice {
       mic.source.connect(mic.node);
       mic.node.connect(mic.context.destination); // The worklet outputs silence.
       mic.stream.getAudioTracks().forEach((track) => track.addEventListener("ended", () => {
-        if (this.mic === mic && this.mode === "listening") this.releaseHold();
+        if (this.mic === mic && this.mode === "listening") this.mute();
       }));
-      this.status("Listening. Release to finish.", "listening");
+      this.status("Listening. Click the microphone to mute and finish.", "listening");
     } catch (_) {
       this.failRecording(mic, "Audio capture could not start. You can still type your question.");
     }
@@ -239,6 +212,8 @@ window.BlueprintVoice = class BlueprintVoice {
 
   async stopRecording() {
     const mic = this.mic;
+    if(!mic||this.mode==="finalizing")return;
+    this.unmuted=false;
     this.status("Finalizing the transcript…", "finalizing");
     this.stopCapture(mic);
     let flushTimer;
@@ -283,7 +258,7 @@ window.BlueprintVoice = class BlueprintVoice {
 
   releaseMic(mic, cancel = false) {
     this.mic = null;
-    this.hold = null;
+    this.unmuted = false;
     this.releaseCapture(mic);
     if (!mic.socket) return;
     const socket = mic.socket;
@@ -317,7 +292,8 @@ window.BlueprintVoice = class BlueprintVoice {
   cancelAll(message = "") {
     this.stopSpeech();
     const mic = this.mic;
-    if (!mic) return;
+    this.unmuted=false;
+    if (!mic){this.syncControls();return;}
     this.releaseMic(mic, true);
     this.renderTranscript(mic);
     this.status(message);

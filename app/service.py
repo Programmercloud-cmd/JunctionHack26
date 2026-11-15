@@ -5,7 +5,7 @@ from copy import deepcopy
 from time import monotonic
 
 from .providers.gemini import ProviderError, configured_number
-from .schemas import Answer, DraftAnswer, Usage, AnswerClaim, NativeCalculation, QuestionIntent
+from .schemas import Answer, DraftAnswer, Usage, AnswerClaim, NativeCalculation, QuestionIntent, AgentTechnicalResponse
 from .highlights import validated_highlights
 from .reasoning import (NATIVE_COUNT_TYPES, ensure_reasoning, retrieve_context, execute_native_calculation,
                         native_model_count_kind, source_only_question)
@@ -62,7 +62,7 @@ def validate_draft(draft: DraftAnswer, document, gate, *, server_catalog_count=F
                 raise ProviderError("The model cited an unavailable IFC property.")
             elif ref.property_name and ref.property_name not in inspected.get(ref.element_id,{}).get("values",{}):
                 raise ProviderError("The model cited an IFC property outside the inspected context.")
-    if gate.decision != "sufficient" and draft.status != gate.decision:
+    if gate is not None and gate.decision != "sufficient" and draft.status != gate.decision:
         raise ProviderError("The model returned an answer inconsistent with the evidence assessment. Please retry or clarify the question.")
     if draft.status == "answered" and not (draft.evidence or draft.model_evidence or draft.user_value_evidence):
         raise ProviderError("The model did not provide supporting source regions. Please try a more specific question.")
@@ -198,7 +198,45 @@ def _validate_internal(draft,document,question,gate):
     return findings
 
 
-def ask(document, question, provider, progress=None):
+def _agent_context(document, native_ifc):
+    """Bind selected marks to originals while preserving their user-only authority."""
+    conversation = deepcopy(document.conversation_context or {})
+    references = conversation.get("navigation_references", [])
+    if native_ifc and references:
+        originals = {row["id"]: row for row in ensure_reasoning(document)["objects"]}
+        inspected = {row["id"]: row for row in document.question_context.get("objects", [])}
+        for reference in references:
+            identity = reference.get("object_id")
+            if identity in originals:
+                inspected[identity] = deepcopy(originals[identity])
+        document.question_context["objects"] = list(inspected.values())
+        retrieval = document.question_context.get("retrieval", {})
+        retrieval["selected_records"] = len(inspected)
+        retrieval["all_records_selected"] = len(inspected) == len(originals)
+        retrieval["property_view_complete"] = all(not row.get("omitted_value_count", 0) for row in inspected.values())
+    marks = conversation.get("user_annotations", [])
+    if document.question_context.get("evidence_scope") == "sources_and_user":
+        values = document.question_context.setdefault("user_values", [])
+        known = {value.get("id") for value in values}
+        for mark in marks:
+            if mark.get("kind") != "measurement" or mark.get("id") in known:
+                continue
+            values.append({"id": mark["id"], "property": "annotation_measurement", "value": mark.get("value"),
+                           "unit": mark.get("unit"), "scope": {key: mark[key] for key in ("floor_id", "object_id") if mark.get(key)},
+                           "provenance": "user_provided", "source_revision_id": mark.get("revision_id"),
+                           "evidence_rule": "Entered by the user; not a dimension observed in the original source."})
+    else:
+        # Keep spatial references for 'this area' without putting user-entered dimensions
+        # or numeric mark labels into a source-only worker/review payload.
+        stripped = []
+        for mark in marks:
+            stripped.append({key: deepcopy(value) for key, value in mark.items() if key not in {"value", "unit", "label"}})
+        conversation["user_annotations"] = stripped
+        document.conversation_context = conversation
+        document.question_context["conversation_context"] = deepcopy(conversation)
+
+
+def ask(document, question, provider, progress=None, *, agent=False):
     start = monotonic()
     crop = None
     passes = 1
@@ -207,7 +245,8 @@ def ask(document, question, provider, progress=None):
     document=document.snapshot()
     document.conversation_context=conversation
     document.user_values=user_values
-    legacy_fixture=bool(getattr(provider,"legacy_fixture_without_review",False))
+    legacy_fixture=not agent and bool(getattr(provider,"legacy_fixture_without_review",False))
+    ui_request=None
     deadline=start+configured_number("QA_TOTAL_SECONDS",180)
     provider.request_deadline=deadline
     def stage(name):
@@ -219,9 +258,11 @@ def ask(document, question, provider, progress=None):
             raise ProviderError("Original drawing pages are required to answer questions about this derived IFC. No generated dimensions were used as evidence.")
         native_ifc = document.kind == "ifc" and not derived
         document.question_context=retrieve_context(document,question)
+        if agent:
+            _agent_context(document, native_ifc)
         original_question=question
         resolve_intent=getattr(provider,"resolve_intent",None)
-        if callable(resolve_intent):
+        if not agent and callable(resolve_intent):
             stage("Understanding question")
             intent=QuestionIntent.model_validate(resolve_intent(document,question))
             if intent.action=="clarify":
@@ -238,8 +279,8 @@ def ask(document, question, provider, progress=None):
             document.conversation_context=conversational
             document.question_context=retrieve_context(document,question)
         stage("Inspecting source")
-        gate = provider.gate(document, question)
-        if gate.decision == "unclear" and not native_ifc:
+        gate = None if agent else provider.gate(document, question)
+        if gate is not None and gate.decision == "unclear" and not native_ifc:
             crop = provider.choose_crop(document, question)
             if crop.page not in {p.number for p in document.pages}:
                 raise ProviderError("The model selected an unavailable source page for inspection. Please retry.")
@@ -251,9 +292,20 @@ def ask(document, question, provider, progress=None):
             else:
                 crop = None
         kind = native_model_count_kind(document, question) if native_ifc else None
-        server_catalog_count = bool(kind and gate.decision == "sufficient" and document.scene.catalog_complete)
+        server_catalog_count = bool(kind and (gate is None or gate.decision == "sufficient") and document.scene.catalog_complete)
         stage("Drafting answer")
-        if server_catalog_count and legacy_fixture:
+        if agent:
+            worker=AgentTechnicalResponse.model_validate(provider.answer_agent(document, question))
+            ui_request=worker.ui_request
+            if worker.clarification is not None:
+                usage=provider.usage.model_copy();usage.latency_ms=round((monotonic()-start)*1000)
+                return Answer(status="clarification",answer=worker.clarification.message,
+                    clarification=worker.clarification,evidence=[],missing_information=[],next_action="",proposal=None,
+                    inspected_pages=[p.number for p in document.pages],gate=None,inspection_passes=passes,usage=usage,
+                    building_id=document.building_id or document.id,answered_revision_id=document.revision_id,
+                    display_revision_id=document.revision_id,review_note="Clarification of the question; no preflight evidence gate.")
+            draft=worker.draft
+        elif server_catalog_count and legacy_fixture:
             draft = ifc_count(document, kind)
         else:
             draft = provider.answer(document, question, gate, crop)
@@ -284,7 +336,7 @@ def ask(document, question, provider, progress=None):
                         new_evidence=any(r.get("omitted_value_count",0)>0 for r in document.question_context["objects"])
                         expanded["retrieval"]["property_view_complete"]=True
                         document.question_context=expanded
-                if new_evidence and gate.decision!="sufficient":
+                if new_evidence and gate is not None and gate.decision!="sufficient":
                     # A contradicted refusal is revisitable only after actual additional
                     # inspection. Preserve one overall gate rather than treating its
                     # first result as immutable truth.
@@ -306,7 +358,7 @@ def ask(document, question, provider, progress=None):
                 else:
                     findings["errors"].append("No material correction: rephrasing the same unsupported assertion is not progress.")
                 if review.decision!="supported"or findings["errors"]:
-                    status=gate.decision if gate.decision!="sufficient"else"unclear"
+                    status=gate.decision if gate is not None and gate.decision!="sufficient"else"unclear"
                     draft=DraftAnswer(status=status,answer="I could not establish a reliable answer from the inspected source evidence. The internal draft was not published.",
                         missing_information=["Source support resolving the draft review and validation findings."],next_action="Inspect the cited material or provide the missing source detail.")
                     # Retain only individually valid original citations; never carry rejected highlights.
@@ -332,9 +384,14 @@ def ask(document, question, provider, progress=None):
                       review_decision=review.decision if review else None,review_passes=review_passes,
                       review_note="Legacy fixture: answer review intentionally disabled."if legacy_fixture else("Original-evidence review is corroboration, not proof of correctness."if review.decision=="supported"and not findings["errors"]else"Draft remained unresolved; no rejected factual answer was published."),
                       calculation_results=findings["calculations"],resolved_question=question,
-                      user_value_attributions=attributions)
+                      user_value_attributions=attributions,ui_request=ui_request)
     except ProviderError:
         raise
     except Exception:
         # Deliberately do not log provider exceptions: they can contain source text or credentials.
         raise ProviderError("The selected provider could not complete the request. Check model access, quota and network, then retry. No evidence conclusion was made.") from None
+
+
+def ask_agent(document, question, provider, progress=None):
+    """Direct evidence worker: no intent rewriting and no sufficiency preflight."""
+    return ask(document, question, provider, progress=progress, agent=True)

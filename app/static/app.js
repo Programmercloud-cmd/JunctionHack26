@@ -29,11 +29,11 @@ function updateControls() {
   $("question-form").setAttribute("aria-busy", String(state.busy === "ask"));
   $("source-heading").closest("section").setAttribute("aria-busy", String(state.busy === "upload"));
   $("generate-scene").hidden = !state.document || state.document.kind === "ifc" || Boolean(state.scene);
-  $("generate-scene").disabled = busy || !state.providerReady || state.reconstructionSubmitting || state.jobs.some(j=>j.kind==="reconstruction"&&!terminalJob(j));
+  $("generate-scene").disabled = busy || !state.providerReady || state.reconstructionSubmitting || state.jobs.some(j=>["reconstruction","render"].includes(j.kind)&&!terminalJob(j));
   const progressive=Boolean(state.document?.building_id&&state.document?.revision_id),native=state.document?.kind==="ifc"&&!state.scene?.derived;
   $("building-progress").hidden=!progressive;
   $("refine-building").hidden=!state.scene||native;$("reconstruct-building").hidden=native;
-  for(const id of ["refine-building","reconstruct-building"])$(id).disabled=busy||!state.providerReady||state.reconstructionSubmitting||state.jobs.some(j=>j.kind==="reconstruction"&&!terminalJob(j));
+  for(const id of ["refine-building","reconstruct-building"])$(id).disabled=busy||!state.providerReady||state.reconstructionSubmitting||state.jobs.some(j=>["reconstruction","render"].includes(j.kind)&&!terminalJob(j));
   $("open-building").disabled=busy||!$("saved-building-select").value;
   $("show-model").disabled = !state.scene;
   $("show-concept").disabled = !state.viewer || !state.scene?.elements.some(e=>e.geometry);
@@ -104,12 +104,14 @@ function resetAnswer() {
 
 async function uploadFromNativePicker() {
   if (state.busy || !window.chatUI?.isHome()) return;
+  const projectId=state.homeProjectId||null;
   setError("upload-error");
   state.busy = "upload";
   updateControls();
   try {
     const result = await request("/api/documents/native-picker", {method: "POST"}, 320000);
     if (!result.cancelled) {
+      if(projectId)await window.projectLibrary.fileUploaded(result,projectId);
       await refreshSavedBuildings();
       announce("Original file saved.");
     }
@@ -122,15 +124,15 @@ async function uploadFromNativePicker() {
   }
 }
 
-async function uploadFile(input) {
+async function uploadFile(input, append = false, targetProjectId = null) {
   const files = Array.from(input?.name ? [input] : input || []);
-  if (!files.length || state.busy || (window.chatUI && !window.chatUI.isHome())) return;
+  if (!files.length || state.busy || (!append&&window.chatUI && !window.chatUI.isHome())) return;
+  const building=append?state.document?.building_id:null;
+  const projectId=append?null:targetProjectId||state.homeProjectId||null;
+  const uploadProject=projectId||state.activeProjectId;
+  if(append&&!building){setError("upload-error","Open a building before attaching sources.");return;}
   setError("upload-error");
-  if (files.length !== 1) {
-    setError("upload-error", "Choose one file to upload.");
-    return;
-  }
-  const [file] = files;
+  for(const file of files){
   const maxMB = /\.ifc$/i.test(file.name) ? (state.health?.limits?.max_ifc_mb || 25) : (state.health?.limits?.max_upload_mb || 10);
   if (file.size > maxMB * 1024 * 1024) {
     setError("upload-error", `${file.name} exceeds the ${maxMB} MB per-file limit.`);
@@ -140,23 +142,37 @@ async function uploadFile(input) {
     setError("upload-error", "Choose JPG, PNG, PDF, SVG, DXF or IFC. DWG needs an available converter.");
     return;
   }
+  }
   voice?.cancelAll();
   state.busy="upload";const version=++state.requestVersion;updateControls();
   window.chatUI?.onUpload();
   const form = new FormData();
-  form.append("files", file);
+  for(const file of files)form.append("files", file);
   // Desktop file pickers may provide a path. Standard browser uploads only provide a name.
-  if (typeof file.path === "string" && file.path) form.append("original_path", file.path);
+  if (files.length===1&&typeof files[0].path === "string" && files[0].path) form.append("original_path", files[0].path);
   try {
-    const result = await request("/api/documents", {method:"POST", body:form});
+    let result;
+    if(projectId&&files.length>1){
+      for(const file of files){const single=new FormData();single.append("files",file);result=await request("/api/documents",{method:"POST",body:single});await window.projectLibrary.fileUploaded(result,projectId);}
+    }else{
+      result = await request(building?`/api/buildings/${building}/sources`:"/api/documents", {method:"POST", body:form});
+      if(projectId)await window.projectLibrary.fileUploaded(result,projectId);
+    }
     if (version !== state.requestVersion) return;
     if (!result.document_id || !Array.isArray(result.pages)) throw new Error("The server did not return a usable source document.");
     await refreshSavedBuildings();
-    announce("Original file saved.");
+    if(building&&state.document?.building_id===building){
+      for(const job of result.extraction_jobs||[])rememberJob(await projectLibrary.trackTask(job,{project_id:uploadProject}));
+      await refreshBuilding();
+      schedulePoll(0);
+    }
+    announce(append?"Related original sources saved.":"Original files saved.");
   } catch (error) {
+    if(projectId)await refreshSavedBuildings();
     setError("upload-error", error.message);
   } finally {
     state.busy = null;
+    state.uploadMode="new";$("file-input").value="";
     updateControls();
   }
 }
@@ -169,17 +185,19 @@ function schedulePoll(delay=1000) {
   state.pollTimer=setTimeout(()=>{if(epoch===state.epoch)refreshBuilding();},delay);
 }
 async function refreshSavedBuildings() {
+  clearTimeout(state.workspacePollTimer);
   $("refresh-buildings").disabled=true;
   state.savedBuildingsError = false;
   try {
-    const result=await request("/api/buildings",{},15000);state.savedBuildings=result.buildings || [];
+    const result=await request("/api/buildings",{},15000);state.savedBuildings=result.buildings || [];state.projects=result.projects??state.savedBuildings.map(doc=>({id:doc.building_id||doc.document_id,name:doc.example_title||doc.filename,building_ids:[doc.building_id||doc.document_id],active_building_id:doc.building_id||doc.document_id,read_only:Boolean(doc.read_only_model)}));state.workspaceJobs=result.workspace_jobs||[];window.chatUI?.refreshTasks();
     const selected=$("saved-building-select").value || state.document?.building_id || "";
     $("saved-building-select").replaceChildren(new Option("Choose a saved building", ""));
     for(const item of state.savedBuildings)$("saved-building-select").append(new Option(`${item.filename} · ${item.has_scene?"model available":"source available"}`,item.building_id||item.document_id));
     $("saved-building-select").value=selected;
     $("saved-buildings-note").textContent=`${state.savedBuildings.length} saved ${state.savedBuildings.length===1?"building":"buildings"}`;
   }catch(error){state.savedBuildingsError = true;$("saved-buildings-note").textContent="Saved building list unavailable. Existing uploads remain usable.";}
-  finally{state.savedBuildingsLoaded = true;$("refresh-buildings").disabled=false;updateControls();}
+  finally{state.savedBuildingsLoaded = true;$("refresh-buildings").disabled=false;updateControls();
+    if(state.workspaceJobs?.some(job=>!terminalJob(job))){if(progressiveDocument())schedulePoll(0);else state.workspacePollTimer=setTimeout(refreshSavedBuildings,1000);}}
 }
 async function activateDocument(result, workspaceMode = null) {
   // Preload the initial view before replacing the building. Keep the old
@@ -232,7 +250,7 @@ async function openBuilding(id, workspaceMode = null) {
 function renderBuildingStatus() {
   if(!progressiveDocument())return;
   const document=state.document,labels={source_available:"Source available",source_only:"Source only · no supported floor model",preview_unreviewed:"Preview · not yet reviewed",reviewing:"Preview · review in progress",preview_reviewing:"Preview · review in progress",reviewed_no_action:"Reviewed · no actionable finding",needs_attention:"Needs attention",available:"Model available"};
-  const latest=state.jobs.find(job=>["reconstruction","extraction","refinement"].includes(job.kind));
+  const latest=state.jobs.find(job=>["reconstruction","extraction","refinement","render"].includes(job.kind));
   let statusLabel=labels[document.review_status] || (document.review_status || "available").replaceAll("_"," ");
   if(latest&&!terminalJob(latest))statusLabel=`${state.scene?"Model available":"Source available"} · ${latest.kind==="extraction"?"source interpretation":latest.phase==="reviewing"||latest.phase==="checking_revision"?"review":"reconstruction"} in progress`;
   else if(latest&&latest.status!=="complete"&&document.review_status!=="source_only"){
@@ -355,6 +373,7 @@ async function refreshBuilding() {
   try{
     const result=await request(`/api/buildings/${id}`,{},15000);
     if(epoch!==state.epoch||id!==state.document?.building_id)return;
+    if(result.workspace_jobs)state.workspaceJobs=result.workspace_jobs;
     // A metadata response can precede a newly submitted job. Retain that local job
     // until the server's next snapshot contains it, so polling cannot stop early.
     const jobs=result.jobs || [];
@@ -377,15 +396,16 @@ async function refreshBuilding() {
   }catch(error){if(epoch===state.epoch)setError("building-poll-error",`${error.message} The displayed model remains available. Use Refresh status to retry.`);}
   finally{
     if(state.pollingEpoch===epoch)state.pollingEpoch=null;
-    if(epoch===state.epoch&&state.jobs.some(job=>!terminalJob(job)))schedulePoll();
+    if(epoch===state.epoch&&[...state.jobs,...(state.workspaceJobs||[])].some(job=>!terminalJob(job)))schedulePoll();
   }
 }
 async function startReconstruction(mode) {
   if(!state.document||!state.providerReady||state.reconstructionSubmitting)return;
-  const epoch=state.epoch,document=state.document;setError("scene-error");state.reconstructionSubmitting=true;updateControls();
+  const epoch=state.epoch,document=state.document,taskScope=window.chatUI?.taskContext();setError("scene-error");state.reconstructionSubmitting=true;updateControls();
   try{
     if(progressiveDocument()){
-      const job=await request(`/api/buildings/${document.building_id}/reconstruction`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({base_revision_id:document.revision_id,mode})});
+      let job=await request(`/api/buildings/${document.building_id}/render`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({base_revision_id:document.revision_id,message:mode==="refine"?"Refine the interactive building model.":"Generate the interactive building model.",annotation_ids:window.blueprintAnnotations?.selectedIds()||[]})});
+      job=await projectLibrary.trackTask(job,taskScope);
       if(epoch===state.epoch){rememberJob(job);schedulePoll(0);}
     }else{
       state.busy="scene";$("scene-progress-text").textContent="Interpreting source plans and generating the model…";updateControls();
@@ -652,13 +672,20 @@ function setView(view) {
   $("drawing-pane").hidden=view!=="drawing";$("model-pane").hidden=!model;
   $("show-model").setAttribute("aria-pressed",String(view==="model"));$("show-concept").setAttribute("aria-pressed",String(concept));
   $("show-drawing").setAttribute("aria-pressed",String(view==="drawing"));
-  $("model-caption").textContent=concept?"Drag to orbit · click source objects or amber-outlined proposals to inspect their meaning.":"Drag to orbit · scroll to zoom · right-drag to pan · click an object to inspect its source.";
+  $("model-caption").textContent="";
   if(model&&state.viewer){state.viewer.resize();syncViewerControls(state.viewer.setMode(concept?"concept":"inspection"));requestAnimationFrame(()=>state.viewer?.resize());}
   renderInventory();
 }
 
 async function loadScene(scene) {
   if (scene.document_id !== state.document?.document_id) return;
+  const epoch=state.epoch;
+  let BlueprintViewer, viewerLoadError;
+  try { ({BlueprintViewer}=await import("/static/viewer.js")); }
+  catch(error) { viewerLoadError=error; }
+  // Recheck after the module boundary, before changing shared scene state.
+  // A polling response and a tab click can finish the first load together.
+  if(epoch!==state.epoch||scene.document_id!==state.document?.document_id)return;
   const updating=Boolean(state.viewer&&state.scene?.document_id===scene.document_id);
   if(updating&&(!scene.revision_id||scene.revision_id===state.scene.revision_id))return;
   const oldSceneRevision=state.scene?.revision_id;
@@ -691,7 +718,7 @@ async function loadScene(scene) {
   scene.elements.forEach((element) => $("element-select").append(new Option(`${element.kind} · ${element.name || element.id}${element.geometry ? "" : " (no mesh)"}`, element.id)));
   if(!updating)setView("model");
   try {
-    const {BlueprintViewer} = await import("/static/viewer.js");
+    if(viewerLoadError)throw viewerLoadError;
     if(!updating){
       state.viewer = new BlueprintViewer($("model-canvas-container"), {onSelect: inspectElement,onUnresolvedSelect: openUnresolvedAnnotation,onProposalSelect: inspectProposal});
       window.blueprintViewer = state.viewer;state.viewer.loadScene(scene);
@@ -1116,13 +1143,15 @@ function updateCutawayNote() {
 }
 
 async function refreshConversation() {
-  if(!progressiveDocument() || (state.document.sources?.length || 0) > 1)return;
-  const epoch=state.epoch,id=state.document.building_id;
+  if(!state.activeProjectId||!state.activeSessionId)return;
+  const project=state.activeProjectId,session=state.activeSessionId,epoch=state.sessionEpoch;
   try{
-    const payload=await request(`/api/buildings/${id}/conversation`,{},15000);if(epoch!==state.epoch)return;
-    state.conversation=payload.messages || [];renderConversation();setError("conversation-error");
-  }catch(error){if(epoch===state.epoch)setError("conversation-error",`Conversation history is unavailable: ${error.message}`);}
+    const payload=await request(`/api/projects/${project}/chats/${session}`,{},15000);
+    if(epoch!==state.sessionEpoch||session!==state.activeSessionId||project!==state.activeProjectId)return;
+    state.conversation=payload.messages||[];renderConversation();setError("conversation-error");
+  }catch(error){if(epoch===state.sessionEpoch)setError("conversation-error",`Conversation history is unavailable: ${error.message}`);}
 }
+
 function renderConversation() {
   if(window.chatUI){window.chatUI.mergeConversation(state.conversation);return;}
   const container=$("conversation");container.replaceChildren();
@@ -1130,7 +1159,7 @@ function renderConversation() {
   state.clarificationReply=latestAssistant?.answer?.status==="clarification"?latestAssistant.id:null;
   for(const message of state.conversation){
     const item=document.createElement("article");item.className=`chat-message ${message.role==="user"?"chat-user":"chat-assistant"}`;item.dataset.messageId=message.id;
-    const name=document.createElement("strong"),text=document.createElement("p");name.textContent=message.role==="user"?"You":message.answer?.status==="clarification"?"Clarification":"Blueprint QA";
+    const name=document.createElement("strong"),text=document.createElement("p");name.textContent=message.role==="user"?"You":message.answer?.status==="clarification"?"Clarification":"Concrete";
     text.textContent=message.answer?.clarification?.message || message.answer?.answer || message.question || message.content || "";item.append(name,text);
     if(message.answer){
       const open=document.createElement("button");open.type="button";open.className="text-button";open.textContent="Evidence and checks ↗";
@@ -1221,7 +1250,7 @@ function updateAssumptionButton() {
 }
 async function applyAssumptions() {
   if(!state.document||!state.assumptionEdits.size||state.applyingAssumptions)return;
-  const epoch=state.epoch;state.applyingAssumptions=true;updateAssumptionButton();setError("assumption-error");
+  const epoch=state.epoch,taskScope=window.chatUI?.taskContext();state.applyingAssumptions=true;updateAssumptionButton();setError("assumption-error");
   try{
     const edits=[...state.assumptionEdits.values()].map(edit=>{
       const copy={...edit};
@@ -1229,7 +1258,8 @@ async function applyAssumptions() {
       if(["calibration","stair_connection"].includes(edit.property)&&typeof edit.value==="string"){try{copy.value=JSON.parse(edit.value);}catch{throw new Error("Complete the source-linked input fields before applying.");}}
       return copy;
     });
-    const job=await request(`/api/buildings/${state.document.building_id}/refinements`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({base_revision_id:state.assumptionsRevision,edits,supporting_source_ids:[...$("assumption-support").selectedOptions].map(o=>o.value)})});
+    let job=await request(`/api/buildings/${state.document.building_id}/refinements`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({base_revision_id:state.assumptionsRevision,edits,supporting_source_ids:[...$("assumption-support").selectedOptions].map(o=>o.value)})});
+    job=await projectLibrary.trackTask(job,taskScope);
     if(epoch!==state.epoch)return;state.assumptionEdits.clear();rememberJob(job);schedulePoll(0);
   }catch(error){if(epoch===state.epoch)setError("assumption-error",error.message);}
   finally{state.applyingAssumptions=false;updateAssumptionButton();}
@@ -1301,7 +1331,7 @@ $("question-form").addEventListener("submit", async (event) => {
 $("file-input").addEventListener("change", (event) => {
   const files = Array.from(event.target.files);
   event.target.value = "";
-  uploadFile(files);
+  uploadFile(files,state.uploadMode==="append");
 });
 $("question").addEventListener("input", updateControls);
 suggestions.forEach((button) => button.addEventListener("click", () => { $("question").value = button.dataset.question; updateControls(); $("question").focus(); }));

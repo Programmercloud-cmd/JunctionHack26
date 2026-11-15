@@ -4,50 +4,61 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#fbfaf8">
-  <title>Blueprint — Your drawings, in conversation</title>
+  <title>Concrete — Your projects, in conversation</title>
+  <link rel="icon" type="image/png" href="/static/concrete-logo.png">
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/access.css">
   <link rel="stylesheet" href="/static/workspace-controls.css?v=2">
+  <link rel="stylesheet" href="/static/active-tasks.css">
+  <link rel="stylesheet" href="/static/editor-palette.css">
+  <link rel="stylesheet" href="/static/workspace-drawers.css">
   <script type="importmap">{"imports":{"three":"/static/vendor/three/three.module.js"}}</script>
   <script src="/static/voice.js" defer></script>
   <script src="/static/app.js" defer></script>
+  <script src="/static/active-tasks.js" defer></script>
   <script src="/static/chat-workspace.js" defer></script>
+  <script src="/static/projects.js" defer></script>
   <script src="/static/workspace-controls.js" defer></script>
+  <script src="/static/annotations.js" defer></script>
   <script src="/static/access.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#question">Skip to conversation</a>
   <main id="chat-shell" class="chat-shell">
     <header class="chat-header">
-      <a href="/" class="chat-brand"><span aria-hidden="true">▧</span> Blueprint</a>
+      <a href="/" class="chat-brand"><img class="brand-logo" src="/static/concrete-logo.png" alt="" aria-hidden="true"> Concrete</a>
       <div class="app-header-controls">
-        <div class="app-tabs" role="tablist" aria-label="App navigation">
-          <button id="home-tab" role="tab" type="button" aria-controls="home-library" aria-selected="true">Home</button>
-          <button id="details-tab" role="tab" type="button" aria-controls="details-panel" aria-selected="false" tabindex="-1" disabled>Details</button>
-        </div>
+        <button id="home-tab" class="home-icon" type="button" aria-label="Home" title="All projects"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M3 11 12 3l9 8M5 9v12h5v-7h4v7h5V9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       </div>
       <span id="chat-connection" role="status">Connecting…</span>
     </header>
-    <section id="home-library" class="home-library" role="tabpanel" aria-labelledby="home-tab">
+    <section id="home-library" class="home-library" role="region" aria-labelledby="home-library-title" tabindex="-1">
       <div class="home-library-heading">
-        <h1>Files</h1>
-        <button id="home-upload" type="button" class="secondary-button" disabled>Upload file</button>
-        <input id="file-input" type="file" accept="image/jpeg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf,.ifc,.svg,.dxf,.dwg" class="file-input" aria-label="Upload a blueprint file">
+        <div><button id="home-projects-back" type="button" class="secondary-button" hidden>← Projects</button><h1 id="home-library-title">Projects</h1><p id="home-project-name" hidden></p></div>
+        <div class="home-library-buttons"><button id="home-new-project" type="button" class="secondary-button">New project</button><button id="home-upload" type="button" class="secondary-button" disabled>Upload file</button></div>
+        <input id="file-input" type="file" multiple accept="image/jpeg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf,.ifc,.svg,.dxf,.dwg" class="file-input" aria-label="Upload blueprint files">
       </div>
+      <form id="project-create-form" hidden><label>Project name <input id="project-create-name" type="text" required></label><button type="submit">Create project</button><button id="project-create-cancel" type="button">Cancel</button></form>
+      <p id="home-drop-hint" class="home-drop-hint">Drop files onto a project, or open its Files page.</p>
+      <button id="project-drop-zone" class="project-drop-zone" type="button" hidden>Drop files here, or click to choose files</button>
       <p id="home-library-status" role="status">Loading files…</p>
       <div class="home-remove-feedback">
         <p id="home-remove-status" role="status"></p>
         <button id="home-undo-remove" type="button" class="secondary-button" hidden>Undo</button>
+        <button id="home-undo-project" type="button" class="secondary-button" hidden>Undo project deletion</button>
       </div>
       <p id="home-copy-status" role="status"></p>
       <p id="home-library-error" role="alert" hidden></p>
-      <table class="home-files" aria-label="Saved files" hidden>
-        <thead><tr><th scope="col">File</th><th scope="col">AI interpretation ready</th><th scope="col">3D model available</th></tr></thead>
+      <table class="home-files" aria-label="Saved projects" hidden>
+        <thead><tr><th scope="col">Preview</th><th scope="col" id="home-name-column">Project name</th><th scope="col" id="home-files-column">Files</th><th scope="col">AI interpretation ready</th><th scope="col">3D model available</th></tr></thead>
         <tbody id="home-library-list"></tbody>
       </table>
+      <section id="project-chats" class="project-chats" aria-labelledby="project-chats-title" hidden><header><h2 id="project-chats-title">Chats</h2><button id="new-project-chat" type="button" class="secondary-button">New chat</button></header><p id="project-chats-status" role="status"></p><div id="project-chat-list" role="list"></div></section>
     </section>
-    <div id="details-panel" class="details-panel" role="tabpanel" aria-labelledby="details-tab" hidden>
-      <section id="chat-column" class="chat-column" aria-label="Blueprint conversation">
+    <aside id="chat-preview" class="project-chat-preview" aria-label="Read-only chat preview" hidden><header><div><h2 id="chat-preview-title">Chat preview</h2><span class="preview-read-only">Read-only preview</span></div><button id="clear-chat-preview" type="button" aria-label="Close chat preview" hidden>×</button></header><div id="chat-preview-content" class="chat-preview-content"><div class="preview-empty"><img class="preview-logo" src="/static/concrete-logo.png" alt="" aria-hidden="true"><strong>Concrete</strong></div></div></aside>
+    <div id="details-panel" class="details-panel" role="region" aria-label="Project conversation workspace" hidden>
+      <section id="chat-column" class="chat-column" aria-label="Concrete conversation">
+        <header id="live-chat-header" class="live-chat-header"><button id="back-project-overview" class="secondary-button" type="button">← Project overview</button><strong id="live-chat-title"></strong></header>
         <div id="chat-scroll" class="chat-scroll">
           <div id="chat-log" class="chat-log" role="log" aria-label="Conversation messages" aria-live="polite" aria-relevant="additions text"></div>
         </div>
@@ -57,18 +68,19 @@
            aria-label="Resize chat pane" aria-controls="chat-column" aria-orientation="vertical"
            aria-valuemin="25" aria-valuemax="65" aria-valuenow="35"></div>
       <section id="visual-workspace" class="visual-workspace" aria-label="Drawing and 3D model" hidden>
-        <div class="workspace-caption"><span id="workspace-title">Drawing workspace</span><span id="workspace-status"></span><button id="workspace-fullscreen" type="button">Full screen</button></div>
+        <div class="workspace-caption" hidden><span id="workspace-title">Drawing workspace</span><span id="workspace-status"></span></div>
         <nav id="workspace-navigation" class="workspace-navigation" aria-label="Drawing and model controls" hidden></nav>
         <div id="workspace-tools" class="workspace-tools"></div>
-        <div id="workspace-content"></div>
+        <div id="workspace-content"><button id="workspace-fullscreen" type="button" aria-label="Full screen: drawing" title="Full screen"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="fullscreen-expand" d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/><path class="fullscreen-contract" d="M3 8h5V3m8 0v5h5M8 21v-5H3m13 5v-5h5"/></svg></button></div>
         <aside id="selection-evidence" class="selection-evidence" aria-label="Selected object evidence" hidden></aside>
       </section>
     </div>
   </main>
+  <aside id="active-tasks" class="active-tasks" aria-labelledby="active-tasks-title"><header><h2 id="active-tasks-title">Active tasks <span id="active-task-count">0</span></h2><button id="active-task-toggle" type="button" aria-expanded="true" aria-controls="active-task-content">Hide tasks</button><p>Recorded progress · keep chatting or inspecting</p></header><div id="active-task-content" class="task-scroll"><p id="active-task-empty" class="task-empty">No recorded tasks yet.</p><div id="active-task-list" class="active-task-list"></div><details id="task-history" open hidden><summary>Recent activity · saved tasks</summary><div id="task-history-list"></div></details></div></aside>
   <!-- Existing operation adapters retain their DOM anchors; presentation lives above. -->
   <div id="operation-adapters" hidden inert>
   <header class="topbar">
-    <a class="brand" href="/" aria-label="Blueprint QA home"><span class="brand-mark" aria-hidden="true">B<span>Q</span></span><span>Blueprint <strong>QA</strong></span></a>
+    <a class="brand" href="/" aria-label="Concrete home"><img class="brand-logo" src="/static/concrete-logo.png" alt="" aria-hidden="true"><span>Concrete</span></a>
     <div class="environment"><span class="status-dot" aria-hidden="true"></span> LOCAL WORKSPACE</div>
   </header>
 
@@ -127,7 +139,7 @@
             <div id="unresolved-model-notice" class="unresolved-model-notice" hidden><span id="unresolved-model-count"></span><button id="review-unresolved" class="text-button" type="button">Review source items ↗</button><small>? annotations identify approximate source regions, not model geometry.</small></div>
             <p id="no-model-geometry" class="layout-note" hidden>No 3D geometry was reconstructed. Inspect the unresolved source items below.</p>
             <p id="revision-notice" class="layout-note" hidden></p><div id="model-canvas-container" class="model-canvas-container"></div>
-            <p id="model-caption" class="viewer-caption">Drag to orbit · scroll to zoom · right-drag to pan · click an object to inspect its source.</p>
+            <p id="model-caption" class="viewer-caption" hidden></p>
             <div class="concept-proposals"><label for="concept-proposal-select">Decorative proposals</label><select id="concept-proposal-select"><option value="">Select a proposal</option></select><div id="concept-selection" hidden><strong id="concept-selection-name"></strong><p id="concept-selection-note"></p><button id="concept-support-source" class="secondary-button" type="button">Inspect supporting source area ↗</button></div></div><div id="floor-source-links" class="floor-source-links" aria-label="Original floor source regions" hidden></div>
             <details id="floor-details" class="floor-details" hidden><summary>Floor observations and assumptions</summary><div id="floor-details-content"></div></details>
             <p id="scene-summary" class="scene-summary"></p>
@@ -152,11 +164,11 @@
           <div class="prompt-row">
             <textarea id="question" rows="3" maxlength="2000" placeholder="What labeled spaces are shown on this drawing?" required disabled aria-describedby="question-help"></textarea>
             <div class="composer-voice">
-              <button id="voice-record" class="push-to-talk" type="button" aria-label="Hold to talk" aria-describedby="voice-help" title="Hold to talk" disabled>
+              <button id="voice-record" class="push-to-talk" type="button" aria-label="Unmute microphone" aria-pressed="false" aria-describedby="voice-help" title="Unmute microphone" disabled>
                 <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
-                  <rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4m-3 0h6"/>
+                  <rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4m-3 0h6"/><path id="voice-mute-slash" d="M3 3l18 18"/>
                 </svg>
-                <span id="voice-label" aria-hidden="true">Hold to talk</span>
+                <span id="voice-label" class="sr-only" aria-hidden="true">Microphone muted</span>
               </button>
               <button id="voice-read-answers" class="answer-audio-toggle" type="button" aria-label="Read answers aloud" aria-pressed="false" title="Read answers aloud" disabled>
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -165,7 +177,7 @@
               </button>
             </div>
           </div>
-          <p id="voice-help" class="sr-only">Hold with a pointer, Space, or Enter. Audio is sent to Google for transcription while recording.</p>
+          <p id="voice-help" class="sr-only">Click the microphone to unmute and record; click again to mute and finish. Sending the transcript stays explicit.</p>
           <p id="voice-status" class="sr-only" role="status"></p>
           <p id="voice-error" class="voice-error" role="alert" hidden></p>
           <p id="voice-speech-status" class="sr-only" role="status"></p>
@@ -197,7 +209,7 @@
         </article>
       </section>
     </div>
-    <footer class="footer"><span>BLUEPRINT QA / JUNCTION 2026</span><span>Read the source. Question the assumptions.</span></footer>
+    <footer class="footer"><span>CONCRETE / JUNCTION 2026</span><span>Read the source. Question the assumptions.</span></footer>
   </main>
   </div>
   <div id="announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>

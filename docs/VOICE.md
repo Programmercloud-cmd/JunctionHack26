@@ -3,10 +3,10 @@
 Set `GEMINI_API_KEY` in `.env.local` and start the app with `bash scripts/dev.sh`. The microphone needs browser permission and a secure context (localhost or HTTPS). Optional settings include `GEMINI_TRANSCRIPTION_MODEL`, `VOICE_LANGUAGE_CODES`, `VOICE_CONNECT_TIMEOUT_SECONDS` and `VOICE_FINALIZATION_TIMEOUT_SECONDS`; see `.env.example`. Configuration readiness does not verify provider access.
 
 1. Upload or open a saved drawing or IFC. When available, names from the saved model help recognition.
-2. Hold the microphone button beside the prompt. With the button focused, you can also hold Space or Enter. Wait for the listening indicator, then speak.
-3. Release to finish transcription. Review or edit the text in the prompt, then send it. Dictation never sends a question automatically.
+2. The microphone icon starts muted. Click it to unmute and start recording. With the button focused, Space or Enter also toggles recording. Wait for the listening indicator, then speak.
+3. Click the icon again to mute and finish transcription. Review or edit the text in the prompt, then send it. Dictation never sends a question automatically.
 
-On first use, the browser may ask you to allow microphone access. After granting permission, hold the button again if the original press ended. If the connection fails or finalization times out, review any received text before sending.
+On first use, the browser may ask you to allow microphone access. Muting during startup cancels that recording; a late microphone stream is stopped. Moving focus within the page keeps recording, while hiding the page mutes it and navigating to another session cancels it. If the connection fails or finalization times out, review any received text before sending.
 
 The app forwards audio to Google for recognition while recording and does not persist the audio. Provider retention follows your account settings. Saved model names are recognition hints and may contain errors.
 

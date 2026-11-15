@@ -1,0 +1,14 @@
+# Add this site to the existing Caddy configuration; do not replace the old site.
+agentic.95.133.254.90.sslip.io {
+    encode zstd gzip
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+    }
+    # Revalidate the shell/modules after code-only updates. API responses retain
+    # the application's no-store policy, including all private workspace data.
+    @application_assets path / /chat /static/*
+    header @application_assets Cache-Control "no-cache"
+    # The new hostname isolates host-only cookies; application access guards remain authoritative.
+    reverse_proxy 127.0.0.1:8001
+}

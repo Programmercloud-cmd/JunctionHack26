@@ -18,9 +18,16 @@ export class ConceptLayer {
     this.records = new Map();
     this.placements = structuredClone(placements);
     this.sourceRings = new Map();
+    const validMatrix=matrix=>Array.isArray(matrix)&&matrix.length===3&&matrix.every(row=>Array.isArray(row)&&row.length===3&&row.every(Number.isFinite));
     const frames = new Map((data.floors || []).map(f => {
       const a=f.building_transform||[[1,0,0],[0,1,0],[0,0,1]],b=f.transform;
-      return [f.id,b?a.map(row=>[0,1,2].map(j=>row.reduce((sum,v,k)=>sum+v*b[k][j],0))):null];
+      // Native IFC floors have no drawing frame (commonly transform=[]).
+      // Keep their exact meshes; do not invent a source-comparison transform.
+      if(!validMatrix(a)||!validMatrix(b)) {
+        if(data.derived&&b?.length)throw new Error('Invalid drawing source-comparison frame');
+        return [f.id,null];
+      }
+      return [f.id,a.map(row=>[0,1,2].map(j=>row.reduce((sum,v,k)=>sum+v*b[k][j],0)))];
     }));
     for (const entry of data.comparison || []) {
       const matrix=frames.get(entry.floor_id);

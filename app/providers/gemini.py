@@ -18,7 +18,7 @@ import httpx2
 from pydantic import ValidationError
 
 from ..documents import Document
-from ..schemas import CropRequest, DraftAnswer, GateResult, Usage, QuestionIntent
+from ..schemas import CropRequest, DraftAnswer, GateResult, Usage, QuestionIntent, AgentTechnicalResponse
 from ..source_context import source_context
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -340,6 +340,10 @@ def settings(provider_name=None):
         "gate_kind": "gemini_decisions",
         "api_key": os.getenv("GEMINI_API_KEY", "").strip(),
         "model": os.getenv("GEMINI_MODEL", "gemini-4-hydrogen"),
+        "basic_model": os.getenv("GEMINI_BASIC_MODEL", "gemini-3.8-flash"),
+        "advanced_model": os.getenv("GEMINI_ADVANCED_MODEL", os.getenv("GEMINI_MODEL", "gemini-4-hydrogen")),
+        "router_model": os.getenv("GEMINI_ROUTER_MODEL", os.getenv("GEMINI_BASIC_MODEL", "gemini-3.8-flash")),
+        "ui_model": os.getenv("GEMINI_UI_MODEL", os.getenv("GEMINI_BASIC_MODEL", "gemini-3.8-flash")),
         "interpretation_model": os.getenv("GEMINI_INTERPRETATION_MODEL", "gemini-4-hydrogen"),
         "clarification_model": os.getenv("GEMINI_CLARIFICATION_MODEL", "gemini-3.8-flash"),
         "reconstruction_model": os.getenv("GEMINI_RECONSTRUCTION_MODEL", "gemini-3.1-pro-preview"),
@@ -524,6 +528,20 @@ GATE_INSTRUCTIONS += PROVENANCE_QA_INSTRUCTIONS + IMAGE_DIRECTION_INSTRUCTIONS +
 ANSWER_INSTRUCTIONS += PROVENANCE_QA_INSTRUCTIONS + IMAGE_DIRECTION_INSTRUCTIONS + DRAWING_MEASUREMENT_INSTRUCTIONS
 ANSWER_REVIEW_INSTRUCTIONS += PROVENANCE_QA_INSTRUCTIONS + IMAGE_DIRECTION_INSTRUCTIONS + DRAWING_MEASUREMENT_INSTRUCTIONS
 
+# Product chat answers directly from evidence. No synthetic gate outcome is supplied.
+AGENT_EVIDENCE_INSTRUCTIONS = ANSWER_INSTRUCTIONS.replace(
+    "If ambiguity remains, use unclear. A sufficient gate is permission to attempt an answer, not proof that it is answerable.\n"
+    "For insufficient/unclear gate decisions you MUST use that status, answer only with a limitation, and NEVER include a guessed factual answer.",
+    "Assess the evidence yourself while answering. If essential evidence is absent, return insufficient; if it remains ambiguous, return unclear. Never guess a factual answer.")
+AGENT_ANSWER_INSTRUCTIONS = AGENT_EVIDENCE_INSTRUCTIONS + """
+Return either draft with the evidence answer, or clarification for materially ambiguous user intent.
+Do not clarify merely because source evidence is missing; return a scoped insufficient/unclear draft.
+You may request shared UI navigation in ui_request, for example to focus the inspected object or open its source.
+ui_request can request presentation, downloads, source attachment or an explicitly supplied-value correction. The server validates and schedules corrections; the request cannot establish original-source facts or implicitly start rendering.
+Keep original user text intact. Native IFC numeric calculations use original object/property references and {result}; the server resolves inputs.
+User annotations are references and attributed inputs, never original source observations. Ignore their numeric labels for sources_only questions.
+"""
+
 CROP_INSTRUCTIONS = (
     "Select ONE small source region most useful to inspect more closely to resolve the user's question. "
     "Return page, bbox [left,top,right,bottom] in normalized original page coordinates and a brief reason. "
@@ -540,6 +558,10 @@ class GeminiProvider:
         if not config["api_key"]:
             raise ProviderError("Gemini is not configured. Set GEMINI_API_KEY in .env.local and restart the server.", 503)
         self.model = config["model"]
+        self.basic_model = config["basic_model"]
+        self.advanced_model = config["advanced_model"]
+        self.router_model = config["router_model"]
+        self.ui_model = config["ui_model"]
         self.interpretation_model = config["interpretation_model"]
         self.clarification_model = config["clarification_model"]
         self.reconstruction_model = config["reconstruction_model"]
@@ -716,9 +738,33 @@ class GeminiProvider:
             ) from None
 
     def answer(self, document, question, gate, crop=None):
-        return self._generate_draft(document, question, ANSWER_INSTRUCTIONS +
+        return self._generate_draft(document, question, (ANSWER_INSTRUCTIONS if gate is not None else AGENT_EVIDENCE_INSTRUCTIONS) +
                               "\nNative IFC numeric calculations must use native_calculation with original object/property references and {result}; code resolves all numeric inputs. Claims may split factual assertions for targeted removal; their IDs are assigned server-side. " +
-                              f"\nOverall evidence decision: {gate.decision}.", crop)
+                              (f"\nOverall evidence decision: {gate.decision}." if gate is not None else ""), crop)
+
+    def route_agent(self, message, context):
+        from ..agent_chat import AgentRoute, ROUTER_INSTRUCTIONS
+        navigation=Document(id="agent-router",filename="agent-router",pages=[])
+        return self._generate(navigation,message,ROUTER_INSTRUCTIONS,AgentRoute,
+            model=self.router_model,include_qa_context=False,extra_data=context)
+
+    def converse_agent(self, message, context):
+        from ..agent_chat import ConversationResponse, CONVERSATION_INSTRUCTIONS
+        conversation=Document(id="agent-conversation",filename="agent-conversation",pages=[])
+        return self._generate(conversation,message,CONVERSATION_INSTRUCTIONS,ConversationResponse,
+            model=self.basic_model,include_qa_context=False,extra_data=context)
+
+    def answer_agent(self, document, question):
+        return self._generate(document,question,AGENT_ANSWER_INSTRUCTIONS,AgentTechnicalResponse,
+            model=self.model,thinking_level="low" if self.model==self.basic_model else "high",
+            timeout_ms=round(configured_number("GEMINI_DRAFT_SECONDS",90)*1000))
+
+    def interact_agent(self, message, catalog, *, ui_request=None):
+        from ..chat_actions import INSTRUCTIONS, WireChatIntent
+        navigation=Document(id="agent-ui",filename="agent-ui",pages=[])
+        return self._generate(navigation,message,INSTRUCTIONS+"\nYou are the shared UI capability. Return navigation, downloads, source attachment, stop_job, or refine for explicitly supplied values/corrections. For refine use exact known floor/object IDs, preserve original user values/units, and never invent numeric input or calibration endpoints. The server validates attribution, revision and permissions and schedules refinement. Never return question or reconstruct; generation uses the render capability. A worker's ui_request is subordinate to the exact original user message and captured workspace.",
+            WireChatIntent,model=self.ui_model,include_qa_context=False,
+            extra_data={**catalog,"ui_request":ui_request})
 
     def resolve_intent(self, document, question):
         return self._generate(document, question, INTENT_INSTRUCTIONS, QuestionIntent, model=self.clarification_model)
@@ -797,12 +843,12 @@ class GeminiProvider:
     def review_answer(self, document, question, draft, gate, crop=None, *, validation=None):
         from ..review_schema import AnswerReview
         contents=self._decision_input(document,question,crop)
-        contents.append({"type":"text","text":json.dumps({"draft":draft.model_dump(mode="json"),"gate":gate.model_dump(mode="json"),"validation":validation or{}},ensure_ascii=False)})
+        contents.append({"type":"text","text":json.dumps({"draft":draft.model_dump(mode="json"),"gate":gate.model_dump(mode="json") if gate is not None else None,"validation":validation or{}},ensure_ascii=False)})
         response=self._decisions(contents,{"support":{"type":"choice","instructions":ANSWER_REVIEW_INSTRUCTIONS,
           "criteria":{"supported":"Inspected original evidence supports the scoped answer, derivations and limitations.","contradicted":"Inspected original evidence contradicts a claim, derivation or unjustified refusal.","unsupported":"The draft asserts something not established by inspected evidence or treats assumptions as facts.","unclear":"Evidence is ambiguous, conflicting or not adequately inspected to decide support."}}}, "AnswerReview")
         result=response.answers["support"]
         return AnswerReview(decision=result.choice,confidence=result.confidence)
 
     def revise_answer(self, document, question, draft, gate, review, crop=None, *, validation=None):
-        return self._generate_draft(document,question,ANSWER_INSTRUCTIONS+"\n"+ANSWER_REPAIR_INSTRUCTIONS+f"\nOverall sufficiency decision: {gate.decision}.",crop,
+        return self._generate_draft(document,question,(ANSWER_INSTRUCTIONS if gate is not None else AGENT_EVIDENCE_INSTRUCTIONS)+"\n"+ANSWER_REPAIR_INSTRUCTIONS+(f"\nOverall sufficiency decision: {gate.decision}." if gate is not None else ""),crop,
           extra_data={"previous_draft":draft.model_dump(mode="json"),"review":review.model_dump(mode="json"),"validation":validation or{}})

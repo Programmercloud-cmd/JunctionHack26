@@ -54,13 +54,17 @@ def test_automatic_extraction_and_incremental_reupload_cache(tmp_path):
         assert not duplicate['is_new_upload'] and duplicate['extraction_jobs']==[]
         old_revision=saved.revision_id
         second = ('second.png', other_png())
-        assert client.post(f"/api/buildings/{saved.id}/sources", files={"file": second}).status_code == 422
-        assert client.post('/api/documents', files=[('files', ('first.png', png())), ('files', second)]).status_code == 422
+        attached=client.post(f"/api/buildings/{saved.id}/sources", files={"file": second})
+        assert attached.status_code==200
+        finish(app.state.jobs,attached.json()['extraction_jobs'])
+        batch=client.post('/api/documents', files=[('files', ('first.png', png())), ('files', second)])
+        assert batch.status_code==200
+        finish(app.state.jobs,batch.json()['extraction_jobs'])
         separate = client.post('/api/documents', files={'file': second}).json()
         finish(app.state.jobs, separate['extraction_jobs'])
         assert len(provider.extracts) == 2
         assert separate['building_id'] != saved.id
-        assert len(app.state.documents.get(saved.id).pages) == 1
+        assert len(app.state.documents.get(saved.id).pages) == 2
         assert client.get(f'/api/buildings/{saved.id}/revisions/{old_revision}/pages/1').status_code == 200
         assert client.get(f'/api/buildings/{saved.id}/revisions/{old_revision}/pages/2').status_code == 404
         grouped = app.state.documents.add_many([(second[1], second[0])], building_id=saved.id)

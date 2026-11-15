@@ -42,7 +42,7 @@ def setup_routes(page,scene=None):
         'pages':[{'page':1,'width':600,'height':400,'source_id':'c'*64,'source_page':1,'source_filename':'Assembly plan.png',
         'image_url':f'/api/buildings/{building}/revisions/{revision}/pages/1'}],
         'warnings':[],'sources':[{'source_id':'c'*64,'filename':'Assembly plan.png','kind':'png','pages':[{'page':1}]}]}
-    messages=[];requests=[];jobs=[]
+    messages=[];requests=[];jobs=[];sessions=[]
     def handle(route):
         path=route.request.url.split('/api/',1)[1];requests.append((route.request.method,path,route.request.post_data))
         if path=='access':data={'public_demo':False,'can_work':True,'shared_workspace':False}
@@ -53,6 +53,17 @@ def setup_routes(page,scene=None):
             elif message=='Set Assembly floor height to 3.4 m':actions=[{'type':'refine','edits':[{'scope':{'floor_id':'f1'},'property':'floor_height','value':3.4,'unit':'m','reason':'User supplied height; not observed in source'}]}]
             else:actions=[{'type':'question','question':message,'revision_id':request.get('revision_id')}]
             data={**{k:request.get(k) for k in ('request_id','document_id','revision_id')},'geometry_revision_id':request.get('workspace',{}).get('geometry_revision_id'),'navigation_epoch':request.get('workspace',{}).get('navigation_epoch'),'status':'ready','actions':actions,'message':'Explicit fake intent only','usage':{}}
+        elif path.startswith('projects/') and '/chats' in path:
+            import json
+            parts=path.split('/');session_id=parts[3] if len(parts)>3 else None
+            if route.request.method=='POST':
+                body=json.loads(route.request.post_data);data={'id':format(len(sessions)+1,'032x'),'project_id':parts[1],'name':body.get('name','Fixture chat'),'building_id':body.get('building_id'),'created_at':time.time(),'last_active':time.time(),'messages':messages};sessions.append(data)
+            elif session_id:
+                data=next((item for item in sessions if item['id']==session_id),None)
+                if data is None:return route.fulfill(status=404,json={'detail':'Fixture chat missing'})
+                if route.request.method=='PATCH':data['name']=json.loads(route.request.post_data)['name']
+                if route.request.method=='DELETE':sessions.remove(data)
+            else:data={'chats':sessions}
         elif path=='health':data={'provider_ready':True,'provider_label':'Gemini','provider':'gemini','limits':{'max_upload_mb':10,'max_ifc_mb':25,'max_pages':5}}
         elif '/pages/' in path:return route.fulfill(content_type='image/png',body=source_bytes())
         elif path=='documents':data={**document,'is_new_upload':True,'extraction_jobs':[]}
@@ -63,6 +74,11 @@ def setup_routes(page,scene=None):
             {'id':'height','scope':{'floor_id':'f1'},'property':'floor_height','label':'Assembly floor height','value':None,'unit':'m','provenance':'unknown','reason':'No source height supplied','source':{'page':1,'bbox':[0,0,1,1]},'editable':True}]}
         elif path.endswith('/refinements'):
             data={'id':'edit-job','building_id':building,'kind':'refinement','status':'complete','phase':'complete','message':'Fixture submitted values saved','issues':[]};jobs.insert(0,data)
+        elif path.startswith('jobs/') and path.endswith('/origin'):
+            import json
+            data=next(item for item in jobs if item['id']==path.split('/')[1]);data['origin']=json.loads(route.request.post_data)
+        elif path.startswith('jobs/') and path.endswith('/dismiss'):
+            data=next(item for item in jobs if item['id']==path.split('/')[1]);data['activity_dismissed']=True
         elif path.endswith('/sources'):
             document['revision_id']='d'*32;document['revision_number']=2
             document['pages'].append({'page':2,'source_page':1,'source_filename':'Section.png','width':600,'height':400,'image_url':f'/api/documents/{building}/pages/2'})
