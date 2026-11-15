@@ -3,7 +3,7 @@
 from collections.abc import Callable
 
 from ..documents import Document
-from ..schemas import Answer
+from ..schemas import Answer, ChatQuestionIntent
 from ..service import ask
 
 
@@ -15,6 +15,7 @@ class VLM:
         return self.provider.extract_interpretation(source, include_geometry=False)
 
     def answer(
-        self, source: Document, question: str, *, progress: Callable[[str], None] | None = None
-    ) -> Answer:
-        return ask(source, question, self.provider, progress=progress)
+        self, source: Document, question: str, *, progress: Callable[[str], None] | None = None,
+        allow_3d: bool = False,
+    ) -> Answer | ChatQuestionIntent:
+        return ask(source, question, self.provider, progress=progress, allow_3d=allow_3d)

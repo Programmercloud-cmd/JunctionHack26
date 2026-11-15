@@ -5,7 +5,7 @@ from copy import deepcopy
 from time import monotonic
 
 from .providers.gemini import ProviderError, configured_number
-from .schemas import Answer, DraftAnswer, Usage, AnswerClaim, NativeCalculation, QuestionIntent
+from .schemas import Answer, DraftAnswer, Usage, AnswerClaim, ChatQuestionIntent, Clarification, NativeCalculation, QuestionIntent
 from .highlights import validated_highlights, whole_model_count_kind
 from .reasoning import ensure_reasoning, retrieve_context, execute_native_calculation, source_only_question
 from .review_schema import AnswerReview
@@ -197,7 +197,7 @@ def _validate_internal(draft,document,question,gate):
     return findings
 
 
-def ask(document, question, provider, progress=None):
+def ask(document, question, provider, progress=None, *, allow_3d=False) -> Answer | ChatQuestionIntent:
     start = monotonic()
     crop = None
     passes = 1
@@ -212,30 +212,49 @@ def ask(document, question, provider, progress=None):
     def stage(name):
         if monotonic()>=deadline:raise ProviderError("The configured Q&A execution budget was exhausted. No unsupported draft was published.",504)
         if progress:progress(name)
+
+    def clarify(clarification):
+        usage = provider.usage.model_copy()
+        usage.latency_ms = round((monotonic() - start) * 1000)
+        return Answer(status="clarification", answer=clarification.message,
+            clarification=clarification, evidence=[], missing_information=[], next_action="", proposal=None,
+            inspected_pages=[], gate=None, inspection_passes=0, usage=usage,
+            building_id=document.building_id or document.id, answered_revision_id=document.revision_id,
+            display_revision_id=document.revision_id,
+            review_note="Clarification of user intent; no evidence-sufficiency judgment was made.")
+
     try:
         derived = bool(document.scene and document.scene.derived)
-        if derived and not document.pages:
-            raise ProviderError("Original drawing pages are required to answer questions about this derived IFC. No generated dimensions were used as evidence.")
         native_ifc = document.kind == "ifc" and not derived
+        if allow_3d:
+            document.conversation_context = {**(conversation or {}), "allow_3d": True}
         document.question_context=retrieve_context(document,question)
         original_question=question
         resolve_intent=getattr(provider,"resolve_intent",None)
         if callable(resolve_intent):
             stage("Understanding question")
-            intent=QuestionIntent.model_validate(resolve_intent(document,question))
+            raw_intent = resolve_intent(document, question)
+            intent_type = ChatQuestionIntent if allow_3d else QuestionIntent
+            intent = intent_type.model_validate(
+                raw_intent.model_dump() if isinstance(raw_intent, QuestionIntent) else raw_intent)
             if intent.action=="clarify":
-                usage=provider.usage.model_copy();usage.latency_ms=round((monotonic()-start)*1000)
-                return Answer(status="clarification",answer=intent.clarification.message,
-                    clarification=intent.clarification,evidence=[],missing_information=[],next_action="",proposal=None,
-                    inspected_pages=[],gate=None,inspection_passes=0,usage=usage,
-                    building_id=document.building_id or document.id,answered_revision_id=document.revision_id,
-                    display_revision_id=document.revision_id,review_note="Clarification of user intent; no evidence-sufficiency judgment was made.")
+                return clarify(intent.clarification)
+            if intent.action == "generate_3d":
+                if native_ifc:
+                    return clarify(Clarification(message="The uploaded IFC already contains a 3D model. Which drawings should I use for a new model?"))
+                if not document.pages:
+                    return clarify(Clarification(message="Which drawings should I use for the 3D model? Please upload them."))
+                stage("Preparing 3D generation")
+                return intent
             question=intent.resolved_question.strip() or question
             conversational=deepcopy(getattr(document,"conversation_context",None) or {})
             conversational["evidence_scope"]="sources_only" if source_only_question(original_question) else intent.evidence_scope
             conversational["original_question"]=original_question
+            conversational.pop("allow_3d", None)
             document.conversation_context=conversational
             document.question_context=retrieve_context(document,question)
+        if derived and not document.pages:
+            raise ProviderError("Original drawing pages are required to answer questions about this derived IFC. No generated dimensions were used as evidence.")
         stage("Inspecting source")
         gate = provider.gate(document, question)
         if gate.decision == "unclear" and not native_ifc:

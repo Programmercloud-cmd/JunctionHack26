@@ -20,7 +20,7 @@ from .vlm import VLM
 from .bundles import BuildingStore
 from .jobs import JobRunner
 from .user_inputs import RefinementRequest, assumptions
-from .conversation import question_context, user_message, assistant_message
+from .conversation import question_context, user_message, assistant_message, localize_reconstruction_notice
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -134,7 +134,10 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
     def conversation(building_id: str):
         try:
             application.state.documents.get(building_id)
-            return {"conversation_id":building_id,"messages":application.state.documents.conversation(building_id)}
+            messages = application.state.documents.conversation(building_id)
+            return {"conversation_id": building_id, "messages": [
+                localize_reconstruction_notice(message, "text") for message in messages
+            ]}
         except DocumentError as error:raise HTTPException(error.status,error.message) from None
 
     @application.get("/api/buildings/{building_id}/assumptions")

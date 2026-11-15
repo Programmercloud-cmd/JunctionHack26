@@ -13,7 +13,7 @@ from app.reconstruction import reconstruct_scene
 from app.review_schema import AnswerReview
 from app.building import BuildingDescription
 from test_ifc_generate import description, floor, room, region
-from app.schemas import CropRequest, DraftAnswer, GateResult
+from app.schemas import ChatQuestionIntent, CropRequest, DraftAnswer, GateResult, QuestionIntent
 from test_backend import png
 
 
@@ -66,6 +66,28 @@ def intercept(provider, output, finish_reason="STOP"):
 
     provider.client._api_client._httpx_client = httpx2.Client(transport=httpx2.MockTransport(handler))
     return requests
+
+
+@pytest.mark.parametrize("allow_3d", [False, True])
+def test_gemini_intent_wire_exposes_3d_only_for_opted_in_chat(sdk_document, allow_3d):
+    provider, document = sdk_document
+    question = "Erstelle mir daraus eine 3D-Datei."
+    document.conversation_context = {"allow_3d": allow_3d, "active_page": 1}
+    action = "generate_3d" if allow_3d else "answer"
+    requests = intercept(provider, {"action": action, "resolved_question": "" if allow_3d else question})
+
+    result = provider.resolve_intent(document, question)
+
+    assert type(result) is (ChatQuestionIntent if allow_3d else QuestionIntent)
+    assert result.action == action
+    wire = requests[0]
+    enum = wire["generationConfig"]["responseJsonSchema"]["properties"]["action"]["enum"]
+    assert ("generate_3d" in enum) is allow_3d
+    instructions = wire["systemInstruction"]["parts"][0]["text"]
+    if allow_3d:
+        assert "Capability questions" in instructions and "explicit subset" in instructions
+        context = json.loads(wire["contents"][0]["parts"][1]["text"])["conversation_context"]
+        assert context["active_page"] == 1
 
 
 def generate(provider, document, mode):

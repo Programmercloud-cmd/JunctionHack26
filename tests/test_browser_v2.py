@@ -89,6 +89,7 @@ def test_multifloor_original_regions_explosion_and_ifc_roundtrip(building_server
     page.wait_for_function("window.blueprintViewer?.data.derived === true",timeout=30000)
     expect(page.locator("#scene-error")).to_be_hidden()
     expected_badge="Calibrated footprints · assumed heights" if calibrated else "Approximate · unscaled"
+    page.locator("#model-details").evaluate("(details) => { details.open = true; }")
     expect(page.locator("#scene-badge")).to_have_text(expected_badge)
     if calibrated:
         expect(page.locator("#scene-summary")).not_to_contain_text("Uncalibrated diagrams preserve drawing proportions")
@@ -148,6 +149,8 @@ def test_multifloor_original_regions_explosion_and_ifc_roundtrip(building_server
     assert artifact.read_bytes().startswith(b"ISO-10303-21")
     page.locator("#file-input").set_input_files(str(artifact))
     page.wait_for_function("old=>window.blueprintViewer?.data.document_id && window.blueprintViewer.data.document_id!==old",arg=original_id,timeout=30000)
+    page.locator("#show-model").click()
+    page.locator("#model-details").evaluate("(details) => { details.open = true; }")
     expect(page.locator("#scene-badge")).to_have_text(expected_badge)
     expect(page.locator("#explode-floors")).to_be_checked()
     if not calibrated:
@@ -161,9 +164,10 @@ def test_multifloor_original_regions_explosion_and_ifc_roundtrip(building_server
     ask(page,"What is the ceiling height?")
     expect(page.locator("#result-status")).to_have_text("Missing information")
     assert snapshot(page)["highlight_ids"]==[]
-    page.locator("#show-model").click(); page.locator("#floor-select").select_option("")
+    page.locator("#show-model").click()
+    page.locator("#model-details").evaluate("(details) => { details.open = true; }")
+    page.locator("#floor-select").select_option("")
     page.locator("#explode-floors").check()
-    page.screenshot(path=f"/tmp/junction-v2-{'calibrated' if calibrated else 'unscaled'}.png",full_page=True)
     if not calibrated:
         # Exercise provenance-only variants of the actual scene. Geometry remains
         # unchanged; incomplete or mixed legacy metadata must not promise new scaling.

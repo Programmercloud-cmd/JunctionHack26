@@ -16,25 +16,59 @@ from .documents import Document, DocumentError, DocumentStore, Page
 from .scene import Scene
 
 
+def _json_text(value):
+    # ASCII escapes preserve Unicode values across Windows and UTF-8 locales.
+    return json.dumps(value, allow_nan=False, indent=2)
+
+
 def _json(path, value):
-    path.write_text(json.dumps(value,ensure_ascii=False,allow_nan=False,indent=2))
+    path.write_text(_json_text(value), encoding="ascii")
+
+
+def _replace(source, destination):
+    # Retry brief Windows sharing violations without changing atomic publication.
+    delays = (0.015, 0.045, 0.12)
+    for attempt in range(len(delays) + 1):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError as error:
+            if (os.name != "nt" or getattr(error, "winerror", None) not in {5, 32, 33}
+                    or attempt == len(delays)):
+                raise
+            time.sleep(delays[attempt])
 
 
 def _atomic_json(path, value):
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     try:
-        _json(temporary,value)
-        with temporary.open("rb") as stream:
+        with temporary.open("w", encoding="ascii") as stream:
+            stream.write(_json_text(value))
+            stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary,path)
+        _replace(temporary,path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _storage_path(root: Path) -> Path:
+    if os.name != "nt":
+        return Path(root)
+
+    # Nested resource and revision paths can exceed the legacy Windows length limit.
+    path = os.fspath(root)
+    if path.startswith(("\\\\?\\", "\\\\.\\")):
+        return Path(path)
+    path = os.path.abspath(path)
+    if path.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + path[2:])
+    return Path("\\\\?\\" + path)
 
 
 class BuildingStore:
     """One-process filesystem store; immutable source and revision directories."""
     def __init__(self, root: Path):
-        self.root = Path(root) / "buildings"
+        self.root = _storage_path(root) / "buildings"
         self.root.mkdir(parents=True,exist_ok=True)
         self.resources = self.root.parent / "resources"
         self.resources.mkdir(exist_ok=True)
@@ -123,7 +157,7 @@ class BuildingStore:
                     if directory.exists():
                         # Only an incomplete, never-published staging result can be present here.
                         shutil.rmtree(directory)
-                    os.replace(staged,directory)
+                    _replace(staged,directory)
                     self.documents[building_id]=document
                     return self.commit(document,None,status="available" if document.scene else "source_available",
                                        config={"pipeline_version":"progressive-v1","operation":"source_import"})
@@ -291,12 +325,12 @@ class BuildingStore:
                     "interpretation_status":candidate.interpretation_status,"geometry_status":candidate.geometry_status,
                     "geometry_revision_id":candidate.geometry_revision_id}
                 _json(temporary/"revision.json",info)
-                os.replace(temporary,folder)
+                _replace(temporary,folder)
                 # Publish only after every artifact exists. Older revision directories are never changed.
                 if job_guard and not job_guard():
                     rejected=directory/"candidates"
                     rejected.mkdir(exist_ok=True)
-                    os.replace(folder,rejected/candidate.revision_id)
+                    _replace(folder,rejected/candidate.revision_id)
                     raise DocumentError("Stopped processing cannot publish a late revision.",409)
                 _atomic_json(pointer,{k:info[k]for k in ("revision_id","revision_number","status","updated_at")})
                 self.documents[candidate.id]=candidate

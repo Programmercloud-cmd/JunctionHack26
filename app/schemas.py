@@ -17,6 +17,8 @@ class AskRequest(StrictModel):
     conversation_id: str | None = None
     reply_to: str | None = None
     clarification_response: str | None = None
+    allow_3d: bool = False
+    active_page: int | None = Field(default=None, ge=1)
 
     @field_validator("question", mode="before")
     @classmethod
@@ -105,9 +107,13 @@ class QuestionIntent(StrictModel):
     def consistent_intent(self):
         if self.action == "clarify" and self.clarification is None:
             raise ValueError("Clarification needs a question and optional suggestions")
-        if self.action == "answer" and self.clarification is not None:
+        if self.action != "clarify" and self.clarification is not None:
             raise ValueError("Resolved intent cannot also request clarification")
         return self
+
+
+class ChatQuestionIntent(QuestionIntent):
+    action: Literal["answer", "clarify", "generate_3d"]
 
 
 class DraftAnswer(StrictModel):

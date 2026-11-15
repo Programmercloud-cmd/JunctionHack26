@@ -158,7 +158,10 @@ def voice_page():
 
 def ready(page, url, model=False):
     from playwright.sync_api import expect
+    # The source-first browser tests exercise the model animation independently.
+    page.emulate_media(reduced_motion="reduce")
     page.goto(url); upload(page)
+    page.locator(".composer-voice > summary").click()
     expect(page.locator("#voice-record")).to_be_enabled()
     if model:
         page.locator("#generate-scene").click()
@@ -170,14 +173,14 @@ def submit_and_get_answer(page):
     with page.expect_response("**/api/questions") as response_info:
         page.locator("#ask-button").click()
     job = response_info.value.json()
-    page.wait_for_function(
-        """async id => {
-            const response = await fetch('/api/jobs/' + id);
-            const job = await response.json();
-            return job.status === 'complete';
-        }""", arg=job["id"],
-    )
-    return page.request.get(f"{page.url.rstrip('/')}/api/jobs/{job['id']}").json()["answer"]
+    endpoint = f"{page.url.rstrip('/')}/api/jobs/{job['id']}"
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        job = page.request.get(endpoint).json()
+        if job["status"] == "complete" and job.get("answer"):
+            return job["answer"]
+        page.wait_for_timeout(150)
+    pytest.fail(f"Question job did not return an answer (status: {job['status']})")
 
 
 def microphone_stopped(page):
@@ -193,6 +196,7 @@ def test_live_transcript_alias_answer_evidence_and_audio(voice_server, voice_pag
     page.locator("#voice-alias-name").fill("plant room")
     page.locator("#voice-alias-target").select_option(index=1)
     page.locator("#voice-add-alias").click()
+    expect(page.locator("#voice-alias-list")).to_contain_text("plant room → Room A (Source floor)")
     page.locator("#voice-record").click()
     expect(page.locator("#voice-status")).to_contain_text("Listening")
     expect(page.locator("#question")).to_have_value("Where is plant room?")
@@ -243,8 +247,11 @@ def test_stop_timeout_preserves_text_and_replacement_cleans_microphone(voice_ser
     expect(page.locator("#voice-record")).to_be_enabled()
 
 
-def test_cancel_connecting_and_finalizing_and_permission_denial(voice_server, voice_page):
+def test_cancel_connecting_and_finalizing_and_permission_denial(voice_server, voice_page, monkeypatch):
     from playwright.sync_api import expect
+
+    # Leave enough time for a real pointer click before the fake service times out.
+    monkeypatch.setenv("VOICE_FINALIZATION_TIMEOUT_SECONDS", "3")
     url, state = voice_server; page = voice_page
     ready(page, url)
     state.mode = "connecting"
@@ -323,6 +330,7 @@ def test_missing_voice_credentials_preserves_text_path(voice_server, voice_page)
     url, _ = voice_server; page = voice_page
     page.route("**/api/voice/config", lambda route: route.fulfill(json={"transcription_ready": False, "speech_ready": False, "transcription_model": "fixture", "language_codes": []}))
     page.goto(url); upload(page)
+    page.locator(".composer-voice > summary").click()
     expect(page.locator("#voice-record")).to_be_disabled()
     expect(page.locator("#voice-setup")).to_contain_text("still type")
     page.locator("#question").fill("How many rooms?")

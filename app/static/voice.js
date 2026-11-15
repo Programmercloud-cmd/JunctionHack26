@@ -119,6 +119,7 @@ window.BlueprintVoice = class BlueprintVoice {
   }
   renderVocabulary() {
     const select = this.el("voice-alias-target");
+    const selected = select.value;
     select.replaceChildren(new Option("Choose a room…", ""));
     for (const room of this.vocabulary.rooms) {
       const option = new Option(this.canonical(room), room.id);
@@ -126,6 +127,7 @@ window.BlueprintVoice = class BlueprintVoice {
       if (option.disabled) option.textContent += " · ambiguous name; type a clarification";
       select.append(option);
     }
+    if ([...select.options].some((option) => option.value === selected && !option.disabled)) select.value = selected;
     this.el("voice-vocabulary-note").textContent = `${this.vocabulary.terms.length} building vocabulary hints. ${(this.vocabulary.warnings || []).join(" ")}`;
     this.el("voice-building-terms").textContent = this.vocabulary.terms.join(" · ");
     this.renderAliases();
@@ -308,7 +310,7 @@ window.BlueprintVoice = class BlueprintVoice {
     this.mic = null;
     this.releaseMic(mic);
     this.previewAliases(this.el("question").value);
-    this.status("Transcript ready. Edit the question, then Ask the drawing.", "idle");
+    this.status("Transcript ready. Review the question, then send it.", "idle");
     this.el("question").focus();
   }
   failRecording(mic, message) {

@@ -61,10 +61,12 @@ def test_preview_review_stop_saved_reopen_and_current_question(progressive_serve
     page.wait_for_function("state.document?.interpretation_status==='complete'",timeout=15000)
     assert page.evaluate('window.blueprintViewer===null')
     assert provider.review_calls==0
-    page.locator('#generate-scene').click()
+    page.locator('#source-details > summary').click()
+    page.locator('#reconstruct-building').click()
     page.wait_for_function('window.blueprintViewer?.data.derived===true',timeout=30000)
     assert provider.review_entered.is_set()
     expect(page.locator('#building-review-status')).to_contain_text('review in progress')
+    page.locator("#model-details").evaluate("(details) => { details.open = true; }")
     page.locator('#show-concept').click();page.locator('#show-assumptions').check()
     source=page.evaluate("window.blueprintViewer.data.elements.find(e=>e.kind==='furniture')")
     page.locator('#element-select').select_option(source['id'])
@@ -74,6 +76,7 @@ def test_preview_review_stop_saved_reopen_and_current_question(progressive_serve
     after=snapshot(page);assert after['revision_number']>before['revision_number']
     for field in ('camera_position','camera_target'):assert after[field]==pytest.approx(before[field],abs=1e-10)
     for field in ('mode','selected_id','show_assumptions'):assert after[field]==before[field]
+    page.locator("#source-details").evaluate("(details) => { details.open = true; }")
     provider.review_entered.clear();provider.review_release.clear();page.locator('#refine-building').click()
     assert provider.review_entered.wait(10)
     before_stop=snapshot(page)['revision_id']
@@ -83,7 +86,7 @@ def test_preview_review_stop_saved_reopen_and_current_question(progressive_serve
     expect(page.locator('#building-review-status')).not_to_contain_text('in progress')
     page.wait_for_timeout(200);assert snapshot(page)['revision_id']==before_stop
     building=snapshot(page)['building_id'];calls=provider.reconstruction_calls
-    page.reload();page.locator('#saved-building-select').select_option(building);page.locator('#open-building').click()
+    page.reload();page.locator(".saved-buildings-menu summary").click();page.locator('#saved-building-select').select_option(building);page.locator('#open-building').click()
     page.wait_for_function('window.blueprintViewer?.data.derived===true',timeout=30000)
     assert provider.reconstruction_calls==calls
     # Re-uploading identical bytes opens the durable model without a new extraction.
@@ -94,16 +97,17 @@ def test_preview_review_stop_saved_reopen_and_current_question(progressive_serve
     expect(page.locator('#answer-text')).to_have_text('Fixture answer: latest question',timeout=15000)
     provider.answer_release.set()
     for future in list(app.state.jobs.futures.values()):future.result(10)
+    page.locator("#source-details").evaluate("(details) => { details.open = true; }")
     page.locator('#refresh-building').click()
     expect(page.locator('#answer-text')).to_have_text('Fixture answer: latest question')
     ask(page,'What is the actual ceiling height?')
     expect(page.locator('#result-status')).to_have_text('Missing information',timeout=15000)
-    page.screenshot(path='/tmp/product-progressive-jobs.png',full_page=True)
     # A late answer for a building left behind cannot populate the new building.
     provider.answer_entered.clear();provider.answer_release.clear()
     ask(page,'slow question for old building');assert provider.answer_entered.wait(10)
     upload(page,pdf=True,name='elevation.pdf')
     page.wait_for_function("state.document?.interpretation_status==='complete'",timeout=15000)
+    page.locator("#source-details").evaluate("(details) => { details.open = true; }")
     expect(page.locator('#source-only-note')).to_be_visible()
     provider.answer_release.set()
     for future in list(app.state.jobs.futures.values()):future.result(10)
@@ -119,14 +123,17 @@ def test_source_only_views_reopen_without_automatic_restart(progressive_server,s
     expect(page.locator('#connection-label')).to_have_text('Gemini configured')
     upload(page,name='elevation.png')
     page.wait_for_function("state.document?.interpretation_status==='complete'",timeout=15000)
+    page.locator("#source-details").evaluate("(details) => { details.open = true; }")
     expect(page.locator('#source-only-note')).to_be_visible()
     assert page.evaluate('window.blueprintViewer===null')
     expect(page.locator('#unsupported-views')).to_contain_text('elevation')
     page.locator('#unsupported-views button').click();expect(page.locator('#evidence-overlay')).to_be_visible()
     building=page.evaluate('state.document.building_id');calls=provider.reconstruction_calls
-    page.reload();page.locator('#saved-building-select').select_option(building);page.locator('#open-building').click()
+    page.reload();page.locator(".saved-buildings-menu summary").click();page.locator('#saved-building-select').select_option(building);page.locator('#open-building').click()
+    page.locator("#source-details").evaluate("(details) => { details.open = true; }")
     expect(page.locator('#source-only-note')).to_be_visible()
     upload(page,name='elevation.png')
+    page.locator("#source-details").evaluate("(details) => { details.open = true; }")
     expect(page.locator('#source-only-note')).to_be_visible()
     assert provider.reconstruction_calls==calls
     revision=page.evaluate('state.document.revision_number')
@@ -136,7 +143,6 @@ def test_source_only_views_reopen_without_automatic_restart(progressive_server,s
     expect(page.locator('#building-jobs')).to_contain_text('no floor-plan geometry')
     assert provider.reconstruction_calls==calls, 'Explicit geometry reuses the saved source-only interpretation'
     assert page.evaluate('window.blueprintViewer===null')
-    page.screenshot(path='/tmp/product-progressive-source-only.png',full_page=True)
 
 
 def test_native_citations_inspect_pinned_meshless_and_definition_records(progressive_server,scene_page):
@@ -162,6 +168,7 @@ def test_native_citations_inspect_pinned_meshless_and_definition_records(progres
     page.evaluate('refreshBuilding()')
     assert page.evaluate('state.document.revision_id')!=answered_revision
     requests=[];page.on('request',lambda request:requests.append(request.url)if '/evidence/'in request.url else None)
+    page.locator(".chat-assistant .text-button",has_text="Details und Belege").last.click()
     page.locator('#model-evidence-list button').click()
     expect(page.locator('#native-record-values')).to_contain_text('Many.P59: 59')
     expect(page.locator('#native-record-note')).to_contain_text('no viewer geometry')
@@ -172,9 +179,9 @@ def test_native_citations_inspect_pinned_meshless_and_definition_records(progres
     ask(page,'Inspect the source template')
     expect(page.locator('#model-evidence-list button')).to_contain_text('Source template',timeout=10000)
     expect(page.locator('#model-evidence-list button')).to_be_enabled()
+    page.locator(".chat-assistant .text-button",has_text="Details und Belege").last.click()
     page.locator('#model-evidence-list button').click()
     expect(page.locator('#native-record-name')).to_have_text('Source template')
     expect(page.locator('#native-record-values')).to_contain_text('PredefinedType: WINDOW')
     expect(page.locator('#native-record-identity')).to_contain_text(template.GlobalId)
     assert provider.reconstruction_calls==0
-    page.screenshot(path='/tmp/product-native-evidence.png',full_page=True)

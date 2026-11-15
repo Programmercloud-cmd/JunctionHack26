@@ -47,6 +47,27 @@ def test_restart_and_content_identity_restore_complete_bundle_without_provider(t
     reopened_store.close()
 
 
+def test_long_storage_paths_preserve_unicode_upload_and_conversation(tmp_path):
+    root = tmp_path / ("a" * 130) / ("b" * 130)
+    source = png()
+    filename = "\u6771\u4eac-\u00e9tage.png"
+    message = {"role": "user", "question": "\u7a93\u306f\u3044\u304f\u3064\uff1f"}
+
+    store = BuildingStore(root)
+    document = store.add_many([(source, filename)])
+    preview = document.pages[0].path.read_bytes()
+    store.append_conversation(document.id, message)
+    store.close()
+
+    reopened = BuildingStore(root)
+    original = reopened.get(document.id)
+    assert original.filename == filename
+    assert original.source_bytes == source
+    assert original.pages[0].path.read_bytes() == preview
+    assert reopened.conversation(document.id) == [message]
+    reopened.close()
+
+
 def test_reorder_insert_bbox_expansion_preserves_ids_exact_meshes_and_frames(tmp_path):
     store=BuildingStore(tmp_path)
     doc=store.add(png(),"plan.png")

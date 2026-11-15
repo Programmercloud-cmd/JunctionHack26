@@ -8,13 +8,14 @@ from app.bundles import BuildingStore
 from app.jobs import JobRunner
 from app.main import create_app
 from app.providers.gemini import ProviderError
-from app.schemas import Usage, AskRequest, DraftAnswer, QuestionIntent, Clarification
+from app.schemas import Usage, AskRequest, ChatQuestionIntent, DraftAnswer, QuestionIntent, Clarification
 from app.review_schema import ReconstructionReview, DescriptionPatch
 from app.user_inputs import RefinementRequest, prepare_inputs, assumptions
 from app.revisions import apply_enrichment
 from test_backend import png, evidence
 from test_ifc_generate import description, floor, boundary, opening, region
 from test_reviewed_qa import ReviewedFixture
+from test_scene_flow import model_bytes
 
 
 def other_png():
@@ -169,6 +170,205 @@ def test_conversation_clarification_and_followup_are_saved_without_scene(tmp_pat
         assert messages[-1]['answer']['status']=='answered' and messages[-1]['revision_id']==document.revision_id
         assert store.get(document.id).scene is None
     finally:runner.close();store.close()
+
+
+def test_chat_3d_command_is_revision_scoped_idempotent_and_persists_acknowledgement(tmp_path):
+    class Commands(SourceProvider):
+        def resolve_intent(self, document, question):
+            assert question == "Erstelle mir daraus eine 3D-Datei."
+            assert document.conversation_context["allow_3d"]
+            assert document.conversation_context["active_page"] == 2
+            assert len(document.question_context["sources"]["files"]) == 2
+            return ChatQuestionIntent(action="generate_3d")
+
+    provider = Commands()
+    app = create_app(storage_root=tmp_path, provider_factory=lambda: provider)
+    with TestClient(app) as client:
+        upload = client.post("/api/documents", files=[
+            ("files", ("floor.png", png())), ("files", ("second.png", other_png()))
+        ]).json()
+        runner = app.state.jobs
+        finish(runner, upload["extraction_jobs"])
+        building_id = upload["building_id"]
+        current = app.state.documents.get(building_id)
+        payload = {"document_id": building_id, "revision_id": current.revision_id,
+                   "request_id": "unique-test-request", "allow_3d": True, "active_page": 2,
+                   "question": "Erstelle mir daraus eine 3D-Datei."}
+        invalid = client.post("/api/questions", json={**payload, "active_page": 3})
+        assert invalid.status_code == 422
+        accepted = client.post("/api/questions", json=payload)
+        assert accepted.status_code == 202
+        finish(runner, [accepted.json()])
+        command = client.get("/api/jobs/" + accepted.json()["id"]).json()
+        assert command["status"] == "complete" and "answer" not in command
+        reconstruction_id = command["reconstruction_job_id"]
+        finish(runner, [{"id": reconstruction_id}])
+        reconstruction = client.get("/api/jobs/" + reconstruction_id).json()
+        assert reconstruction["kind"] == "reconstruction"
+        assert reconstruction["status"] == "complete" and reconstruction["model_available"]
+        assert reconstruction["source_ids"] == sorted(source["source_id"] for source in current.sources)
+        assert reconstruction["preview_geometry_revision_id"] != reconstruction["revision_id"]
+        preview = app.state.documents.revision(building_id, reconstruction["preview_geometry_revision_id"])
+        assert preview.review_status == "preview_reviewing" and any(e.geometry for e in preview.scene.elements)
+        retry = client.post("/api/questions", json=payload).json()
+        assert retry["id"] == command["id"] and retry["reconstruction_job_id"] == reconstruction_id
+        messages = client.get(f"/api/buildings/{building_id}/conversation").json()["messages"]
+        assert len(messages) == 2
+        assert messages[-1]["reply_to"] == messages[0]["id"]
+        assert messages[-1]["reconstruction_job_id"] == reconstruction_id
+        assert messages[-1]["text"] == command["message"]
+        assert "answer" not in messages[-1]
+
+        # Older conversations saved the app notice in German. Serve it in English
+        # while preserving verbatim user input and stored conversation data.
+        legacy = "Ich starte die 3D-Erstellung für diese Plangruppe."
+        stored = app.state.documents.conversation(building_id)
+        app.state.documents.append_conversation(building_id, {**stored[-1], "text": legacy})
+        runner._update(command["id"], message=legacy)
+        conversations = client.get(f"/api/buildings/{building_id}/conversation").json()["messages"]
+        assert conversations[-1]["text"] == command["message"]
+        assert conversations[0]["question"] == payload["question"]
+        assert client.get("/api/jobs/" + command["id"]).json()["message"] == command["message"]
+        assert app.state.documents.conversation(building_id)[-1]["text"] == legacy
+
+
+@pytest.mark.parametrize("interruption", ["stop", "sources_changed", "refined", "refined_and_active"])
+def test_pending_chat_3d_intent_cannot_start_job_after_interruption(tmp_path, interruption):
+    entered = Event()
+    release = Event()
+    reviewing = Event()
+    finish_review = Event()
+
+    class Commands(SourceProvider):
+        def resolve_intent(self, document, question):
+            entered.set()
+            assert release.wait(10)
+            return ChatQuestionIntent(action="generate_3d")
+
+        def review_reconstruction(self, *args, **kwargs):
+            reviewing.set()
+            assert finish_review.wait(10)
+            return super().review_reconstruction(*args, **kwargs)
+
+    store = BuildingStore(tmp_path)
+    document = store.add(png(), "plan.png")
+    runner = JobRunner(store, Commands)
+    try:
+        active = None
+        command = runner.question(AskRequest(document_id=document.id, question="Make it 3D.", allow_3d=True))
+        assert entered.wait(10)
+        if interruption == "stop":
+            runner.stop(command["id"])
+        elif interruption == "sources_changed":
+            store.add_many([(other_png(), "append.png")], building_id=document.id)
+        else:
+            refined = store.commit(store.prepare(document), document.revision_id, status="user_refined")
+            if interruption == "refined_and_active":
+                active = runner.reconstruct(refined.id, refined.revision_id, mode="reconstruct")
+                assert reviewing.wait(10)
+        release.set()
+        finish(runner, [command])
+        result = runner.get(command["id"])
+        assert result["status"] == ("stopped" if interruption == "stop" else "failed")
+        assert "reconstruction_job_id" not in result
+        assert {job["id"] for job in runner.for_building(document.id)} == (
+            {command["id"]} if active is None else {command["id"], active["id"]})
+        assert [message["role"] for message in store.conversation(document.id)] == ["user"]
+    finally:
+        release.set()
+        finish_review.set()
+        if active is not None:
+            finish(runner, [active])
+        runner.close()
+        store.close()
+
+
+def test_chat_3d_can_follow_source_interpretation_and_link_same_scope_job(tmp_path):
+    resolve_entered = Event()
+    resolve_release = Event()
+    review_entered = Event()
+    review_release = Event()
+
+    class Commands(SourceProvider):
+        def resolve_intent(self, document, question):
+            if question == "First 3D request":
+                resolve_entered.set()
+                assert resolve_release.wait(10)
+            return ChatQuestionIntent(action="generate_3d")
+
+        def review_reconstruction(self, *args, **kwargs):
+            review_entered.set()
+            assert review_release.wait(10)
+            return super().review_reconstruction(*args, **kwargs)
+
+    store = BuildingStore(tmp_path)
+    document = store.add(png(), "plan.png")
+    runner = JobRunner(store, Commands)
+    try:
+        command = runner.question(AskRequest(document_id=document.id, question="First 3D request", allow_3d=True))
+        assert resolve_entered.wait(10)
+        finish(runner, runner.extract(document.id))
+        interpreted = store.get(document.id)
+        assert interpreted.revision_id != document.revision_id
+        resolve_release.set()
+        finish(runner, [command])
+        linked_id = runner.get(command["id"])["reconstruction_job_id"]
+        assert runner.get(linked_id)["base_revision_id"] == interpreted.revision_id
+        assert review_entered.wait(10)
+        repeated = runner.question(AskRequest(document_id=document.id, question="Second 3D request", allow_3d=True))
+        finish(runner, [repeated])
+        assert runner.get(repeated["id"])["reconstruction_job_id"] == linked_id
+        assert len([job for job in runner.for_building(document.id) if job["kind"] == "reconstruction"]) == 1
+        review_release.set()
+        finish(runner, [{"id": linked_id}])
+    finally:
+        resolve_release.set()
+        review_release.set()
+        runner.close()
+        store.close()
+
+
+@pytest.mark.parametrize("case", ["no_opt_in", "capability", "native_ifc"])
+def test_chat_3d_does_not_dispatch_unavailable_or_non_action_requests(tmp_path, case):
+    class Commands(ReviewedFixture):
+        def resolve_intent(self, document, question):
+            if case == "no_opt_in":
+                assert not document.conversation_context.get("allow_3d")
+            else:
+                assert document.conversation_context["allow_3d"]
+            if case == "capability":
+                return ChatQuestionIntent(action="answer", resolved_question=question)
+            return ChatQuestionIntent(action="generate_3d")
+
+        def close(self):
+            pass
+
+    store = BuildingStore(tmp_path)
+    if case == "native_ifc":
+        document = store.add(model_bytes(), "native.ifc")
+    else:
+        document = store.add(png(), "plan.png")
+    provider = Commands(DraftAnswer(status="answered", answer="A source-backed test answer.", evidence=[evidence()]))
+    runner = JobRunner(store, lambda: provider)
+    try:
+        question = "Kannst du eine 3D-Datei erstellen?" if case == "capability" else "Erstelle eine 3D-Datei"
+        command = runner.question(AskRequest(document_id=document.id, question=question, allow_3d=case != "no_opt_in"))
+        finish(runner, [command])
+        result = runner.get(command["id"])
+        assert "reconstruction_job_id" not in result
+        assert [job["kind"] for job in runner.for_building(document.id)] == ["question"]
+        if case == "no_opt_in":
+            assert result["status"] == "failed" and "answer" not in result
+        else:
+            assert result["status"] == "complete"
+            answer = result["answer"]
+            if case == "capability":
+                assert answer["status"] == "answered" and answer["evidence"]
+            else:
+                assert answer["status"] == "clarification" and answer["gate"] is None
+    finally:
+        runner.close()
+        store.close()
 
 
 def test_enrichment_does_not_invent_user_provenance(tmp_path):

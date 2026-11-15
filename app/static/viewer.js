@@ -22,11 +22,11 @@ export class BlueprintViewer {
     this.floorFilter = '';
     this.exploded = false;
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0xeef1e9);
+    this.scene.background = null;
     this.camera = new THREE.PerspectiveCamera(42, 1, .01, 10000);
     this.camera.up.set(0, 0, 1);
     this.camera.position.set(6,-8,6);
-    this.renderer = new THREE.WebGLRenderer({antialias:true, alpha:false});
+    this.renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.localClippingEnabled = true;
@@ -60,7 +60,10 @@ export class BlueprintViewer {
     this.renderer.domElement.addEventListener('pointerup', (event) => this.pick(event));
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(container);
-    this.renderer.setAnimationLoop(() => { this.controls.update(); if (this.needsRender && this.container.clientWidth && this.container.clientHeight) { this.renderer.render(this.scene,this.camera); this.positionAnnotations(); this.needsRender=false; this.renderCount++; } });
+    this.renderer.setAnimationLoop(() => {
+      if (!this.container.inert) this.controls.update();
+      if (this.needsRender) this.renderFrame();
+    });
     this.resize();
   }
 
@@ -160,7 +163,7 @@ export class BlueprintViewer {
     if(this.concept)this.concept.group.visible=concept;
     this.renderer.shadowMap.enabled=concept;this.renderer.shadowMap.needsUpdate=true;
     this.renderer.toneMapping=concept?THREE.ACESFilmicToneMapping:THREE.NoToneMapping;this.renderer.toneMappingExposure=concept?1.12:1;
-    this.scene.background.setHex(concept?0xe9e5dc:0xeef1e9);this.renderer.domElement.dataset.mode=this.mode;
+    this.scene.background=concept ? new THREE.Color(0xe9e5dc) : null;this.renderer.domElement.dataset.mode=this.mode;
   }
   setMode(mode) {
     if(!['inspection','concept'].includes(mode)||!this.data||mode===this.mode)return this.getSnapshot();
@@ -391,12 +394,54 @@ export class BlueprintViewer {
     if (hit) this.select(hit.object.userData.elementId);
   }
 
+  revealBounds() {
+    const width = this.container.clientWidth, height = this.container.clientHeight;
+    if (!width || !height || this.mode !== 'inspection' || this.renderer.getContext().isContextLost()) return null;
+    this.camera.updateMatrixWorld();
+    this.group.updateMatrixWorld(true);
+    const bounds = new THREE.Box2();
+    const corner = new THREE.Vector3(), projected = new THREE.Vector2();
+    for (const mesh of this.meshes.values()) {
+      if (!mesh.visible) continue;
+      if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+      const {min,max} = mesh.geometry.boundingBox;
+      for (const x of [min.x,max.x]) for (const y of [min.y,max.y]) for (const z of [min.z,max.z]) {
+        corner.set(x,y,z).applyMatrix4(mesh.matrixWorld).project(this.camera);
+        projected.set((corner.x + 1) * width / 2, (1 - corner.y) * height / 2);
+        bounds.expandByPoint(projected);
+      }
+    }
+    if (bounds.isEmpty() || ![bounds.min.x,bounds.min.y,bounds.max.x,bounds.max.y].every(Number.isFinite)) return null;
+    this.positionAnnotations();
+    const stage = this.container.getBoundingClientRect();
+    for (const {button} of this.annotations) {
+      if (button.hidden) continue;
+      const label = button.getBoundingClientRect();
+      bounds.expandByPoint(projected.set(label.left - stage.left,label.top - stage.top));
+      bounds.expandByPoint(projected.set(label.right - stage.left,label.bottom - stage.top));
+    }
+    return {minX:bounds.min.x,minY:bounds.min.y,maxX:bounds.max.x,maxY:bounds.max.y};
+  }
+
+  renderFrame() {
+    if (!this.container.clientWidth || !this.container.clientHeight || this.renderer.getContext().isContextLost()) return false;
+    this.renderer.render(this.scene,this.camera);
+    this.positionAnnotations();
+    this.needsRender = false;
+    this.renderCount++;
+    return true;
+  }
+
   resize() {
     const width = this.container.clientWidth, height = this.container.clientHeight;
     if (!width || !height) return;
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(width,height);
+    if (width !== this.renderWidth || height !== this.renderHeight) {
+      this.renderWidth = width;
+      this.renderHeight = height;
+      this.renderer.setSize(width,height);
+    }
     this.render();
   }
   render() {this.needsRender=true;this.camera.updateMatrixWorld();this.positionAnnotations();}

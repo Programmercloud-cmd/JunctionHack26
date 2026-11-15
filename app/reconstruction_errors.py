@@ -22,16 +22,16 @@ VALIDATION_TYPES = {
     "too_short", "too_long", "greater_than", "greater_than_equal", "less_than", "less_than_equal",
 }
 MESSAGES = {
-    "provider_timeout": "The reconstruction provider timed out. Retry the request; no model was saved.",
-    "provider_auth": "The reconstruction provider rejected access. Check the selected model and API credentials; no model was saved.",
-    "provider_quota": "The reconstruction provider is rate-limited or out of quota. Check quota or retry later; no model was saved.",
-    "provider_request": "The reconstruction provider rejected or could not complete the request. Check model access and service availability; no model was saved.",
-    "provider_failure": "The reconstruction provider could not complete the request. Retry or check provider availability; no model was saved.",
-    "response_json": "The reconstruction provider returned invalid JSON. Retry the request; no model was saved and no source-quality conclusion was made.",
-    "response_schema": "The reconstruction description failed structural validation. Retry the request; no model was saved and no source-quality conclusion was made.",
-    "generation_failure": "The description could not be converted into IFC. Retry or report the diagnostic reference; no model was saved.",
-    "artifact_failure": "The generated IFC could not be validated or reopened. Retry or report the diagnostic reference; no model was saved.",
-    "unexpected_failure": "Reconstruction could not complete. Retry or report the diagnostic reference; no model was saved.",
+    "provider_timeout": "The reconstruction provider timed out. Retry the request.",
+    "provider_auth": "The reconstruction provider rejected access. Check the selected model and API credentials.",
+    "provider_quota": "The reconstruction provider is rate-limited or out of quota. Check quota or retry later.",
+    "provider_request": "The reconstruction provider rejected or could not complete the request. Check model access and service availability.",
+    "provider_failure": "The reconstruction provider could not complete the request. Retry or check provider availability.",
+    "response_json": "The reconstruction provider returned invalid JSON. Retry the request. No source-quality conclusion was made.",
+    "response_schema": "The reconstruction description failed structural validation. Retry the request. No source-quality conclusion was made.",
+    "generation_failure": "The description could not be converted into IFC. Retry or report the diagnostic reference.",
+    "artifact_failure": "The generated IFC could not be validated or reopened. Retry or report the diagnostic reference.",
+    "unexpected_failure": "Reconstruction could not complete. Retry or report the diagnostic reference.",
 }
 
 

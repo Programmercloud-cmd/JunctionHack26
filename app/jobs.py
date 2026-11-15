@@ -17,14 +17,26 @@ from .ifc_artifact import load_artifact
 from .reasoning import build_reasoning
 from .revisions import apply_patch,apply_enrichment,needs_geometry,regression_findings,description_hash,normalize_views
 from .review_schema import ReconstructionReview
+from .schemas import ChatQuestionIntent
 from .vlm import VLM
 from .highlights import validated_highlights
+from .conversation import (RECONSTRUCTION_STARTED, RECONSTRUCTION_ALREADY_RUNNING,
+                           localize_reconstruction_notice, reconstruction_message)
 
 TERMINAL={"complete","needs_attention","failed","budget_exhausted","stopped","interrupted"}
 
 
 class JobStopped(Exception):pass
 class JobBudget(Exception):pass
+
+
+class ReconstructionScopeChanged(DocumentError):
+    def __init__(self):
+        super().__init__("The linked plans have changed. Check the current set of plans and try the 3D reconstruction again.", 409)
+
+
+def _source_ids(document):
+    return sorted(source["source_id"] for source in document.sources)
 
 
 def pipeline_config():
@@ -52,11 +64,12 @@ class JobRunner:
             for job in store.saved_jobs(building["building_id"]):self.jobs[job["id"]]=job
 
     def close(self):
-        self.closing=True
-        for identity,job in list(self.jobs.items()):
-            if job["status"] not in TERMINAL:
-                self.events.get(identity,threading.Event()).set()
-                self._update(identity,status="interrupted",phase="interrupted",message="Application stopped; usable revision retained.")
+        with self.lock:
+            self.closing=True
+            for identity,job in list(self.jobs.items()):
+                if job["status"] not in TERMINAL:
+                    self.events.get(identity,threading.Event()).set()
+                    self._update(identity,status="interrupted",phase="interrupted",message="Application stopped; usable revision retained.")
         self.executor.shutdown(wait=False,cancel_futures=True)
 
     def _bind_provider(self,identity,provider):
@@ -121,11 +134,15 @@ class JobRunner:
     def get(self,identity):
         with self.lock:
             if identity not in self.jobs:raise DocumentError("Job not found.",404)
-            return deepcopy(self.jobs[identity])
+            return localize_reconstruction_notice(deepcopy(self.jobs[identity]), "message")
 
     def for_building(self,building_id):
         with self.lock:
-            return sorted([deepcopy(j)for j in self.jobs.values()if j["building_id"]==building_id],key=lambda j:j["created_at"],reverse=True)
+            jobs = [
+                localize_reconstruction_notice(deepcopy(job), "message")
+                for job in self.jobs.values() if job["building_id"] == building_id
+            ]
+            return sorted(jobs, key=lambda job: job["created_at"], reverse=True)
 
     def _new(self,document,kind,request_id=None):
         identity=uuid.uuid4().hex
@@ -138,17 +155,18 @@ class JobRunner:
         return identity
 
     def reconstruct(self,building_id,base_revision_id=None,mode="refine"):
-        document=self.store.get(building_id)
-        if document.kind=="ifc" and document.scene and not document.scene.derived:
-            raise DocumentError("Genuine IFC uses its supplied records and geometry; it is not reconstructed or rewritten.",422)
-        if base_revision_id and base_revision_id!=document.revision_id:
-            raise DocumentError("The building revision changed; refresh before starting another review.",409)
-        with self.lock:
+        with self.lock,self.store.lock:
+            document=self.store.get(building_id)
+            if document.kind=="ifc" and document.scene and not document.scene.derived:
+                raise DocumentError("Genuine IFC uses its supplied records and geometry; it is not reconstructed or rewritten.",422)
+            if base_revision_id and base_revision_id!=document.revision_id:
+                raise DocumentError("The building revision changed; refresh before starting another review.",409)
             active=self.active.get(building_id)
             if active and self.jobs[active]["status"] not in TERMINAL:
                 return self.get(active)
             identity=self._new(document,"reconstruction")
             self.active[building_id]=identity
+            self._update(identity,source_ids=_source_ids(document),mode=mode)
             self.futures[identity]=self.executor.submit(self._reconstruct,identity,document.snapshot(),mode)
             return self.get(identity)
 
@@ -177,6 +195,7 @@ class JobRunner:
         with source_lock:
             self._check(identity,deadline)
             document=self.store.get(self.jobs[identity]["building_id"])
+            self._check_reconstruction_scope(identity, document)
             if source_id in document.source_interpretations:return document
             cached=self.store.cached_interpretation(source_id)
             if cached is None:
@@ -192,7 +211,9 @@ class JobRunner:
                     raise DocumentError("Source extraction cannot invent user-provided provenance.",422)
                 self.store.save_interpretation(source_id,cached)
             self._check(identity,deadline)
-            current=self.store.merge_interpretation(document.id,source_id,cached,job_guard=lambda:self._valid(identity) and monotonic()<self.deadlines.get(identity,float("inf")))
+            with self.store.lock:
+                self._check_reconstruction_scope(identity, self.store.get(document.id))
+                current=self.store.merge_interpretation(document.id,source_id,cached,job_guard=lambda:self._valid(identity) and monotonic()<self.deadlines.get(identity,float("inf")))
             self._update(identity,revision_id=current.revision_id,revision_number=current.revision_number)
             return current
 
@@ -237,27 +258,27 @@ class JobRunner:
 
     def question(self,request):
         from .conversation import question_context,user_message
-        document=self.store.get(request.document_id)
-        if request.revision_id and request.revision_id!=document.revision_id:
-            raise DocumentError("The building updated before this question started; refresh its revision and ask again.",409)
-        with self.lock:
+        with self.lock,self.store.lock:
+            document=self.store.get(request.document_id)
             if request.request_id:
                 prior=next((j for j in self.jobs.values() if j["kind"]=="question" and j["building_id"]==document.id and j.get("request_id")==request.request_id),None)
                 if prior:return self.get(prior["id"])
+            if request.revision_id and request.revision_id!=document.revision_id:
+                raise DocumentError("The building updated before this question started; refresh its revision and ask again.",409)
             context=question_context(self.store,document,request)
             identity=self._new(document,"question",request.request_id)
             message=user_message(document,request,identity)
             self.store.append_conversation(document.id,message)
             snapshot=document.snapshot();snapshot.conversation_context=context
             self._update(identity,question=request.question,user_message_id=message["id"],conversation_id=document.id)
-            self.futures[identity]=self.executor.submit(self._question,identity,snapshot,request.question)
+            self.futures[identity]=self.executor.submit(self._question,identity,snapshot,request.question,allow_3d=request.allow_3d)
             return self.get(identity)
 
     def stop(self,identity):
-        job=self.get(identity)
-        if job["status"] in TERMINAL:return job
         # Same lock as publication gives stop/publication a defined order.
         with self.lock:
+            job=self.get(identity)
+            if job["status"] in TERMINAL:return job
             with self.store.lock:
                 self.events[identity].set()
             self._update(identity,status="stopped",phase="stopped",message="Stopped. An in-flight request may finish, but cannot publish another result.")
@@ -272,11 +293,21 @@ class JobRunner:
         if not self._valid(identity):raise JobStopped()
         if monotonic()>=deadline:raise JobBudget()
 
+    def _check_reconstruction_scope(self, identity, document):
+        expected = self.jobs[identity].get("source_ids")
+        if expected is not None and expected != _source_ids(document):
+            raise ReconstructionScopeChanged()
+
     def _publish(self,identity,candidate,base,*,status,review=None,config=None):
-        result=self.store.commit(candidate,base,status=status,review=review,config=config,
-                                 job_guard=lambda:self._valid(identity) and monotonic()<self.deadlines.get(identity,float("inf")))
-        self._update(identity,revision_id=result.revision_id,revision_number=result.revision_number,
-                     model_available=bool(result.scene and any(e.geometry for e in result.scene.elements)))
+        with self.lock,self.store.lock:
+            self._check_reconstruction_scope(identity, self.store.get(candidate.id))
+            result=self.store.commit(candidate,base,status=status,review=review,config=config,
+                                     job_guard=lambda:self._valid(identity) and monotonic()<self.deadlines.get(identity,float("inf")))
+            model_available=bool(result.scene and any(e.geometry for e in result.scene.elements))
+            fields={"revision_id":result.revision_id,"revision_number":result.revision_number,"model_available":model_available}
+            if status=="preview_reviewing" and model_available:
+                fields["preview_geometry_revision_id"]=result.geometry_revision_id
+            self._update(identity,**fields)
         return result
 
     def _geometry(self,candidate):
@@ -306,6 +337,7 @@ class JobRunner:
             config=pipeline_config();self._update(identity,config=config);deadline=monotonic()+config["job_seconds"]
             self.deadlines[identity]=deadline
             self._check(identity,deadline)
+            self._check_reconstruction_scope(identity, self.store.get(current.id))
             self._update(identity,status="running",phase="provider_setup",message="Preparing requested geometry processing.")
             provider=self._bind_provider(identity,self.provider_factory());provider.request_deadline=deadline
             review=None
@@ -316,6 +348,7 @@ class JobRunner:
                     if not pending:break
                     for source in pending:
                         current=self._source_interpretation(identity,source["source_id"],provider,deadline)
+                self._check_reconstruction_scope(identity, self.store.get(current.id))
                 if current.description is None:
                     raise DocumentError("No saved drawing interpretation is available to generate geometry.",422)
                 if not current.description.floors:
@@ -454,6 +487,8 @@ class JobRunner:
             self._update(identity,status="stopped",phase="stopped",message="Stopped; previous usable revision retained.")
         except JobBudget:
             self._update(identity,status="budget_exhausted",phase="complete",message="Configured processing budget exhausted; this is not an evidence-insufficiency judgment.")
+        except ReconstructionScopeChanged as error:
+            self._update(identity,status="needs_attention",phase="complete",message=error.message)
         except Exception as error:
             self._failure(identity,error,provider)
         finally:
@@ -461,7 +496,54 @@ class JobRunner:
                 self._update(identity,usage=provider.usage.model_dump() if hasattr(provider,"usage") else {})
                 provider.close()
 
-    def _question(self,identity,snapshot,question):
+    def _check_chat_reconstruction_revision(self, snapshot, target_revision_id, *, allow_ancestor=False):
+        if snapshot.revision_id == target_revision_id:
+            return
+        revisions = {revision["revision_id"]: revision for revision in self.store.history(snapshot.id)}
+        target = revisions.get(target_revision_id)
+        if target:
+            target_is_ancestor = allow_ancestor and target["revision_number"] < snapshot.revision_number
+            revision_id, expected_id, expected_number = (
+                (snapshot.revision_id, target_revision_id, target["revision_number"]) if target_is_ancestor
+                else (target_revision_id, snapshot.revision_id, snapshot.revision_number)
+            )
+            while revision_id != expected_id:
+                revision = revisions.get(revision_id)
+                if (not revision or revision["revision_number"] <= expected_number
+                        or (not target_is_ancestor and revision["status"] != "interpretation_available")):
+                    break
+                revision_id = revision["parent_revision_id"]
+            if revision_id == expected_id:
+                return
+        raise DocumentError("The plan group has changed. Check the current plans and try the 3D reconstruction again.", 409)
+
+    def _start_chat_reconstruction(self, identity, snapshot):
+        with self.lock,self.store.lock:
+            self._check(identity,float("inf"))
+            current = self.store.get(snapshot.id)
+            source_ids = _source_ids(snapshot)
+            if source_ids != _source_ids(current):
+                raise ReconstructionScopeChanged()
+            active = self.jobs.get(self.active.get(current.id))
+            if active and active["status"] not in TERMINAL:
+                if (active["kind"] != "reconstruction" or active.get("mode") != "reconstruct"
+                        or active.get("source_ids") != source_ids):
+                    raise DocumentError("Another 3D job is running for this building. Let it finish or stop it, then ask again.", 409)
+                self._check_chat_reconstruction_revision(snapshot, active["base_revision_id"], allow_ancestor=True)
+                reconstruction = active
+                text = RECONSTRUCTION_ALREADY_RUNNING
+            else:
+                self._check_chat_reconstruction_revision(snapshot, current.revision_id)
+                reconstruction = self.reconstruct(current.id, current.revision_id, mode="reconstruct")
+                text = RECONSTRUCTION_STARTED
+            reconstruction_id = reconstruction["id"]
+            message = reconstruction_message(snapshot, text, reconstruction_id, identity, self.jobs[identity].get("user_message_id"))
+            self.store.append_conversation(snapshot.id,message)
+            self._update(identity,status="complete",phase="complete",message=text,
+                reconstruction_job_id=reconstruction_id,assistant_message_id=message["id"],conversation_id=snapshot.id,
+                revision_id=current.revision_id,revision_number=current.revision_number)
+
+    def _question(self,identity,snapshot,question,*,allow_3d=False):
         provider=None
         try:
             self._check(identity,float("inf"))
@@ -469,9 +551,13 @@ class JobRunner:
             def progress(phase):
                 self._check(identity,float("inf"))
                 self._update(identity,status="running",phase=phase,message=phase)
-            from .voice_format import with_spoken_answers
-            answer=with_spoken_answers(VLM(provider).answer(snapshot,question,progress=progress), question)
+            answer=VLM(provider).answer(snapshot,question,progress=progress,allow_3d=allow_3d)
             self._check(identity,float("inf"))
+            if isinstance(answer, ChatQuestionIntent):
+                self._start_chat_reconstruction(identity, snapshot)
+                return
+            from .voice_format import with_spoken_answers
+            answer=with_spoken_answers(answer,question)
             displayed=self.store.get(snapshot.id)
             answer.building_id=snapshot.id;answer.answered_revision_id=snapshot.revision_id
             answer.display_revision_id=displayed.revision_id

@@ -66,7 +66,9 @@ def test_actual_geometry_overlay_layers_clicks_unresolved_and_reopen(semantic_se
     expect(page.locator("#inventory-counts")).to_contain_text("1 unresolved")
     assert any(e["kind"]=="stairs" and e["representation"]=="schematic" for e in scene["elements"])
     assert len([e for e in scene["elements"] if e["kind"]=="wall"])==1
-    page.locator("#show-drawing").click(); page.locator("#show-comparison").check()
+    page.locator("#show-drawing").click()
+    page.locator("#comparison-details").evaluate("(details) => { details.open = true; }")
+    page.locator("#show-comparison").check()
     expect(page.locator("#comparison-overlay")).to_be_visible()
     expect(page.locator("#comparison-note")).to_contain_text("assumed opening heights")
     for layer in ["spaces","walls","openings","features","unresolved"]:
@@ -86,6 +88,7 @@ def test_actual_geometry_overlay_layers_clicks_unresolved_and_reopen(semantic_se
     page.locator("#comparison-opacity").fill("30")
     expect(page.locator("#comparison-opacity-value")).to_have_text("30%")
     chair=next(e for e in scene["elements"] if e["semantic_type"]=="chair")
+    page.locator("#inventory-panel").evaluate("(details) => { details.open = true; }")
     page.locator("#inventory-details summary").click()
     expect(page.locator("#inventory-kind-counts")).to_contain_text("chair: 1")
     page.locator(f'.inventory-source-item[data-element-id="{chair["id"]}"]').click()
@@ -98,6 +101,7 @@ def test_actual_geometry_overlay_layers_clicks_unresolved_and_reopen(semantic_se
     page.locator("#comparison-inspect").click()
     expect(page.locator("#element-identity")).to_contain_text("schematic")
     expect(page.locator("#element-geometry-note")).to_contain_text("not source measurements")
+    page.locator("#inventory-panel > summary").click()
     page.locator(".unresolved-item").click()
     expect(page.locator("#comparison-selection-name")).to_have_text("Ambiguous fixture")
     expect(page.locator("#comparison-selection-detail")).to_contain_text("Source region only")
@@ -111,10 +115,11 @@ def test_actual_geometry_overlay_layers_clicks_unresolved_and_reopen(semantic_se
     page.locator("#file-input").set_input_files(str(target))
     page.wait_for_function("id=>window.blueprintViewer?.data.document_id && window.blueprintViewer.data.document_id!==id",arg=original_id)
     expect(page.locator("#inventory-counts")).to_contain_text("1 unresolved")
-    page.locator("#show-drawing").click(); page.locator("#show-comparison").check()
+    page.locator("#show-drawing").click()
+    page.locator("#comparison-details").evaluate("(details) => { details.open = true; }")
+    page.locator("#show-comparison").check()
     assert page.locator('#comparison-overlay [data-layer="unresolved"]').count()==1
     assert page.locator('#comparison-overlay [data-layer="walls"]').count()>0
-    page.screenshot(path="/tmp/junction-v3-comparison.png",full_page=True)
     page.set_viewport_size({"width":390,"height":844})
     assert page.evaluate("document.documentElement.scrollWidth<=window.innerWidth")
     expect(page.locator("#comparison-overlay")).to_be_visible()
@@ -124,11 +129,14 @@ def test_all_unresolved_preserves_source_without_claiming_3d_success(semantic_se
     from playwright.sync_api import expect
     SemanticFixtureProvider.unresolved_only=True
     page=scene_page; generate(page,semantic_server)
+    page.locator("#show-model").click()
+    page.locator("#model-details").evaluate("(details) => { details.open = true; }")
     expect(page.locator("#no-model-geometry")).to_be_visible()
     expect(page.locator("#no-model-geometry")).to_contain_text("No 3D geometry")
     expect(page.locator("#model-canvas-container")).to_be_hidden()
     expect(page.locator("#inventory-counts")).to_have_text("0 reconstructed · 0 schematic · 1 unresolved.")
     assert snapshot(page)["mesh_count"]==0
+    page.locator("#inventory-panel > summary").click()
     page.locator(".unresolved-item").click()
     expect(page.locator("#page-image")).to_be_visible()
     expect(page.locator("#evidence-overlay")).to_be_visible()

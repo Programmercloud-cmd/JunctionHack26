@@ -68,6 +68,9 @@ def test_concept_proposals_source_picking_footprints_and_export(concept_server,s
     page=scene_page;generate(page,concept_server)
     data=page.evaluate('window.blueprintViewer.data')
     requests=[];page.on('request',lambda r:requests.append(r.url)if '/api/'in r.url else None)
+    page.locator("#model-details").evaluate("(details) => { details.open = true; }")
+    if page.locator('#show-drawing').get_attribute('aria-selected') == 'true':
+        page.locator('#show-model').click()
     page.locator('#show-concept').click()
     expect(page.locator('.concept-disclosure')).to_be_visible()
     expect(page.locator('#scene-badge')).to_contain_text('unscaled')
@@ -114,10 +117,16 @@ def test_concept_proposals_source_picking_footprints_and_export(concept_server,s
     expect(page.locator('#concept-selection-name')).to_contain_text('Proposal')
     expect(page.locator('#concept-selection-note')).to_contain_text('not depicted source evidence')
     page.locator('#concept-support-source').click();expect(page.locator('#evidence-overlay')).to_be_visible()
+    page.locator("#model-details").evaluate("(details) => { details.open = true; }")
+    if page.locator('#show-drawing').get_attribute('aria-selected') == 'true':
+        page.locator('#show-model').click()
     page.locator('#show-concept').click()
     click_concept_record(page,rotated['id'])
     expect(page.locator('#element-inspector')).to_be_visible()
     page.locator('#element-source').click();expect(page.locator('#evidence-overlay')).to_be_visible()
+    page.locator("#model-details").evaluate("(details) => { details.open = true; }")
+    if page.locator('#show-drawing').get_attribute('aria-selected') == 'true':
+        page.locator('#show-model').click()
     page.locator('#show-concept').click()
     page.locator('#cutaway-percent').fill('100');page.locator('#cutaway-percent').dispatch_event('input')
     assert page.evaluate('''()=>{const values=[];blueprintViewer.concept.floors.forEach(f=>f.group.traverse(m=>{if(m.material)values.push(m.material.clippingPlanes.length)}));return values.length>0&&values.every(n=>n===0)}''')
@@ -132,11 +141,14 @@ def test_concept_proposals_source_picking_footprints_and_export(concept_server,s
     ask(page,'What is the actual ceiling height?')
     expect(page.locator('#result-status')).to_have_text('Missing information')
     assert snapshot(page)['concept_build_count']==1
-    page.screenshot(path='/tmp/product-concept-fixture.png',full_page=True)
 
 
 def test_atomic_revision_preserves_view_and_discards_failed_stale_candidates(concept_server,scene_page):
-    page=scene_page;generate(page,concept_server);page.locator('#show-concept').click()
+    page=scene_page;generate(page,concept_server)
+    page.locator("#model-details").evaluate("(details) => { details.open = true; }")
+    if page.locator('#show-drawing').get_attribute('aria-selected') == 'true':
+        page.locator('#show-model').click()
+    page.locator('#show-concept').click()
     page.locator('#show-assumptions').check();page.locator('#cutaway-percent').fill('100');page.locator('#cutaway-percent').dispatch_event('input')
     page.wait_for_timeout(250)
     result=page.evaluate('''() => {
@@ -170,7 +182,11 @@ def test_atomic_revision_preserves_view_and_discards_failed_stale_candidates(con
 
 def test_revision_ui_keeps_selected_proposal_then_retains_removed_source(concept_server,scene_page):
     from playwright.sync_api import expect
-    page=scene_page;generate(page,concept_server);page.locator('#show-concept').click()
+    page=scene_page;generate(page,concept_server)
+    page.locator("#model-details").evaluate("(details) => { details.open = true; }")
+    if page.locator('#show-drawing').get_attribute('aria-selected') == 'true':
+        page.locator('#show-model').click()
+    page.locator('#show-concept').click()
     page.evaluate("Object.assign(window.blueprintViewer.data,{building_id:'fixture-building',revision_id:'r1',revision_number:1})")
     source=page.evaluate("window.blueprintViewer.data.elements.find(e=>e.kind==='furniture')")
     page.locator('#element-select').select_option(source['id'])

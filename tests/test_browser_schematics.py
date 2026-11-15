@@ -73,6 +73,7 @@ def test_unresolved_annotations_preserve_geometry_highlights_and_source(annotati
     # Raised initial view reveals interiors without changing model coordinates.
     assert page.evaluate("""() => {const v=window.blueprintViewer,d=v.camera.position.clone().sub(v.controls.target);return d.z/Math.hypot(d.x,d.y)>1;}""")
     floor=scene["floors"][0]
+    page.locator("#model-details").evaluate("(details) => { details.open = true; }")
     page.locator("#floor-select").select_option(floor["id"])
     expect(page.locator("#unresolved-model-count")).to_have_text("2 unresolved source items on this floor")
     visible=[a for a in snapshot(page)["annotations"] if a["visible"]]
@@ -90,7 +91,9 @@ def test_unresolved_annotations_preserve_geometry_highlights_and_source(annotati
     coarse.focus();coarse.press("Enter")
     expect(page.locator("#comparison-selection-detail")).to_contain_text("no precise object location or geometry")
     expect(page.locator("#comparison-inspect")).to_be_hidden()
-    page.locator("#show-model").click();page.locator("#floor-select").select_option("")
+    page.locator("#show-model").click()
+    page.locator("#model-details").evaluate("(details) => { details.open = true; }")
+    page.locator("#floor-select").select_option("")
     page.locator("#explode-floors").uncheck()
     assert not snapshot(page)["exploded"]
     page.locator("#explode-floors").check()
@@ -120,7 +123,6 @@ def test_unresolved_annotations_preserve_geometry_highlights_and_source(annotati
     assert page.locator(".unresolved-annotation").count()==4
     assert page.evaluate("window.savedViewer.annotations.length")==0
     assert page.evaluate("window.blueprintViewer.data.elements")==scene["elements"]
-    page.screenshot(path="/tmp/junction-schematic-annotations.png",full_page=True)
 
 
 def test_all_unresolved_keeps_source_notice_without_fake_model(annotation_server,scene_page):
@@ -129,6 +131,8 @@ def test_all_unresolved_keeps_source_notice_without_fake_model(annotation_server
     page=scene_page;page.goto(annotation_server);upload(page,pdf=True)
     generate_scene(page)
     page.wait_for_function("window.blueprintViewer?.data.derived===true")
+    page.locator("#show-model").click()
+    page.locator("#model-details").evaluate("(details) => { details.open = true; }")
     expect(page.locator("#no-model-geometry")).to_be_visible()
     expect(page.locator("#model-canvas-container")).to_be_hidden()
     expect(page.locator("#unresolved-model-count")).to_have_text("4 unresolved source items")

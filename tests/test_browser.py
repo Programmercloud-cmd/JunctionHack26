@@ -134,6 +134,7 @@ def test_pdf_evidence_navigation_and_replacement(server, browser_page):
     upload(page, pdf=True)
     ask(page, "Count rooms")
     expect(page.locator("#answer-text")).to_have_text("Fixture: one labeled room.")
+    page.locator(".chat-assistant .text-button",has_text="Details und Belege").last.click()
     page.locator(".evidence-item").click()
     expect(page.locator("#page-label")).to_contain_text("page 2 (2/2)")
     expect(page.locator("#evidence-overlay")).to_be_visible()

@@ -3,7 +3,12 @@
 const $ = (id) => document.getElementById(id);
 const state = { document: null, pageIndex: 0, selectedEvidence: null, sourceSelection: null, result: null, busy: null, providerReady: false, health: null, requestVersion: 0, scene: null, viewer: null, selectedElement: null, selectedComparison: null, view: "drawing", epoch:0, jobs:[], savedBuildings:[], pollTimer:null, pollingEpoch:null, questionRequest:null, askSubmitting:false, reconstructionSubmitting:false, uploadMode:"new", conversation:[], clarificationReply:null, assumptionRows:[], assumptionEdits:new Map(), evidenceRevision:null };
 let voice = null;
-const suggestions = Array.from(document.querySelectorAll("[data-question]"));
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+let modelTransition = null;
+let pendingLocalMessages = [];
+const submittedQuestions = new Map();
+let activeRenderJob = null;
+let viewVersion = 0;
 
 function announce(message) { $("announcer").textContent = message; }
 function setError(id, message = "") { $(id).textContent = message; $(id).hidden = !message; }
@@ -12,32 +17,37 @@ function updateControls() {
   const recording = Boolean(voice?.recording);
   $("file-input").disabled = busy;
   $("upload-label").disabled = busy;
+  if (busy && !$("upload-options").hidden) setUploadMenu(false);
+  $("upload-to-project").hidden = state.document?.kind !== "drawing";
   $("append-sources").disabled=busy||!state.document;
   $("retry-extraction").disabled=busy||!state.document||!state.providerReady;
   $("upload-label").classList.toggle("is-disabled", busy);
   $("drop-zone").setAttribute("aria-disabled", String(busy));
-  $("question").disabled = !state.document || busy || recording;
-  suggestions.forEach((button) => { button.disabled = !state.document || busy || recording; });
-  $("ask-button").disabled = !state.document || !state.providerReady || busy || recording || state.askSubmitting || !$("question").value.trim();
-  $("ask-label").textContent = state.busy === "ask" ? "Inspecting drawing…" : "Ask the drawing";
+  $("question").disabled = busy || recording;
+  $("ask-button").disabled = busy || recording || state.askSubmitting || (state.document && !state.providerReady) || !$("question").value.trim();
+  $("ask-label").textContent = "Send message";
   $("upload-progress").hidden = state.busy !== "upload";
   $("ask-progress").hidden = state.busy !== "ask" && !state.questionRequest?.pending;
-  $("question-help").textContent = !state.document ? "Upload a drawing to get started." : !state.providerReady ? `You can preview the drawing. Configure ${state.health?.provider_label || "the selected provider"} to ask questions.` : "Answers are limited to the supplied drawing.";
+  $("question-help").textContent = !state.document ? "Attach a plan first." : !state.providerReady ? "Configure the AI provider to use chat and 3D." : "Ask about the plans or request a 3D model.";
   $("previous-page").disabled = !state.document || state.pageIndex === 0;
   $("next-page").disabled = !state.document || state.pageIndex >= state.document.pages.length - 1;
   $("character-count").textContent = `${$("question").value.length} / 2000`;
   $("question-form").setAttribute("aria-busy", String(state.busy === "ask"));
   $("source-heading").closest("section").setAttribute("aria-busy", String(state.busy === "upload"));
-  $("generate-scene").hidden = !state.document || state.document.kind === "ifc" || Boolean(state.scene);
+  $("generate-scene").hidden = !state.document || state.document.kind === "ifc" || Boolean(state.scene) || Boolean(activeRenderJob) || state.jobs.some(job=>job.kind==="reconstruction"&&!terminalJob(job));
   $("generate-scene").disabled = busy || !state.providerReady || state.reconstructionSubmitting || state.jobs.some(j=>j.kind==="reconstruction"&&!terminalJob(j));
   const progressive=Boolean(state.document?.building_id&&state.document?.revision_id),native=state.document?.kind==="ifc"&&!state.scene?.derived;
   $("building-progress").hidden=!progressive;
   $("refine-building").hidden=!state.scene||native;$("reconstruct-building").hidden=native;
   for(const id of ["refine-building","reconstruct-building"])$(id).disabled=busy||!state.providerReady||state.reconstructionSubmitting||state.jobs.some(j=>j.kind==="reconstruction"&&!terminalJob(j));
   $("open-building").disabled=busy||!$("saved-building-select").value;
-  $("show-model").disabled = !state.scene;
+  $("show-model").disabled = !state.scene && !activeRenderJob;
   $("show-concept").disabled = !state.viewer || !state.scene?.elements.some(e=>e.geometry);
-  $("show-drawing").hidden = state.document?.kind === "ifc";
+  $("show-drawing").disabled = state.document?.kind === "ifc";
+  $("fit-model").disabled = !state.viewer;
+  $("plan-select").hidden = (state.document?.pages.length || 0) < 2;
+  $("active-plan-label").hidden = !$("plan-select").hidden;
+  $("previous-page").hidden = $("next-page").hidden = $("plan-select").hidden;
   $("scene-progress").hidden = state.busy !== "scene";
   voice?.syncControls();
 }
@@ -52,7 +62,9 @@ async function request(path, options = {}, timeout = 180000) {
       let message = "The request could not be completed. Please try again.";
       if (typeof data?.detail === "string") message = data.detail;
       else if (Array.isArray(data?.detail)) message = data.detail.map((item) => item.msg || "Invalid input").join(". ");
-      throw new Error(message);
+      const error = new Error(message);
+      error.status = response.status;
+      throw error;
     }
     if (!data) throw new Error("The server returned an unreadable response. Please try again.");
     return data;
@@ -97,6 +109,7 @@ function resetAnswer() {
   state.sourceSelection = null;
   if (state.viewer) state.viewer.setHighlights([], $("highlight-answer").checked);
   $("result").hidden = true;
+  $("result").removeAttribute("data-thread-copy");
   $("answer-empty").hidden = false;
   $("evidence-overlay").hidden = true;
   setError("ask-error");
@@ -120,7 +133,7 @@ async function uploadFile(input, append = false) {
     if(!result.document_id||!Array.isArray(result.pages))throw new Error("The server did not return a usable source document.");
     if(append&&result.document_id===state.document?.document_id){
       state.document=result;for(const job of result.extraction_jobs||[])rememberJob(job);
-      renderPage();renderSourceList();renderBuildingStatus();await refreshAssumptions();schedulePoll(0);
+      setView("drawing");renderPage();renderSourceList();renderBuildingStatus();await refreshAssumptions();schedulePoll(0);
     }else await activateDocument({...result,jobs:result.jobs||result.extraction_jobs||[]});
     refreshSavedBuildings();announce("Original sources saved. Interpretation is independent of optional 3D generation.");
   }catch(error){setError("upload-error",error.message);}
@@ -139,7 +152,7 @@ async function refreshSavedBuildings() {
   try {
     const result=await request("/api/buildings",{},15000);state.savedBuildings=result.buildings || [];
     const selected=$("saved-building-select").value || state.document?.building_id || "";
-    $("saved-building-select").replaceChildren(new Option("Choose a saved building", ""));
+    $("saved-building-select").replaceChildren(new Option("Choose a building", ""));
     for(const item of state.savedBuildings)$("saved-building-select").append(new Option(`${item.filename} · ${item.has_scene?"model available":"source available"}`,item.building_id||item.document_id));
     $("saved-building-select").value=selected;
     $("saved-buildings-note").textContent=`${state.savedBuildings.length} saved ${state.savedBuildings.length===1?"building":"buildings"}`;
@@ -147,21 +160,34 @@ async function refreshSavedBuildings() {
   finally{$("refresh-buildings").disabled=false;updateControls();}
 }
 async function activateDocument(result) {
-  clearTimeout(state.pollTimer);state.epoch++;state.jobs=result.jobs || [];state.questionRequest=null;state.askSubmitting=false;state.reconstructionSubmitting=false;
+  clearTimeout(state.pollTimer);state.epoch++;
+  endModelTransition();
+  activeRenderJob=null;
+  pendingLocalMessages=[];
+  submittedQuestions.clear();
+  state.lastModelJob = null;
+  state.manualModel = null;
+  $("chat-job-notices").replaceChildren();
+  $("source-details").open=false;
+  $("comparison-details").open=false;
+  $("comparison-details").hidden=true;
+  $("model-details").open=false;
+  $("inventory-panel").open=false;
+  state.jobs=result.jobs || [];state.questionRequest=null;state.askSubmitting=false;state.reconstructionSubmitting=false;
   clearScene();state.document=result;voice?.newDocument(result.document_id);state.pageIndex=0;state.conversation=[];state.clarificationReply=null;state.assumptionEdits.clear();state.evidenceRevision=null;resetAnswer();setError("building-poll-error");
+  $("active-project-name").textContent=result.filename.replace(/\.[^.]+$/, "");
+  $("active-project-name").title=result.filename;
+  $("active-project-name").hidden=false;
   $("filename").textContent=result.filename;$("filename").title=result.filename;
   $("page-count").textContent=result.kind==="ifc"?"IFC model":`${result.pages.length} ${result.pages.length===1?"page":"pages"}`;
   $("document-warnings").textContent=(result.warnings || []).join(" ");$("document-warnings").hidden=!$("document-warnings").textContent;
-  $("drop-zone").hidden=true;$("document-view").hidden=false;$("upload-label").textContent="Open other files";$("zoom").value="100";$("image-stage").style.width="100%";
+  $("drop-zone").hidden=true;$("document-view").hidden=false;$("zoom").value="100";
+  $("answer-empty").querySelector("p").textContent="Ask about the plans or request a 3D model.";
   if(result.kind==="ifc"){
     setView("model");await loadScene(await request(result.scene_url || `/api/documents/${result.document_id}/scene`));
-    suggestions[0].dataset.question="How many windows are in this IFC model?";suggestions[0].textContent="Count windows";
-    suggestions[1].dataset.question="How many rooms are in this IFC model?";suggestions[1].textContent="Count rooms";
   }else{
     setView("drawing");renderPage();
-    suggestions[0].dataset.question="What labeled spaces are shown on this drawing?";suggestions[0].textContent="Identify spaces";
-    suggestions[1].dataset.question="What dimensions are explicitly shown?";suggestions[1].textContent="Inspect dimensions";
-    if(result.scene_url)await loadScene(await request(result.scene_url));
+    if(result.scene_url)await loadScene(await request(result.scene_url), {switchToModel:false});
   }
   renderSourceList();renderBuildingStatus();renderJobs();updateControls();
   if(progressiveDocument()){await Promise.allSettled([refreshConversation(),refreshAssumptions()]);schedulePoll(0);}
@@ -204,6 +230,11 @@ function rememberJob(job) {
   state.jobs=[job,...state.jobs.filter(j=>j.id!==job.id)];renderBuildingStatus();renderJobs();updateControls();
 }
 function renderJobs() {
+  const manualJob = state.jobs.find(job=>job.id===state.manualModel?.id);
+  if (manualJob && (modelOwnedBy(manualJob) || (terminalJob(manualJob) && state.scene?.derived))) {
+    if (state.manualModel.viewVersion===viewVersion) setView("model");
+    state.manualModel=null;
+  }
   const open=new Set([...$("building-jobs").querySelectorAll("details[open]")].map(d=>d.dataset.jobId));
   const historyWasOpen=Boolean($("past-jobs")?.open);
   $("building-jobs").replaceChildren();
@@ -235,15 +266,21 @@ function renderJobs() {
     else $("building-jobs").append(row);
   }
   if(historyCount){historyTitle.textContent=`Past jobs (${historyCount})`;$("building-jobs").append(history);}
-  const question=state.jobs.find(j=>j.kind==="question"&&j.request_id===state.questionRequest?.id&&j.building_id===state.questionRequest?.building);
-  if(question&&state.questionRequest.pending){
-    $("ask-progress-label").textContent=question.message || "Inspecting the source";
-    if(terminalJob(question)){
-      state.questionRequest.pending=false;
-      if(question.status==="complete"&&question.answer){renderResult(question.answer,true);voice?.answerReady();refreshConversation();}
-      else{setError("ask-error",question.message || "Question stopped without a confirmed answer.");$("answer-empty").hidden=false;}
+  for (const [id,submitted] of submittedQuestions) {
+    const question=state.jobs.find(job=>job.kind==="question" && job.request_id===id && job.building_id===submitted.building);
+    if (!question || !terminalJob(question)) continue;
+    submittedQuestions.delete(id);
+    submitted.pending=false;
+    if(question.status==="complete" && question.reconstruction_job_id){
+      watchModelJob(question.reconstruction_job_id,submitted.page,submitted.viewVersion);
+    }else if(state.questionRequest===submitted){
+      if(question.status==="complete" && question.answer){renderResult(question.answer,true);voice?.answerReady();}
+      else setError("ask-error",question.message || "The question could not be answered. Please try again.");
     }
+    refreshConversation();
   }
+  updateModelJob();
+  renderChatJobNotices();
 }
 async function refreshBuilding() {
   if(!progressiveDocument())return;
@@ -260,7 +297,7 @@ async function refreshBuilding() {
     if(result.has_scene&&(!state.scene || (result.geometry_revision_id || result.revision_id)!==state.scene.revision_id)){
       const scene=await request(result.scene_url || `/api/documents/${id}/scene`);
       if(epoch!==state.epoch||id!==state.document?.building_id)return;
-      await loadScene(scene);
+      await loadScene(scene, {switchToModel:false});
     }
     if(epoch!==state.epoch)return;
     const revisionChanged=state.document.revision_id!==result.revision_id;
@@ -269,32 +306,256 @@ async function refreshBuilding() {
     const savedOption=[...$("saved-building-select").options].find(option=>option.value===id);
     if(savedOption)savedOption.textContent=`${result.filename} · ${result.has_scene?"model available":"source available"}`;
     renderBuildingStatus();renderJobs();setError("building-poll-error");updateControls();
-  }catch(error){if(epoch===state.epoch)setError("building-poll-error",`${error.message} The displayed model remains available. Use Refresh status to retry.`);}
+  }catch(error){if(epoch===state.epoch){
+    if(activeRenderJob && !activeRenderJob.leaving) {
+      const label = $("model-job-state");
+      label.hidden = false;
+      label.textContent = "The model view could not be loaded. Retrying…";
+    }
+    setError("building-poll-error",`${error.message} The displayed model remains available. Use Refresh status to retry.`);}}
   finally{
     if(state.pollingEpoch===epoch)state.pollingEpoch=null;
-    if(epoch===state.epoch&&state.jobs.some(job=>!terminalJob(job)))schedulePoll();
+    if(epoch===state.epoch&&(state.jobs.some(job=>!terminalJob(job)) || (activeRenderJob && !activeRenderJob.leaving)))schedulePoll();
   }
 }
-async function startReconstruction(mode) {
+function showChatEnd() {
+  const thread = document.querySelector(".thread");
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function reconstructionStatus(job) {
+  if (["geometry_enrichment","ifc_generation","generating"].includes(job?.phase)) return "Building the 3D model…";
+  if (["reviewing","checking_revision","correcting"].includes(job?.phase)) return "Checking the model against the plans…";
+  return "Preparing the plans…";
+}
+
+function endModelTransition() {
+  modelTransition?.dispose();
+  modelTransition = null;
+  $("model-transition").replaceChildren();
+  $("model-transition").removeAttribute("data-transition-phase");
+  $("model-transition").hidden = true;
+  $("model-stage").removeAttribute("data-building");
+  $("model-stage").removeAttribute("data-revealing");
+  $("model-canvas-container").inert = false;
+  $("model-stage").removeAttribute("aria-busy");
+  $("model-job-state").hidden = true;
+}
+
+function modelOwnedBy(job) {
+  if (!job?.preview_geometry_revision_id || !job.model_available || !state.scene?.elements.some(element => element.geometry)) return false;
+  return [job.revision_id, job.preview_geometry_revision_id].includes(state.scene.revision_id);
+}
+
+async function watchModelJob(id, page, submittedViewVersion = viewVersion) {
+  if (activeRenderJob?.id === id) return;
+  endModelTransition();
+  const run = {id, epoch:state.epoch, leaving:false, preparing: Boolean(page?.image_url && !reducedMotion.matches)};
+  state.lastModelJob = id;
+  activeRenderJob = run;
+  // Capture the visible plan before hiding its pane. The flat start uses this same box.
+  const source = $("page-image");
+  const stageBounds = $("viewer").getBoundingClientRect();
+  const bounds = source.getBoundingClientRect();
+  const visiblePage = state.document?.pages[state.pageIndex];
+  const origin = visiblePage?.page === page?.page && visiblePage?.source_id === page?.source_id && bounds.width && stageBounds.width
+    ? {x:bounds.x-stageBounds.x, y:bounds.y-stageBounds.y, width:bounds.width, height:bounds.height, stageWidth:stageBounds.width, stageHeight:stageBounds.height}
+    : null;
+  if (submittedViewVersion === viewVersion) setView("model");
+  const stage = $("model-transition");
+  $("model-stage").dataset.building = "true";
+  $("model-canvas-container").inert = true;
+  $("model-stage").setAttribute("aria-busy","true");
+  const image = new Image();
+  const preview = page?.image_url && new URL(origin ? source.src : page.image_url, location.origin);
+  if (preview?.origin === location.origin) image.src = preview.href;
+  stage.hidden = false;
+  stage.replaceChildren();
+  if (page?.image_url) {
+    image.alt = "";
+    image.className = "transition-opening";
+    if (origin) for (const [key,value] of Object.entries({left:origin.x,top:origin.y,width:origin.width,height:origin.height})) image.style[key] = value + "px";
+    stage.append(image);
+  }
+  updateControls();
+  updateModelJob();
+  if (!run.preparing || run.leaving) return;
+  try {
+    const {createModelTransition} = await import("/static/model-transition.js");
+    if (activeRenderJob !== run || state.epoch !== run.epoch || run.leaving || reducedMotion.matches) return;
+    modelTransition = createModelTransition(stage, {image, page, openingRect:origin});
+  } catch {
+    // The still plan and job status remain usable if the presentation cannot render.
+  } finally {
+    run.preparing = false;
+    updateModelJob();
+  }
+}
+
+function updateModelJob() {
+  const run = activeRenderJob;
+  if (!run || run.epoch !== state.epoch) return;
+  const job = state.jobs.find(entry => entry.id === run.id);
+  const owned = modelOwnedBy(job);
+  if (run.leaving) return;
+  const label = $("model-job-state");
+  label.hidden = false;
+  const text = reconstructionStatus(job);
+  if (label.textContent !== text) label.textContent = text;
+  if (owned && modelTransition && run.sceneRevision !== state.scene.revision_id) {
+    run.sceneRevision = state.scene.revision_id;
+    try { modelTransition.setScene(state.scene); }
+    catch { modelTransition.dispose(); modelTransition=null; }
+  }
+  if (!job || !terminalJob(job) || (owned && run.preparing && !reducedMotion.matches)) return;
+
+  if (!owned && job.preview_geometry_revision_id && job.model_available && state.document?.has_scene &&
+      [job.revision_id,job.preview_geometry_revision_id].includes(state.document.geometry_revision_id)) return;
+  run.leaving = true;
+  const finish = () => {
+    if (activeRenderJob !== run || state.epoch !== run.epoch) return;
+    endModelTransition();
+    activeRenderJob = null;
+    if (!owned && state.view === "model") setView("drawing");
+    if (owned && state.view === "model") state.viewer?.resize();
+    renderChatJobNotices();
+    updateControls();
+  };
+  if (owned && modelTransition && state.viewer && state.view === "model" && !reducedMotion.matches) {
+    const viewer = state.viewer;
+    const container = $("model-canvas-container");
+    let bounds, width, height;
+    const current = () => activeRenderJob === run && state.viewer === viewer && state.view === "model";
+    const getModelBounds = () => {
+      if (!current()) return null;
+      if (container.clientWidth !== width || container.clientHeight !== height) {
+        width = container.clientWidth;
+        height = container.clientHeight;
+        viewer.resize();
+        if (!$("model-stage").dataset.revealing) viewer.fit();
+        bounds = viewer.revealBounds();
+      }
+      return bounds;
+    };
+    const showModel = () => {
+      if (!current() || !viewer.renderFrame()) return false;
+      $("model-stage").dataset.revealing = "true";
+      label.textContent = "Revealing the 3D model…";
+      return true;
+    };
+    modelTransition.reveal({getModelBounds,showModel}).then(finish,finish);
+  } else finish();
+}
+
+function renderChatJobNotices() {
+  const container = $("chat-job-notices");
+  const linked = new Set(state.conversation.map(message=>message.reconstruction_job_id).filter(Boolean));
+  if (activeRenderJob) linked.delete(activeRenderJob.id);
+  const relevant = state.jobs.filter(job=>job.kind==="reconstruction" && terminalJob(job) &&
+    (linked.has(job.id) || (job.id === state.lastModelJob && job.id !== activeRenderJob?.id)));
+  const key = relevant.map(job=>`${job.id}:${job.status}:${job.model_available}`).join("|");
+  if (container.dataset.key === key) return;
+  container.dataset.key = key;
+  container.replaceChildren();
+  for (const job of relevant.reverse()) {
+    const row = document.createElement("div");
+    row.className = "chat-message chat-assistant";
+    const name = document.createElement("strong");
+    const copy = document.createElement("p");
+    name.textContent = "concrete";
+    if (job.preview_geometry_revision_id && job.model_available) {
+      copy.textContent = job.status==="complete"
+        ? "The 3D model is ready. You can rotate it and download the IFC."
+        : "The 3D model is available. The review could not be completed.";
+    } else {
+      copy.textContent = job.status==="needs_attention"
+        ? "A 3D model could not be created from these views. The original drawings are available in the Plans tab."
+        : job.status==="stopped"
+          ? "3D reconstruction was stopped. Your plans are still available."
+          : "3D reconstruction failed. Your plans are still available. You can try again.";
+    }
+    row.append(name,copy);
+    if (job.status!=="complete" && job.diagnostic_message) {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = "Error details";
+      const detail = document.createElement("p");
+      detail.textContent = job.diagnostic_message;
+      details.append(summary,detail);
+      row.append(details);
+    }
+    container.append(row);
+  }
+  if (relevant.length) showChatEnd();
+}
+
+async function retryAfterInterpretation(document, epoch, submit) {
+  try {
+    return await submit(document.revision_id);
+  } catch (error) {
+    if (error.status!==409 || epoch!==state.epoch) throw error;
+    const latest=await request(`/api/buildings/${document.building_id}`,{},15000);
+    const sourceIds=document.sources?.map(source=>source.source_id).join(":");
+    if (epoch!==state.epoch || latest.review_status!=="interpretation_available" || !sourceIds ||
+        sourceIds!==latest.sources?.map(source=>source.source_id).join(":") ||
+        latest.geometry_revision_id!==document.geometry_revision_id) throw error;
+    // Retry only when background interpretation advanced the same plans.
+    return submit(latest.revision_id);
+  }
+}
+
+async function startReconstruction(mode, {animate = false} = {}) {
   if(!state.document||!state.providerReady||state.reconstructionSubmitting)return;
-  const epoch=state.epoch,document=state.document;setError("scene-error");state.reconstructionSubmitting=true;updateControls();
+  const epoch=state.epoch,document=state.document,fromView=viewVersion;
+  const page=document.pages[state.pageIndex];
+  setError("scene-error");state.reconstructionSubmitting=true;updateControls();
   try{
     if(progressiveDocument()){
-      const job=await request(`/api/buildings/${document.building_id}/reconstruction`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({base_revision_id:document.revision_id,mode})});
-      if(epoch===state.epoch){rememberJob(job);schedulePoll(0);}
+      const submit=revision=>request(`/api/buildings/${document.building_id}/reconstruction`,{
+        method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({base_revision_id:revision,mode}),
+      });
+      const job=await retryAfterInterpretation(document,epoch,submit);
+      if(epoch===state.epoch){
+        state.lastModelJob=job.id;
+        if (job.kind === "reconstruction" && mode === "reconstruct") {
+          if (animate) watchModelJob(job.id,page,fromView);
+          else state.manualModel={id:job.id,viewVersion:fromView};
+        }
+        rememberJob(job);
+        schedulePoll(0);
+      }
     }else{
-      state.busy="scene";$("scene-progress-text").textContent="Interpreting source plans and generating the model…";updateControls();
+      state.busy="scene";$("scene-progress-text").textContent="Creating the 3D model…";updateControls();
       const scene=await request(`/api/documents/${document.document_id}/scene`,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
       if(epoch===state.epoch)await loadScene(scene);
     }
-  }catch(error){if(epoch===state.epoch)setError("scene-error",error.message);}
+  }catch(error){if(epoch===state.epoch){setError("scene-error",error.message);setError("ask-error",`3D reconstruction could not start. ${error.message}`);}}
   finally{if(epoch===state.epoch){state.reconstructionSubmitting=false;if(state.busy==="scene")state.busy=null;updateControls();}}
+}
+
+function fitPlan() {
+  const page = state.document?.pages[state.pageIndex];
+  const viewer = $("viewer");
+  if (!page || !viewer.clientWidth || !viewer.clientHeight) return;
+  const style = getComputedStyle(viewer);
+  const width = viewer.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  const height = viewer.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+  const zoom = Number($("zoom").value) / 100;
+  $("image-stage").style.width = `${Math.max(1,Math.min(width,height*page.width/page.height))*zoom}px`;
 }
 
 function renderPage() {
   if (!state.document?.pages.length) return;
   const page = state.document.pages[state.pageIndex];
+  setError("upload-error");
   $("page-label").textContent = `${page.source_filename || state.document.filename} · page ${page.source_page || page.page} (${state.pageIndex+1}/${state.document.pages.length})${state.evidenceRevision?" · answered revision":""}`;
+  const pages = state.document.pages;
+  $("plan-select").replaceChildren(...pages.map((item,index)=>new Option(
+    `${item.source_filename || state.document.filename}${pages.length>1 ? ` · Page ${item.source_page || item.page}` : ""}`,index)));
+  $("plan-select").value = state.pageIndex;
+  $("active-plan-label").textContent = page.source_filename || state.document.filename;
+  $("file-bar-page").textContent = "Page " + (page.source_page || page.page);
+  fitPlan();
   $("page-image").alt = `${state.document.filename}, page ${page.page}`;
   // Only load normalized page previews from this application.
   const preview=state.evidenceRevision?`/api/buildings/${state.document.building_id}/revisions/${state.evidenceRevision}/pages/${page.page}`:page.image_url;
@@ -315,6 +576,7 @@ function renderOverlay() {
   const page = state.document?.pages[state.pageIndex];
   const overlay = $("evidence-overlay");
   overlay.hidden = true;
+  $("viewer-caption").classList.toggle("has-selection",Boolean(evidence));
   $("viewer-caption").textContent = "Select an evidence reference to locate it on the drawing.";
   if (!evidence || evidence.page !== page?.page || !Array.isArray(evidence.bbox) || !$("page-image").complete || !$("page-image").naturalWidth) return;
   const [left, top, right, bottom] = evidence.bbox;
@@ -330,6 +592,7 @@ function renderOverlay() {
 }
 
 function selectEvidence(index) {
+  viewVersion++;
   const evidence = state.result?.evidence?.[index];
   if (!evidence || !state.document) return;
   const pageIndex = state.document.pages.findIndex((page) => page.page === evidence.page);
@@ -343,7 +606,7 @@ function selectEvidence(index) {
   document.querySelectorAll(".evidence-item").forEach((button, i) => button.setAttribute("aria-pressed", String(i === index)));
   renderPage();
   $("viewer").focus({ preventScroll: true });
-  $("viewer").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  $("viewer").scrollIntoView({ behavior: reducedMotion.matches ? "instant" : "smooth", block: "nearest" });
   announce(`Showing evidence ${index + 1}, ${evidence.label}, on page ${evidence.page}.`);
 }
 
@@ -368,6 +631,7 @@ function renderResult(result, preserveView = false) {
   state.sourceSelection = null;
   $("answer-empty").hidden = true;
   $("result").hidden = false;
+  $("result").dataset.threadCopy = String(state.conversation.some(message => message.answer?.answer === result.answer));
   const labels = { clarification:"Clarify your question", answered: "Supported by the inspected source", insufficient: "Missing information", unclear: "Unable to resolve confidently" };
   const headings = { clarification:"A quick clarification", answered: "Answer", insufficient: "The supplied drawing is not enough", unclear: "This needs a closer look" };
   $("result-status").textContent = labels[result.status] || "Inspection result";
@@ -444,8 +708,8 @@ function renderResult(result, preserveView = false) {
   if(result.answered_revision_id)addDetail("Answered revision",result.answered_revision_id);
   if (state.health?.model) addDetail("Answer model", state.health.model);
   if (Number.isFinite(result.usage?.latency_ms)) addDetail("Time", `${(result.usage.latency_ms / 1000).toFixed(1)} s`);
-  if (Number.isFinite(result.usage?.input_tokens)) addDetail("Input tokens", result.usage.input_tokens.toLocaleString());
-  if (Number.isFinite(result.usage?.output_tokens)) addDetail("Output tokens", result.usage.output_tokens.toLocaleString());
+  if (Number.isFinite(result.usage?.input_tokens)) addDetail("Input tokens", result.usage.input_tokens.toLocaleString("en"));
+  if (Number.isFinite(result.usage?.output_tokens)) addDetail("Output tokens", result.usage.output_tokens.toLocaleString("en"));
   renderOverlay();
   announce(`${labels[result.status] || "Inspection complete"}. ${result.answer || ""}`);
 }
@@ -500,29 +764,41 @@ function syncViewerControls(snapshot) {
   $("concept-proposal-select").value=selected;
 }
 function inspectProposal(record) {
+  $("model-details").open=true;
   state.selectedProposal=record;$("element-inspector").hidden=true;
   $("concept-selection").hidden=false;$("concept-selection-name").textContent=`Proposal · ${record.label}`;
   $("concept-selection-note").textContent=record.note;
   $("concept-support-source").hidden=!state.scene?.elements.some(e=>e.id===record.host_id&&e.source.kind==="image");
   $("concept-proposal-select").value=record.id;announce(`Selected decorative proposal: ${record.label}. This is not source evidence.`);
 }
-function setView(view) {
+function setView(view, user = false) {
+  if (user) viewVersion++;
   if(view==="concept"&&!state.viewer)return;
   state.view=view;const concept=view==="concept",model=view==="model"||concept;
   document.body.classList.toggle("concept-mode",concept);
   $("drawing-pane").hidden=view!=="drawing";$("model-pane").hidden=!model;
+  document.querySelector(".zoom-control").hidden = model;
+  document.querySelector(".viewer-toolbar").hidden = !state.document?.pages.length;
+  for (const [id,selected] of [["show-drawing",!model],["show-model",model]]) {
+    $(id).setAttribute("aria-selected", String(selected));
+    $(id).tabIndex = selected ? 0 : -1;
+  }
+  if (!model) fitPlan();
+  if (!model && modelTransition && activeRenderJob?.leaving) endModelTransition();
   $("show-model").setAttribute("aria-pressed",String(view==="model"));$("show-concept").setAttribute("aria-pressed",String(concept));
+  $("show-concept").textContent = concept ? "Inspection view" : "Concept view";
   $("show-drawing").setAttribute("aria-pressed",String(view==="drawing"));
-  $("model-caption").textContent=concept?"Drag to orbit · click source objects or amber-outlined proposals to inspect their meaning.":"Drag to orbit · scroll to zoom · right-drag to pan · click an object to inspect its source.";
+  $("model-caption").textContent=concept?"Drag to orbit · click source objects or amber-outlined proposals to inspect their meaning.":"Drag to rotate and scroll to zoom. Select an object to inspect its source.";
   if(model&&state.viewer){state.viewer.resize();syncViewerControls(state.viewer.setMode(concept?"concept":"inspection"));requestAnimationFrame(()=>state.viewer?.resize());}
   renderInventory();
 }
 
-async function loadScene(scene) {
+async function loadScene(scene, {switchToModel = true} = {}) {
+  const epoch = state.epoch;
   if (scene.document_id !== state.document?.document_id) return;
   const updating=Boolean(state.viewer&&state.scene?.document_id===scene.document_id);
   if(updating&&(!scene.revision_id||scene.revision_id===state.scene.revision_id))return;
-  const oldView=state.view, oldSelected=state.selectedElement, oldProposal=state.selectedProposal, oldComparison=$("comparison-floor-select").value;
+  const oldSelected=state.selectedElement, oldProposal=state.selectedProposal, oldComparison=$("comparison-floor-select").value;
   let prepared=null;
   if(updating){try{prepared=state.viewer.prepareRevision(scene);state.viewer.commitRevision(prepared);}catch(error){setError("scene-error","The model update could not be published. The previous usable revision remains available.");return;}}
   state.scene = scene;
@@ -541,6 +817,7 @@ async function loadScene(scene) {
   if(!updating) $("explode-floors").checked = Boolean(scene.derived && scene.floors.length > 1 && (scene.layout === "schematic" || scene.floors.some((floor) => floor.alignment_status !== "supported")));
   renderFloors();
   $("comparison-controls").hidden = !scene.derived;
+  $("comparison-details").hidden = !scene.derived;
   $("comparison-floor-select").replaceChildren(new Option("All floors on this page", ""));
   for (const floor of scene.floors || []) $("comparison-floor-select").append(new Option(`${floor.label} · p. ${floor.source.page}`, floor.id));
   renderComparison();
@@ -549,9 +826,10 @@ async function loadScene(scene) {
   $("scene-warnings").hidden = !$("scene-warnings").textContent;
   $("element-select").replaceChildren(new Option("Select a source object", ""));
   scene.elements.forEach((element) => $("element-select").append(new Option(`${element.kind} · ${element.name || element.id}${element.geometry ? "" : " (no mesh)"}`, element.id)));
-  if(!updating)setView("model");
+  if(!updating && switchToModel)setView("model");
   try {
     const {BlueprintViewer} = await import("/static/viewer.js");
+    if (epoch !== state.epoch || scene.document_id !== state.document?.document_id) return;
     if(!updating){
       state.viewer = new BlueprintViewer($("model-canvas-container"), {onSelect: inspectElement,onUnresolvedSelect: openUnresolvedAnnotation,onProposalSelect: inspectProposal});
       window.blueprintViewer = state.viewer;state.viewer.loadScene(scene);
@@ -566,11 +844,13 @@ async function loadScene(scene) {
       $("revision-notice").textContent=changes.removed_selection||changes.unresolved_selection?"Model updated. The selected object was removed or is now unresolved; its previous source evidence remains available below.":"Model updated. Your view is preserved; use Fit updated model if you want new framing.";
       if(oldSelected){const current=scene.elements.find(e=>e.id===oldSelected.id);inspectElement(current || oldSelected);if(!current)$("element-geometry-note").textContent="Removed in the current revision. Original source evidence retained; no replacement object was selected.";}
       if(oldProposal){const record=state.viewer.concept?.records.get(oldProposal.id);if(record)inspectProposal(record);else{$("concept-selection").hidden=true;state.selectedProposal=null;}}
-      setView(oldView);
+      setView(state.view);
     }
     if(updating&&state.result){state.result=answerForDisplayedRevision(state.result);$("answer-review-note").textContent=state.result.review_note || "";$("answer-review-note").hidden=!state.result.review_note;}
     updateHighlights(updating);
+    updateModelJob();
   } catch (error) {
+    if (epoch !== state.epoch) return;
     $("model-canvas-container").replaceChildren();
     const notice = document.createElement("p");
     notice.className = "model-error";
@@ -624,7 +904,7 @@ function showSourceRegion(source, label) {
   state.selectedEvidence = null;
   state.pageIndex = index;
   $("comparison-floor-select").value = "";
-  setView("drawing");
+  setView("drawing",true);
   renderPage();
   announce(`Showing original source region for ${label}, page ${source.page}.`);
 }
@@ -651,7 +931,7 @@ function renderFloors() {
   }
   $("floor-source-links").hidden=!$("floor-source-links").childElementCount;
   updateCutawayNote();
-  $("download-ifc").hidden = true;$("download-ifc").textContent=scene.derived?"Download derived IFC ↗":"Download source IFC ↗";
+  $("download-ifc").hidden = true;$("download-ifc-label").textContent=scene.derived?"Download IFC":"Download original IFC";
   if (scene.ifc_url) {
     const url = new URL(scene.ifc_url, window.location.origin);
     if (url.origin === window.location.origin && url.pathname.startsWith("/api/documents/")) {
@@ -816,6 +1096,7 @@ function renderComparison() {
 function renderInventory() {
   const panel = $("model-inventory");
   panel.hidden = !state.scene?.derived;
+  $("inventory-panel").hidden = panel.hidden;
   if (panel.hidden) { $("unresolved-model-notice").hidden=true; return; }
   const floor = $(state.view === "drawing" ? "comparison-floor-select" : "floor-select").value;
   const page = state.document?.pages[state.pageIndex]?.page;
@@ -850,6 +1131,7 @@ function renderInventory() {
 }
 
 function inspectElement(element) {
+  $("model-details").open=true;
   state.selectedProposal=null;$("concept-selection").hidden=true;
   state.selectedElement = element;
   if (state.viewer && $("floor-select").value !== state.viewer.floorFilter) { $("floor-select").value = state.viewer.floorFilter; renderFloorDetails(); renderInventory(); }
@@ -957,7 +1239,7 @@ function renderSourceList() {
     label.textContent=source.filename;note.textContent=`${source.kind || "source"} · ${source.pages?.length || 0} pages · ${source.interpretation_status || "original preserved"}`;
     row.append(label,note);
     const pageIndex=state.document.pages.findIndex(page=>page.source_id===source.source_id);
-    if(pageIndex>=0){const open=document.createElement("button");open.type="button";open.className="text-button";open.textContent="Open source ↗";open.addEventListener("click",()=>{state.pageIndex=pageIndex;state.evidenceRevision=null;state.sourceSelection=null;state.selectedEvidence=null;setView("drawing");renderPage();});row.append(open);}
+    if(pageIndex>=0){const open=document.createElement("button");open.type="button";open.className="text-button";open.textContent="Open source ↗";open.addEventListener("click",()=>{state.pageIndex=pageIndex;state.evidenceRevision=null;state.sourceSelection=null;state.selectedEvidence=null;setView("drawing",true);renderPage();});row.append(open);}
     const original=document.createElement("a");original.className="text-button";original.textContent="Download original";original.download=source.filename;original.href=`/api/buildings/${state.document.building_id}/sources/${encodeURIComponent(source.source_id)}/original`;row.append(original);
     $("source-list").append(row);
   }
@@ -974,34 +1256,48 @@ function updateCutawayNote() {
 async function refreshConversation() {
   if(!progressiveDocument())return;
   const epoch=state.epoch,id=state.document.building_id;
+  const sequence=state.conversationSequence=(state.conversationSequence || 0)+1;
   try{
-    const payload=await request(`/api/buildings/${id}/conversation`,{},15000);if(epoch!==state.epoch)return;
+    const payload=await request(`/api/buildings/${id}/conversation`,{},15000);if(epoch!==state.epoch||sequence!==state.conversationSequence)return;
     state.conversation=payload.messages || [];renderConversation();setError("conversation-error");
   }catch(error){if(epoch===state.epoch)setError("conversation-error",`Conversation history is unavailable: ${error.message}`);}
 }
 function renderConversation() {
-  const container=$("conversation");container.replaceChildren();
-  const latestAssistant=[...state.conversation].reverse().find(m=>m.answer);
-  state.clarificationReply=latestAssistant?.answer?.status==="clarification"?latestAssistant.id:null;
-  for(const message of state.conversation){
+  const container=$("conversation");
+  const conversationKey=JSON.stringify([...state.conversation,...pendingLocalMessages]);
+  if (container.dataset.key===conversationKey) return;
+  container.dataset.key=conversationKey;
+  container.replaceChildren();
+  const latestAssistantIndex = state.conversation.findLastIndex(message => message.role === "assistant");
+  const latestAssistant = state.conversation[latestAssistantIndex];
+  const pendingClarification = latestAssistant?.answer?.status === "clarification" &&
+    !state.conversation.slice(latestAssistantIndex + 1).some(message => message.role === "user");
+  state.clarificationReply = pendingClarification ? latestAssistant.id : null;
+  for(const message of [...state.conversation,...pendingLocalMessages]){
     const item=document.createElement("article");item.className=`chat-message ${message.role==="user"?"chat-user":"chat-assistant"}`;item.dataset.messageId=message.id;
-    const name=document.createElement("strong"),text=document.createElement("p");name.textContent=message.role==="user"?"You":message.answer?.status==="clarification"?"Clarification":"Blueprint QA";
-    text.textContent=message.answer?.clarification?.message || message.answer?.answer || message.question || message.content || "";item.append(name,text);
+    const name=document.createElement("strong"),text=document.createElement("p");name.textContent=message.role==="user"?"":"concrete";
+    text.textContent=message.answer?.clarification?.message || message.answer?.answer || message.question || message.text || message.content || "";if(name.textContent)item.append(name);item.append(text);
     if(message.answer){
-      const open=document.createElement("button");open.type="button";open.className="text-button";open.textContent="Evidence and checks ↗";
-      open.addEventListener("click",()=>{renderResult(message.answer,true);state.clarificationReply=message.answer.status==="clarification"?message.id:null;$("result").scrollIntoView({block:"nearest",behavior:"smooth"});});item.append(open);
+      const open=document.createElement("button");open.type="button";open.className="text-button";open.textContent="Details and evidence ↗";
+      open.addEventListener("click",()=>{renderResult(message.answer,true);$("evidence-checks").open=true;$("result").scrollIntoView({block:"nearest",behavior:reducedMotion.matches?"instant":"smooth"});});item.append(open);
       for(const [i,evidence] of (message.answer.evidence||[]).entries()){
         const link=document.createElement("button");link.type="button";link.className="chat-citation";link.textContent=`${evidence.label} · p. ${evidence.source_page || evidence.page} ↗`;
         link.addEventListener("click",()=>{renderResult(message.answer,true);selectEvidence(i);});item.append(link);
       }
-      if(message.answer.status==="clarification")for(const suggestion of message.answer.clarification?.suggestions||[]){
+      if(pendingClarification && message.id===latestAssistant.id)for(const suggestion of message.answer.clarification?.suggestions||[]){
         const button=document.createElement("button");button.type="button";button.className="chat-citation";button.textContent=suggestion;
         button.addEventListener("click",()=>{state.clarificationReply=message.id;$("question").value=suggestion;updateControls();$("question-form").requestSubmit();});item.append(button);
       }
     }
     container.append(item);
   }
-  if(state.conversation.length)$("answer-empty").hidden=true;
+  if(state.conversation.length || pendingLocalMessages.length)$("answer-empty").hidden=true;
+  if(state.conversation.at(-1)?.answer?.answer === state.result?.answer && state.result?.answer){
+    $("result").dataset.threadCopy="true";
+    $("evidence-checks").open=false;
+  }
+  renderChatJobNotices();
+  showChatEnd();
 }
 
 async function refreshAssumptions() {
@@ -1093,16 +1389,30 @@ $("append-sources").addEventListener("click",()=>{state.uploadMode="append";$("f
 $("retry-extraction").addEventListener("click",async()=>{const epoch=state.epoch;try{const payload=await request(`/api/buildings/${state.document.building_id}/extraction`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({retry:true})});if(epoch===state.epoch){for(const job of payload.jobs||[])rememberJob(job);schedulePoll(0);}}catch(error){if(epoch===state.epoch)setError("building-poll-error",error.message);}});
 $("apply-assumptions").addEventListener("click",applyAssumptions);
 
-$("generate-scene").addEventListener("click",()=>startReconstruction("reconstruct"));
+$("generate-scene").addEventListener("click",()=>startReconstruction("reconstruct",{animate:true}));
 $("refine-building").addEventListener("click",()=>startReconstruction("refine"));
 $("reconstruct-building").addEventListener("click",()=>startReconstruction("reconstruct"));
 $("refresh-building").addEventListener("click",()=>refreshBuilding());
 $("refresh-buildings").addEventListener("click",refreshSavedBuildings);
 $("saved-building-select").addEventListener("change",updateControls);
 $("open-building").addEventListener("click",()=>openBuilding($("saved-building-select").value));
-$("show-drawing").addEventListener("click", () => setView("drawing"));
-$("show-model").addEventListener("click", () => setView("model"));
-$("show-concept").addEventListener("click",()=>setView("concept"));
+$("show-drawing").addEventListener("click", () => setView("drawing",true));
+$("show-model").addEventListener("click", () => setView("model",true));
+for (const [id,view] of [["show-drawing","model"],["show-model","drawing"]]) {
+  $(id).addEventListener("keydown",event=>{
+    if (!["ArrowLeft","ArrowRight","Home","End"].includes(event.key)) return;
+    const next = event.key === "Home" ? "drawing" : event.key === "End" ? "model" : view;
+    const tab = $(next === "drawing" ? "show-drawing" : "show-model");
+    if (tab.disabled) return;
+    event.preventDefault();
+    setView(next,true);
+    tab.focus();
+  });
+}
+$("show-concept").addEventListener("click",()=>{
+  setView(state.view==="concept" ? "model" : "concept",true);
+  $("model-details").open=true;
+});
 $("cutaway-percent").addEventListener("input",()=>{state.viewer?.setCutawayPercent(Number($("cutaway-percent").value));updateCutawayNote();});
 $("concept-proposal-select").addEventListener("change",()=>{const record=state.viewer?.concept?.records.get($("concept-proposal-select").value);if(record){state.viewer.selectedProposalId=record.id;state.viewer.applyAppearance();inspectProposal(record);}});
 $("concept-support-source").addEventListener("click",()=>{const host=state.scene?.elements.find(e=>e.id===state.selectedProposal?.host_id);if(host)showSourceRegion(host.source,`Supporting area for proposal: ${state.selectedProposal.label}`);});
@@ -1110,7 +1420,8 @@ $("highlight-answer").addEventListener("change", updateHighlights);
 $("show-assumptions").addEventListener("change", () => state.viewer?.setShowAssumptions($("show-assumptions").checked));
 $("fit-model").addEventListener("click", () => state.viewer?.fit());
 $("review-unresolved").addEventListener("click",() => {
-  $("unresolved-items").scrollIntoView({behavior:"smooth",block:"nearest"});
+  $("inventory-panel").open=true;
+  $("unresolved-items").scrollIntoView({behavior:reducedMotion.matches?"instant":"smooth",block:"nearest"});
   $("unresolved-items").querySelector("button")?.focus({preventScroll:true});
 });
 $("floor-select").addEventListener("change", () => setFloorFilter($("floor-select").value));
@@ -1134,17 +1445,31 @@ $("element-source").addEventListener("click", () => {
 $("question-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const question=$("question").value.trim();
-  if(!question||!state.document||state.busy||state.askSubmitting||!state.providerReady||voice?.recording)return;
+  if(!question||state.busy||state.askSubmitting||voice?.recording)return;
+  if (!state.document) {
+    pendingLocalMessages.push({role:"user",question},{role:"assistant",text:"Which plan should I use? Attach it using the plus button."});
+    $("question").value="";
+    renderConversation();updateControls();return;
+  }
+  if (!state.providerReady) return;
   voice?.cancelAll();
   voice?.questionSubmitted(question);
   resetAnswer();$("answer-empty").hidden=true;
   const epoch=state.epoch,building=state.document.document_id;
   if(state.document.building_id&&state.document.revision_id){
-    const requestId=crypto.randomUUID();state.questionRequest={id:requestId,building,pending:true};state.askSubmitting=true;updateControls();
+    const requestId=crypto.randomUUID();state.questionRequest={id:requestId,building,pending:true,page:state.document.pages[state.pageIndex],viewVersion};state.askSubmitting=true;submittedQuestions.set(requestId,state.questionRequest);updateControls();
+    const document=state.document;
+    const payload = {document_id:building,question,request_id:requestId,
+      conversation_id:document.building_id,reply_to:state.clarificationReply,
+      clarification_response:state.clarificationReply?question:null,allow_3d:true,
+      active_page:document.pages[state.pageIndex]?.page ?? null};
+    const submit = revision => request("/api/questions",{
+      method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...payload,revision_id:revision}),
+    });
     try {
-      const job=await request("/api/questions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({document_id:building,question,revision_id:state.document.revision_id,request_id:requestId,conversation_id:state.document.building_id,reply_to:state.clarificationReply,clarification_response:state.clarificationReply?question:null})});
+      const job=await retryAfterInterpretation(document,epoch,submit);
       if(epoch===state.epoch&&state.questionRequest?.id===requestId){rememberJob(job);if($("question").value.trim()===question)$("question").value="";state.clarificationReply=null;refreshConversation();schedulePoll(0);}
-    }catch(error){if(epoch===state.epoch&&state.questionRequest?.id===requestId){state.questionRequest.pending=false;setError("ask-error",error.message);$("answer-empty").hidden=false;}}
+    }catch(error){if(epoch===state.epoch&&state.questionRequest?.id===requestId){submittedQuestions.delete(requestId);state.questionRequest.pending=false;setError("ask-error",error.message);$("answer-empty").hidden=Boolean(state.conversation.length);}}
     finally{if(epoch===state.epoch){state.askSubmitting=false;updateControls();}}
     return;
   }
@@ -1155,20 +1480,57 @@ $("question-form").addEventListener("submit", async (event) => {
 });
 
 $("file-input").addEventListener("change", (event) => uploadFile(event.target.files,state.uploadMode==="append"));
-$("upload-label").addEventListener("click", () => { if (!state.busy) {state.uploadMode="new";$("file-input").click();} });
+reducedMotion.addEventListener("change",()=>{
+  if (reducedMotion.matches && modelTransition) {
+    modelTransition.dispose();
+    modelTransition = null;
+    updateModelJob();
+  }
+});
+
+function setUploadMenu(open) {
+  $("upload-options").hidden = !open;
+  $("upload-label").setAttribute("aria-expanded",String(open));
+}
+
+$("upload-label").addEventListener("click", () => { if (!state.busy) setUploadMenu($("upload-options").hidden); });
+for (const [id,mode] of [["upload-to-project","append"],["upload-new-project","new"]]) {
+  $(id).addEventListener("click",()=>{
+    setUploadMenu(false);
+    state.uploadMode=mode;
+    $("file-input").click();
+  });
+}
+document.addEventListener("click",event=>{
+  if (!$("upload-options").hidden && !event.target.closest(".composer-upload")) setUploadMenu(false);
+});
+$("question-form").addEventListener("keydown",event=>{
+  if (event.key==="Escape" && !$("upload-options").hidden) {
+    setUploadMenu(false);
+    $("upload-label").focus();
+  }
+});
 $("drop-zone").addEventListener("click", () => { if (!state.busy) {state.uploadMode="new";$("file-input").click();} });
-$("drop-zone").addEventListener("keydown", (event) => { if ((event.key === "Enter" || event.key === " ") && !state.busy) { event.preventDefault(); $("file-input").click(); } });
+$("drop-zone").addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); $("drop-zone").click(); } });
 const sourcePanel = $("source-heading").closest("section");
 sourcePanel.addEventListener("dragover", (event) => { event.preventDefault(); if (!state.busy) $("drop-zone").classList.add("drag-over"); });
 sourcePanel.addEventListener("dragleave", (event) => { if (!sourcePanel.contains(event.relatedTarget)) $("drop-zone").classList.remove("drag-over"); });
 sourcePanel.addEventListener("drop", (event) => { event.preventDefault(); $("drop-zone").classList.remove("drag-over"); if (!state.busy) { uploadFile(event.dataTransfer.files); } });
 $("question").addEventListener("input", updateControls);
-suggestions.forEach((button) => button.addEventListener("click", () => { $("question").value = button.dataset.question; updateControls(); $("question").focus(); }));
-function changePage(direction) { if (!state.document) return; const index = state.pageIndex + direction; if (index < 0 || index >= state.document.pages.length) return; state.evidenceRevision=null; state.pageIndex = index; $("comparison-floor-select").value = ""; renderPage(); }
+$("question").addEventListener("keydown", event=>{
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing || $("ask-button").disabled) return;
+  event.preventDefault();
+  $("question-form").requestSubmit();
+});
+$("plan-select").addEventListener("change",()=>{
+  changePage(Number($("plan-select").value)-state.pageIndex);
+});
+new ResizeObserver(fitPlan).observe($("viewer"));
+function changePage(direction) { if (!state.document || !direction) return; const index = state.pageIndex + direction; if (index < 0 || index >= state.document.pages.length) return; viewVersion++; state.evidenceRevision=null; state.pageIndex = index; $("comparison-floor-select").value = ""; setView("drawing"); renderPage(); }
 $("previous-page").addEventListener("click", () => changePage(-1));
 $("next-page").addEventListener("click", () => changePage(1));
 $("viewer").addEventListener("keydown", (event) => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); changePage(event.key === "ArrowLeft" ? -1 : 1); } });
-$("zoom").addEventListener("change", () => { $("image-stage").style.width = `${Number($("zoom").value)}%`; });
+$("zoom").addEventListener("change", fitPlan);
 $("page-image").addEventListener("error", () => setError("upload-error", "The drawing preview could not be loaded. Try uploading the file again."));
 $("page-image").addEventListener("load", renderOverlay);
 $("refresh-health").addEventListener("click", checkHealth);

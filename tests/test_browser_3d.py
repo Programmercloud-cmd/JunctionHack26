@@ -72,7 +72,11 @@ def scene_server(tmp_path, monkeypatch):
 def scene_page():
     playwright = pytest.importorskip("playwright.sync_api")
     with playwright.sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--use-angle=swiftshader", "--enable-unsafe-swiftshader"])
+        browser = p.chromium.launch(
+            channel=os.getenv("PLAYWRIGHT_CHROMIUM_CHANNEL") or None,
+            headless=True,
+            args=["--use-angle=swiftshader", "--enable-unsafe-swiftshader"],
+        )
         page = browser.new_page(viewport={"width":1440,"height":1100})
         errors = []
         page.on("pageerror", lambda error: errors.append(str(error)))
@@ -93,6 +97,7 @@ def generate_scene(page):
         page.locator('#generate-scene').click()
     page.wait_for_function("window.blueprintViewer?.data.derived===true",timeout=30000)
     page.wait_for_function("!state.jobs.some(j=>j.kind==='reconstruction'&&!terminalJob(j))",timeout=30000)
+    page.locator('#model-transition').wait_for(state='hidden',timeout=50000)
 
 
 @pytest.mark.skipif(not SAMPLE.exists(), reason="External duplex IFC preview not available")
@@ -104,6 +109,7 @@ def test_real_ifc_orbit_counts_highlights_source_and_scene_reuse(scene_server, s
     page.goto(scene_server)
     page.locator("#file-input").set_input_files(str(SAMPLE))
     page.wait_for_function("window.blueprintViewer?.getSnapshot().mesh_count > 200", timeout=90000)
+    page.locator("#model-details").evaluate("(details) => { details.open = true; }")
     expect(page.locator("#scene-badge")).to_have_text("IFC geometry · metres")
     assert snapshot(page)["up_axis"] == [0,0,1]
     canvas = page.locator("#model-canvas-container canvas")
@@ -167,7 +173,6 @@ def test_real_ifc_orbit_counts_highlights_source_and_scene_reuse(scene_server, s
     assert scene_requests == ["GET"]
     page.locator("#element-select").select_option(rooms["highlight_ids"][0])
     expect(page.locator("#element-identity")).to_contain_text(rooms["highlight_ids"][0])
-    page.screenshot(path="/tmp/junction-ifc-acceptance.png", full_page=True)
 
 
 def test_image_model_assumptions_source_mapping_and_reuse(scene_server, scene_page):
@@ -179,6 +184,7 @@ def test_image_model_assumptions_source_mapping_and_reuse(scene_server, scene_pa
     upload(page)
     generate_scene(page)
     page.wait_for_function("window.blueprintViewer?.getSnapshot().mesh_count > 0", timeout=30000)
+    page.locator("#model-details").evaluate("(details) => { details.open = true; }")
     expect(page.locator("#scene-badge")).to_have_text("Approximate · unscaled")
     expect(page.locator("#generate-scene")).to_be_hidden()
     assert SceneFixtureProvider.reconstruction_calls == 1
@@ -223,4 +229,3 @@ def test_image_model_assumptions_source_mapping_and_reuse(scene_server, scene_pa
           }
       return true;
     }""")
-    page.screenshot(path="/tmp/junction-image-acceptance.png", full_page=True)

@@ -1,13 +1,17 @@
 """Browser contract checks with explicit API fixtures; no live inference claims."""
+from base64 import b64decode
 import copy
+from io import BytesIO
 import os
 from pathlib import Path
 import socket
 import threading
 import time
 
+from PIL import Image, ImageChops
 import pytest
 from test_browser import source_bytes
+from test_backend import png
 from test_browser_3d import scene_page
 
 pytestmark=pytest.mark.skipif(os.getenv('RUN_BROWSER_TESTS')!='1',reason='opt-in browser checks')
@@ -96,6 +100,8 @@ def test_source_first_chat_append_pinned_evidence_and_batch_inputs(static_server
     page.evaluate("state.uploadMode='append'")
     page.locator('#file-input').set_input_files({'name':'section.png','mimeType':'image/png','buffer':source_bytes()})
     expect(page.locator('.chat-user')).to_have_count(2)
+    page.locator('#plan-select').select_option('1')
+    expect(page.locator('#page-label')).to_contain_text('Section.png')
     page.locator('.chat-citation',has_text='Assembly hall').click()
     expect(page.locator('#evidence-overlay')).to_be_visible()
     expect(page.locator('#page-image')).to_have_attribute('src',f'{static_server}/api/buildings/{document["building_id"]}/revisions/{"a"*32}/pages/1')
@@ -121,6 +127,7 @@ def test_native_clipping_all_floors_preserves_meshes_and_mode(static_server,scen
         fid=f'f{i}';scene['floors'].append({'id':fid,'label':f'Supplied storey {i}','source':{'kind':'ifc','global_id':fid},'base_elevation':z,'reference_height':4,'reference_height_basis':'Supplied storey separation','elevation_basis':'IFC placement','scale_status':'known','order':i,'rotation_degrees':0,'alignment_status':'supported','assumptions':[]})
         scene['elements'].append({'id':f'w{i}','name':'Source wall','kind':'wall','ifc_type':'IfcWall','storey_id':fid,'geometry_origin':'extracted','assumptions':[],'properties':[],'source':{'kind':'ifc','global_id':f'w{i}'},'geometry':{'type':'box','center':[i*2,0,z+2],'size':[1,.2,4]}})
     page.evaluate('(scene)=>loadScene(scene)',scene);page.wait_for_function('window.blueprintViewer?.meshes.size===2')
+    page.locator("#model-details").evaluate("(details) => { details.open = true; }")
     assert page.locator('#floor-select option').count()==3
     before=page.evaluate('Array.from(blueprintViewer.meshes.values(),m=>Array.from(m.geometry.attributes.position.array))')
     page.locator('#cutaway-percent').fill('50');page.locator('#cutaway-percent').dispatch_event('input')
@@ -128,6 +135,7 @@ def test_native_clipping_all_floors_preserves_meshes_and_mode(static_server,scen
     assert result['cutaway_percent']==50 and [e['clipping_planes'] for e in result['elements']]==[[2],[6]]
     page.locator('#floor-select').select_option('f1')
     assert [e['visible'] for e in page.evaluate('blueprintViewer.getSnapshot().elements')]==[False,True]
+    page.locator("#model-details").evaluate("(details) => { details.open = true; }")
     page.locator('#show-concept').click()
     assert page.evaluate('blueprintViewer.concept.cutawayPercent')==50
     assert page.evaluate('Array.from(blueprintViewer.concept.floors.values(),f=>f.plane.constant)')==[2,6]
@@ -145,7 +153,9 @@ def sourcefirst_server(tmp_path,monkeypatch):
     """Real backend with a deterministic source interpreter and reviewers."""
     import uvicorn
     from app.main import create_app
-    from app.schemas import Usage,QuestionIntent,Clarification,GateResult,DraftAnswer,Evidence
+    from app.schemas import Usage,QuestionIntent,ChatQuestionIntent,Clarification,GateResult,DraftAnswer,Evidence
+    from app.building import BuildingDescription
+    from app.providers.gemini import ProviderError
     from app.review_schema import ReconstructionReview,AnswerReview
     from test_ifc_generate import description,floor,room
     class Provider:
@@ -153,6 +163,10 @@ def sourcefirst_server(tmp_path,monkeypatch):
         def extract_interpretation(self,document,include_geometry=False):
             assert include_geometry is False
             self.extract_calls+=1
+            if document.filename == "provider-error.png":
+                raise ProviderError("Explicit fixture: provider is temporarily unavailable.")
+            if document.filename == "elevation.png":
+                return BuildingDescription(floors=[], limitations=["Elevation only"])
             return description(floor('Assembly floor',rooms=[room(label='Assembly hall')]))
         def enrich_geometry(self,document):raise AssertionError('Complete fixture geometry must be reused')
         def reconstruct(self,*args):raise AssertionError('Source-first uses extraction and explicit enrichment')
@@ -160,6 +174,8 @@ def sourcefirst_server(tmp_path,monkeypatch):
             self.review_calls+=1
             return ReconstructionReview(candidate_supported=True,summary='Explicit fake review; not model-fidelity evidence')
         def resolve_intent(self,document,question):
+            if (document.conversation_context or {}).get("allow_3d") and question == "Erstelle mir daraus eine 3D-Datei.":
+                return ChatQuestionIntent(action="generate_3d")
             if question=='How many spaces?':return QuestionIntent(action='clarify',clarification=Clarification(message='Which floor?',suggestions=['Assembly floor']))
             return QuestionIntent(action='answer',resolved_question=question)
         def gate(self,document,question,crop=None):return GateResult(decision='insufficient' if 'height' in question else 'sufficient')
@@ -194,11 +210,13 @@ def test_real_source_only_chat_explicit_ifc_and_user_height(sourcefirst_server,s
     page.locator('#clarification-options button').click()
     expect(page.locator('#answer-text')).to_contain_text('assembly hall label',timeout=15000)
     expect(page.locator('.chat-user')).to_have_count(2)
-    page.locator('.evidence-item').click();expect(page.locator('#evidence-overlay')).to_be_visible()
+    page.locator('.chat-citation',has_text='Assembly hall').click();expect(page.locator('#evidence-overlay')).to_be_visible()
     page.locator('#generate-scene').click()
     page.wait_for_function('window.blueprintViewer?.meshes.size>0',timeout=30000)
     page.wait_for_function("state.jobs.some(j=>j.kind==='reconstruction'&&j.status==='complete')",timeout=15000)
+    expect(page.locator('#model-transition')).to_be_hidden(timeout=50000)
     assert provider.extract_calls==1 and provider.review_calls==1
+    page.locator("#model-details").evaluate("(details) => { details.open = true; }")
     page.locator('#show-concept').click()
     before=page.evaluate('blueprintViewer.getSnapshot()')
     page.locator('#assumptions-panel').evaluate('(e)=>e.open=true')
@@ -230,6 +248,8 @@ def test_queued_question_response_preserves_newly_typed_followup(static_server,s
     page.locator('#file-input').set_input_files({'name':'plan.png','mimeType':'image/png','buffer':source_bytes()})
     page.locator('#question').fill('First question');page.locator('#ask-button').click()
     page.wait_for_function('state.askSubmitting===true')
+    expect(page.locator("#ask-progress-label")).to_be_visible()
+    expect(page.locator("#ask-progress-label")).to_have_text("concrete thinking..")
     page.locator('#question').fill('A newly typed follow-up')
     assert len(pending)==1
     submitted=json.loads(pending[0].request.post_data)
@@ -249,6 +269,7 @@ def test_failed_job_exposes_only_sanitized_diagnostic_as_text(static_server,scen
     page.route(f'**/api/buildings/{document["building_id"]}',lambda route:route.fulfill(json={**document,"jobs":[failed]}))
     page.goto(static_server)
     page.locator('#file-input').set_input_files({'name':'plan.png','mimeType':'image/png','buffer':source_bytes()})
+    page.locator("#source-details").evaluate("(details) => { details.open = true; }")
     row=page.locator('.job-row[data-job-id="failed-dxf"]')
     row.locator('summary').click()
     expect(row.locator('.job-diagnostic')).to_be_visible()
@@ -256,3 +277,179 @@ def test_failed_job_exposes_only_sanitized_diagnostic_as_text(static_server,scen
     expect(row).to_contain_text('saved interpretation retained')
     expect(row).not_to_contain_text('INTERNAL_ONLY_NOT_FOR_DISPLAY')
     assert row.locator('retry').count()==0
+
+
+@pytest.mark.parametrize("reduced", [False, True])
+def test_chat_command_uses_real_job_and_preserves_plan(sourcefirst_server, scene_page, reduced, monkeypatch):
+    from playwright.sync_api import TimeoutError, expect
+
+    url, _, app = sourcefirst_server
+    geometry_started = threading.Event()
+    geometry_release = threading.Event()
+    generate_geometry = app.state.jobs._geometry
+
+    def wait_for_browser_before_generating(candidate):
+        geometry_started.set()
+        assert geometry_release.wait(60), "The browser never released IFC generation"
+        generate_geometry(candidate)
+
+    if not reduced:
+        monkeypatch.setattr(app.state.jobs, "_geometry", wait_for_browser_before_generating)
+    page = scene_page
+    page.set_viewport_size({"width": 1280, "height": 720})
+    if reduced:
+        page.emulate_media(reduced_motion="reduce")
+    page.goto(url)
+    page.get_by_role("button", name="Attach a plan").click()
+    with page.expect_file_chooser() as picker:
+        page.get_by_role("button", name="Open a new project").click()
+    picker.value.set_files({"name": "model.png", "mimeType": "image/png", "buffer": source_bytes()})
+    page.wait_for_function("state.document?.interpretation_status === 'complete'")
+    expect(page.locator("#show-drawing")).to_have_attribute("aria-selected", "true")
+    expect(page.locator("#page-image")).to_be_visible()
+    page.evaluate("""() => {
+        window.seenPhases = [];
+        window.clothFrames = {};
+        const waitingPhases = ['gable', 'compound', 'tower'];
+        const sample = document.createElement('canvas');
+        sample.width = 120;
+        sample.height = 80;
+        const context = sample.getContext('2d');
+        const stage = document.querySelector('#model-transition');
+        new MutationObserver(() => {
+            const phase = stage.dataset.transitionPhase;
+            if (phase && window.seenPhases.at(-1) !== phase) {
+              window.seenPhases.push(phase);
+              if (waitingPhases.includes(phase) && !window.clothFrames[phase]) {
+                context.clearRect(0, 0, sample.width, sample.height);
+                context.drawImage(stage.querySelector('canvas'), 0, 0, sample.width, sample.height);
+                window.clothFrames[phase] = sample.toDataURL('image/png').split(',')[1];
+              }
+            }
+        }).observe(stage, {attributes: true, attributeFilter: ['data-transition-phase']});
+    }""")
+    question = page.get_by_role("textbox", name="Message")
+    stage = page.locator("#model-stage")
+    try:
+        question.fill("Erstelle mir daraus eine 3D-Datei.")
+        question.press("Enter")
+        expect(page.locator("#show-model")).to_have_attribute("aria-selected", "true")
+        expect(page.locator("#model-job-state")).not_to_contain_text("%")
+        if not reduced:
+            assert geometry_started.wait(10), "The reconstruction never reached local IFC generation"
+            try:
+                page.wait_for_function("seenPhases.filter(phase => phase === 'gable').length > 1",
+                                       polling=100, timeout=45000)
+            except TimeoutError as error:
+                phases = page.evaluate("window.seenPhases")
+                raise AssertionError(f"Waiting animation did not repeat: {phases}") from error
+            samples = page.evaluate("window.clothFrames")
+            gable, compound, tower = [
+                Image.open(BytesIO(b64decode(samples[phase]))).convert("RGB")
+                for phase in ("gable", "compound", "tower")
+            ]
+            for previous, following in [(gable, compound), (compound, tower)]:
+                changed = ImageChops.difference(previous, following).convert("L").histogram()
+                assert sum(changed[16:]) > previous.width * previous.height * .01
+            expect(stage).not_to_have_attribute("data-revealing", "true")
+            expect(page.locator("#download-ifc")).to_be_hidden()
+            assert app.state.documents.get(page.evaluate("state.document.building_id")).scene is None
+    finally:
+        geometry_release.set()
+
+    if not reduced:
+        try:
+            expect(stage).to_have_attribute("data-revealing", "true", timeout=55000)
+        except AssertionError as error:
+            details = page.evaluate("""() => ({
+                 phases: window.seenPhases,
+                 task: activeRenderJob,
+                 builder: state.jobs.find(job => job.kind === 'reconstruction')?.status,
+                 viewerReady: !!state.viewer,
+                 label: document.querySelector('#model-job-state').innerText
+            })""")
+            raise AssertionError(f"Reconstruction did not reach the reveal: {details}") from error
+        expect(page.locator("#model-transition")).to_be_visible()
+        expect(page.locator("#model-canvas-container canvas")).to_be_visible()
+        expect(page.locator("#download-ifc")).to_be_hidden()
+        during_peel = page.evaluate("""() => {
+            const viewer = window.blueprintViewer;
+            window.revealCanvas = viewer.renderer.domElement;
+            const snapshot = viewer.getSnapshot();
+            return {revision: snapshot.revision_id, position: snapshot.camera_position,
+                    target: snapshot.camera_target, meshCount: snapshot.mesh_count,
+                    inert: viewer.container.inert};
+        }""")
+        assert during_peel["meshCount"] > 0
+        assert during_peel.pop("inert")
+
+    expect(page.locator("#download-ifc")).to_be_visible(timeout=50000)
+    expect(page.locator("#model-transition")).to_be_hidden()
+    phases = page.evaluate("window.seenPhases")
+    if reduced:
+        assert not phases
+    else:
+        expected = ["flat", "rolling", "tilting", "gable", "compound", "tower", "growing", "covered", "lifting"]
+        assert [phase for phase in dict.fromkeys(phases) if phase in expected] == expected
+        after_peel = page.evaluate("""() => {
+            const viewer = window.blueprintViewer;
+            const snapshot = viewer.getSnapshot();
+            return {sameCanvas: viewer.renderer.domElement === window.revealCanvas,
+                    revision: snapshot.revision_id, position: snapshot.camera_position,
+                    target: snapshot.camera_target, meshCount: snapshot.mesh_count,
+                    inert: viewer.container.inert};
+        }""")
+        assert after_peel.pop("sameCanvas")
+        assert not after_peel.pop("inert")
+        assert after_peel.pop("position") == pytest.approx(during_peel.pop("position"), abs=1e-6)
+        assert after_peel.pop("target") == pytest.approx(during_peel.pop("target"), abs=1e-6)
+        assert after_peel == during_peel
+    with page.expect_download() as result:
+        page.locator("#download-ifc").click()
+    assert Path(result.value.path()).read_bytes().startswith(b"ISO-10303-21;")
+    building = page.evaluate("state.document.building_id")
+    jobs = app.state.jobs.for_building(building)
+    linked = next(job for job in jobs if job["kind"] == "question")["reconstruction_job_id"]
+    model_job = next(job for job in jobs if job["id"] == linked)
+    assert model_job["preview_geometry_revision_id"]
+    if not reduced:
+        assert during_peel["revision"] == model_job["revision_id"]
+
+    page.reload()
+    page.get_by_role("button", name="Attach a plan").click()
+    with page.expect_file_chooser() as picker:
+        page.get_by_role("button", name="Open a new project").click()
+    picker.value.set_files({"name": "elevation.png", "mimeType": "image/png", "buffer": png()})
+    page.wait_for_function("state.document?.interpretation_status === 'complete'")
+    question.fill("Erstelle mir daraus eine 3D-Datei.")
+    question.press("Enter")
+    expect(page.locator("#chat-job-notices")).to_contain_text("A 3D model could not be created", timeout=15000)
+    expect(page.locator("#show-drawing")).to_have_attribute("aria-selected", "true")
+    expect(page.locator("#page-image")).to_be_visible()
+
+
+def test_failed_chat_reconstruction_returns_to_plan(sourcefirst_server, scene_page):
+    from playwright.sync_api import expect
+
+    url, _, app = sourcefirst_server
+    page = scene_page
+    page.emulate_media(reduced_motion="reduce")
+    page.goto(url)
+    question = page.get_by_role("textbox", name="Message")
+    question.fill("Erstelle mir daraus eine 3D-Datei.")
+    question.press("Enter")
+    expect(page.locator("#conversation")).to_contain_text("Which plan should I use?")
+    page.get_by_role("button", name="Attach a plan").click()
+    with page.expect_file_chooser() as picker:
+        page.get_by_role("button", name="Open a new project").click()
+    picker.value.set_files({"name": "provider-error.png", "mimeType": "image/png", "buffer": source_bytes()})
+    expect(page.locator("#page-image")).to_be_visible()
+    question.fill("Erstelle mir daraus eine 3D-Datei.")
+    question.press("Enter")
+    expect(page.locator("#chat-job-notices")).to_contain_text("3D reconstruction failed.", timeout=15000)
+    expect(page.locator("#show-drawing")).to_have_attribute("aria-selected", "true")
+    expect(page.locator("#page-image")).to_be_visible()
+    assert page.locator("#page-image").evaluate("image => image.complete && image.naturalWidth > 0")
+    building = page.evaluate("state.document.building_id")
+    job = next(job for job in app.state.jobs.for_building(building) if job["kind"] == "reconstruction")
+    assert job["status"] == "failed" and not job.get("preview_geometry_revision_id")
