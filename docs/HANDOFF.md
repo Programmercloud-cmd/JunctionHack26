@@ -1,3 +1,9 @@
+# Composer focus outline — published 2026-11-15
+
+The user explicitly requested removal of the purple outline around the visualizer message box. The previously preserved one-line `styles.css` change is now adopted, committed and published as `1533900`: `#composer-slot textarea:focus{outline:none}`. Other controls retain their keyboard focus outlines. Independent actual-app Chromium checks passed mouse/Tab focus in light and dark themes, with unchanged existing chat and no mutations/inference. The trusted HTTPS stylesheet matches the frozen bytes.
+
+Release `30c374fd00c03bef62cbc5cbc062520318f81e77232db82163586a712164ab49` changes only that CSS file among 75 production files. Publication passed the idle-job guard and preserved all 830 runtime hashes; both sites are healthy and the 09:30–14:30 Helsinki access policy remains unchanged. Branch `feat/agentic-chat` is pushed. The Buildings implementation/test results below remain applicable to the unchanged backend and other UI behavior.
+
 # Buildings/shared drawings — published 2026-11-15
 
 **Live at [the agentic site](https://agentic.95.133.254.90.sslip.io/) and pushed on `feat/agentic-chat`**, implementation commit `706aa5c`. The existing Project UI is now Buildings → overview Drawings and Chats, with Upload drawings in the overview. New uploads join one independently owned shared source group for all its chats; visualizer drops target that Building. Composer Attach and visualizer Import are removed. The Drawings picker and wide top/bottom arrows preserve the active chat, draft and current-group context. Read [the current contract and explicit legacy handling](BUILDINGS_SHARED_DRAWINGS.md).

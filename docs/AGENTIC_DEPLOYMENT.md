@@ -4,6 +4,12 @@ Status: **live at https://agentic.95.133.254.90.sslip.io/**. The final creator-p
 
 The existing `blueprint-qa-isolated` demo at `https://95.133.254.90.sslip.io/` remains running. The agentic worktree is `feat/agentic-chat` at `/tmp/junction-agentic-chat`. The user-authorized implementation commits through `706aa5c` are pushed to that branch.
 
+## Published composer focus follow-up
+
+Current code release: `30c374fd00c03bef62cbc5cbc062520318f81e77232db82163586a712164ab49`, source commit `1533900885ccf510f99054fb0a634d289573060e`, archive SHA256 `bf8ab8e93839050576c4e668cc68112ae69b581c7e5444305e48eea8becf6f1c`. Compared with V10 below, the sole production difference is `app/static/styles.css`: the explicitly requested composer-only `textarea:focus{outline:none}` rule. This adopts the previously preserved local CSS edit; it is no longer pending work.
+
+Independent actual-app checks confirmed no composer outline/shadow on click and Tab focus in both themes, while other keyboard-focused controls retain their solid 3px outline. The live trusted-HTTPS stylesheet hash matches the frozen file; both sites return 200. Publication passed the idle-job guard and retained all 830 runtime hashes. The access schedule and Python/rendering/source configuration are unchanged. Focus verification evidence is private under `/tmp/junction-agentic-diagnostics/composer-focus/`; V10's full suites below are the unchanged-behavior baseline.
+
 ## Current published release: Buildings and shared drawings
 
 - Source commit `706aa5c40d70b3beee84bd13c534501583a45041`, from a clean detached checkout, frozen under `/tmp/junction-agentic-publish/release-v10/source`. The unrelated concurrent local `styles.css` edit remains preserved and excluded.
