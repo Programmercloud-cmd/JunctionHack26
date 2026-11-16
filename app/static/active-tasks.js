@@ -6,7 +6,7 @@
   const cards=new Map(),activeGroups=new Map(),historyGroups=new Map();let context={},access={can_work:false},jobs=[],selected=null,timer=null;
   const terminal=job=>['complete','needs_attention','failed','budget_exhausted','stopped','interrupted'].includes(job.status);
   const node=(tag,text,cls)=>{const e=document.createElement(tag);if(text!=null)e.textContent=text;if(cls)e.className=cls;return e;};
-  const kind=job=>({extraction:'Source interpretation',question:'Source QA',agent:'Chat request',refinement:'Refinement',reconstruction:'3D reconstruction',render:'Hydrogen rendering'}[job.kind]||'Background task');
+  const kind=job=>({extraction:'Source interpretation',question:'Source QA',agent:'Chat request',refinement:'Refinement',reconstruction:'3D reconstruction',render:'Rendering and review'}[job.kind]||'Background task');
   function outcome(job){
     if(['queued','running','stopping'].includes(job.status))return ['running',job.status==='queued'?'Waiting in queue':job.status==='stopping'?'Stopping':'In progress','◷'];
     if(job.status==='stopped')return ['stopped','Stopped','■'];

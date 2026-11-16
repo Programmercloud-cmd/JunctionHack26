@@ -1,9 +1,8 @@
-"""One Hydrogen creator, then two parallel independent reviews, until agreement or interruption."""
+"""One creator, then two parallel independent reviews, until agreement or interruption."""
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
 import hashlib
 import json
-import os
 
 from pydantic import Field
 
@@ -12,7 +11,7 @@ from .building import BUILDING_PROMPT, BuildingDescription
 from .documents import DocumentError, resolve_reference
 from .identities import assign_identities
 from .jobs import JobStopped
-from .providers.gemini import (RECONSTRUCTION_PATCH_INSTRUCTIONS, RECONSTRUCTION_REVIEW_INSTRUCTIONS,
+from .providers.gemini import (RECONSTRUCTION_PATCH_INSTRUCTIONS, RECONSTRUCTION_REVIEW_INSTRUCTIONS, settings,
                                GEOMETRY_ENRICHMENT_INSTRUCTIONS, configured_number)
 from .review_render import overlay_views
 from .review_schema import DescriptionPatch, ReconstructionReview
@@ -162,7 +161,8 @@ def run_render(runner, identity, original, message, annotations):
     feedback = None
     review = None
     round_number = 0
-    config = {"pipeline_version": "parallel-hydrogen-v2", "render_model": os.getenv("GEMINI_RENDER_MODEL", "gemini-4-hydrogen"),
+    selected = settings()
+    config = {"pipeline_version": "parallel-render-v3", "provider": selected["name"], "render_model": selected["render_model"],
               "call_policy": "creator_then_two_parallel_reviews",
               "stop_policy": "both_reviewers_satisfied_or_interrupted", "annotation_ids": [a["id"] for a in annotations]}
 
@@ -185,7 +185,7 @@ def run_render(runner, identity, original, message, annotations):
             runner.store.save_job(job["building_id"], deepcopy(job))
 
     try:
-        update(phase="provider_setup", config=config, message="Starting one Hydrogen creator and two independent reviewers.")
+        update(phase="provider_setup", config=config, message="Starting one creator and two independent reviewers.")
         while True:
             guard()
             try:
@@ -240,7 +240,7 @@ def run_render(runner, identity, original, message, annotations):
                     raise DocumentError("Candidate rejected: " + " ".join(failures), 422)
                 digest = candidate_digest(candidate)
                 update(phase="render_review_parallel", candidate_digest=digest,
-                       message="Two independent Hydrogen reviewers inspect the same reopened IFC in parallel.")
+                       message="Two independent reviewers inspect the same reopened IFC in parallel.")
                 votes = parallel_reviews(providers[1:], candidate, digest, annotations, message, guard, update)
                 guard()
                 review = combined_review(votes)
@@ -262,7 +262,7 @@ def run_render(runner, identity, original, message, annotations):
                     with runner.lock:
                         guard()
                         runner._update(identity, status="complete", phase="complete",
-                            message="Both independent Hydrogen reviewers are satisfied with this exact generated model. Inspect sources and assumptions; this is not a guarantee of accuracy.")
+                            message="Both independent reviewers are satisfied with this exact generated model. Inspect sources and assumptions; this is not a guarantee of accuracy.")
                     return
                 feedback = None
             except JobStopped:

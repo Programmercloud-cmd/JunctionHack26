@@ -333,8 +333,26 @@ def gemini_wire_schema(schema: dict) -> dict:
 
 
 def settings(provider_name=None):
-    if provider_name is not None and provider_name.strip().lower() != "gemini":
-        raise ProviderError("Gemini is the supported AI provider.", 503)
+    name = (provider_name if provider_name is not None else os.getenv("AI_PROVIDER", "gemini")).strip().lower()
+    if name not in {"gemini", "openai"}:
+        raise ProviderError("Configure AI_PROVIDER as gemini or openai; no provider fallback is enabled.", 503)
+    if name == "openai":
+        advanced = os.getenv("OPENAI_MODEL", "gpt-6.1-sol")
+        basic = os.getenv("OPENAI_BASIC_MODEL", "gpt-6-luna")
+        return {
+            "name": "openai", "label": "OpenAI", "credential_env": "OPENAI_API_KEY",
+            "gate_kind": "structured_model_decision",
+            "api_key": os.getenv("OPENAI_API_KEY", "").strip(),
+            "model": advanced, "basic_model": basic,
+            "advanced_model": os.getenv("OPENAI_ADVANCED_MODEL", advanced),
+            "router_model": os.getenv("OPENAI_ROUTER_MODEL", basic),
+            "ui_model": os.getenv("OPENAI_UI_MODEL", basic),
+            "interpretation_model": os.getenv("OPENAI_INTERPRETATION_MODEL", advanced),
+            "clarification_model": os.getenv("OPENAI_CLARIFICATION_MODEL", basic),
+            "reconstruction_model": os.getenv("OPENAI_RECONSTRUCTION_MODEL", advanced),
+            "render_model": os.getenv("OPENAI_RENDER_MODEL", advanced),
+            "decision_model": os.getenv("OPENAI_DECISION_MODEL", basic),
+        }
     return {
         "name": "gemini", "label": "Gemini", "credential_env": "GEMINI_API_KEY",
         "gate_kind": "gemini_decisions",
@@ -348,10 +366,14 @@ def settings(provider_name=None):
         "clarification_model": os.getenv("GEMINI_CLARIFICATION_MODEL", "gemini-3.8-flash"),
         "reconstruction_model": os.getenv("GEMINI_RECONSTRUCTION_MODEL", "gemini-3.1-pro-preview"),
         "decision_model": os.getenv("GEMINI_DECISION_MODEL", "gemini-decision-1"),
+        "render_model": os.getenv("GEMINI_RENDER_MODEL", "gemini-4-hydrogen"),
     }
 
 
 def create_provider():
+    if settings()["name"] == "openai":
+        from .openai import OpenAIProvider
+        return OpenAIProvider()
     return GeminiProvider()
 
 
@@ -406,6 +428,9 @@ This is the source-only reasoning stage; geometry generation is optional and has
 Preserve original labels and non-residential features. Identify actual floor plans, sections, elevations, site plans and details.
 Only explicitly depicted floor-plan diagrams belong in floors; section/elevation information belongs in observations/unresolved_views.
 Record supported labels, semantic objects, measurements and their normalized ORIGINAL-page regions.
+Each floor's source region must encompass the complete depicted floor diagram, including the full outer wall strokes/thickness,
+with a small source-space margin where available. Do not use a tight interior or wall-centerline box: later wall footprints must
+fit this saved floor frame. Keep separate floor/view panels separate; this margin does not authorize unseen geometry.
 Populate top-level observations with section/elevation dimensions and annotations, using label/category/value/unit/source/basis/note.
 Inspect sheet margins, legends and title blocks as well as the drawing itself for scale bars, printed scale ratios and dimension callouts.
 Record each readable graphic scale as an observed scale_bar with its labeled physical span as value, its printed unit and a tight

@@ -4,7 +4,21 @@ Status: **live at https://agentic.95.133.254.90.sslip.io/**. The final creator-p
 
 The existing `blueprint-qa-isolated` demo at `https://95.133.254.90.sslip.io/` remains running. The agentic worktree is `feat/agentic-chat` at `/tmp/junction-agentic-chat`. The user-authorized implementation commits through `706aa5c` are pushed to that branch.
 
-## Current manual-slicing release
+## Current OpenAI provider release — 2026-11-16
+
+Live on the agentic host with explicit `AI_PROVIDER=openai`: **gpt-6-luna** serves conversation, routing, UI, basic QA and structured factual support review; **gpt-6.1-sol** serves advanced QA, interpretation and all three render roles. OpenAI's normal review request returns the existing decision choice and null confidence. Voice defaults to **gpt-transcribe**, producing an editable final transcript after Stop; ElevenLabs output is retained. Gemini remains an explicit alternative without automatic failover. See [setup and verification](OPENAI_PROVIDER.md).
+
+Frozen content `21662833b2ccffeeb48c17e6633f9eb95170113a7551083d5f25d3fe2bbd2048` contains 78 manifest-verified production files. The separate dependency environment verifies all 88 locked packages, adding OpenAI 3.51.0 and jiter 0.19.0 while retaining the old environment. **1,188 frozen default tests passed / 149 optional checks skipped** in 103.88 seconds. Affected provider/voice/render checks and independent implementation/script review passed. The frozen tree preserves the already-deployed example-copy edits; those unrelated edits remain outside the provider commit.
+
+Actual local Luna chat/basic QA/UI and Sol advanced QA with Luna review passed. A fresh synthetic 10 m × 8 m hall returned supported **80 m²** QA and completed real Sol rendering in **one round/three calls**, with both parallel reviewers satisfied/source-supporting on the same reopened IFC candidate. Five meshes, unchanged source bytes, Concept orbit/slicing/revision preservation, and zero browser errors/inference from view controls were verified. Earlier strict-schema and clipped-floor-frame failures were retained and corrected; this does not establish general plan fidelity or real-audio recognition quality.
+
+The guarded activation retained all **1,550 runtime-file hashes**, exact code-required policy, prior release `a736650538c3c2a858a811fc74ded08602fb197ddb0fd04ab2cc538f400c74c0`, and previous provider environment. The original site's PID, release, environment and unit hashes remained unchanged; original Caddy bytes were restored and reloaded. Key provisioning used server-only root-owned configuration, never release artifacts. Operator rollback records are root-only under `/root/blueprint-openai-20261116/`.
+
+Trusted-HTTPS production smoke verified actual Luna conversation, actual Sol source interpretation, and Luna source QA with cited/supported answer and exact original-byte preservation. Independent GET-only review confirmed the complete model map, nine pinned read-only examples, guarded private routes, required access code/no timed window and healthy original site. Verification created only a clearly labeled synthetic Building/chat. Reports remain private under `/tmp/junction-openai-provider/`.
+
+The earlier dated releases below are historical checkpoints.
+
+## Earlier manual-slicing release
 
 Source `090850d79bf238ffba0a158c8a088d42364365ce`, frozen under `/tmp/junction-agentic-publish/release-v13/source`; content identity `c7ff072fe23e1e5538829ef5d873e8be3084489af95f16bddc8a0d889e46542b`; archive SHA256 `c89463d5d1a9407ed50ee8f8fe03980d48986fc51641ad16f6f3e4763e30cf94`. All 75 production hashes match. The sole production changes from V12 are workspace-controls.js and workspace-drawers.css; renderer, Python, credentials and access configuration are unchanged.
 

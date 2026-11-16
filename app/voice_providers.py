@@ -116,3 +116,10 @@ class ElevenLabsSpeechProvider:
 
     async def aclose(self):
         await self.client.aclose()
+
+
+def create_transcription_provider():
+    if voice_settings().transcription_provider == "openai":
+        from .openai_transcription import OpenAITranscriptionProvider
+        return OpenAITranscriptionProvider()
+    return GeminiTranscriptionProvider()

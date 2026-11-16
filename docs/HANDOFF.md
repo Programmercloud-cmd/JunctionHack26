@@ -1,3 +1,9 @@
+# OpenAI provider follow-up — 2026-11-16
+
+Explicit OpenAI mode is implemented and locally verified at http://127.0.0.1:8013/. The user selected Luna for basic/conversation/routing/UI/decision support and Sol 6.1 for advanced/interpretation/rendering; voice uses gpt-transcribe after Stop with an editable draft. See [setup and current evidence](OPENAI_PROVIDER.md). Gemini remains selectable without failover, and ElevenLabs output is retained. Local real source QA and a one-round/three-call Sol render passed; representative speech quality remains unverified. Published and verified at the [agentic demo](https://agentic.95.133.254.90.sslip.io/); [activation evidence](AGENTIC_DEPLOYMENT.md#current-openai-provider-release--2026-11-16) records frozen1188-test acceptance, 1550 retained runtime hashes and unchanged original site.
+
+The existing unrelated example-copy edits were already deployed and remain preserved in the working tree; provider commits must not stage them. New provider dependencies use an independent server environment, retaining the prior release/environment for rollback. Access code remains required. Historical checkpoints below retain their original dates and limitations.
+
 # Manual slicing restored — published 2026-11-15
 
 Live at the agentic site: **3D Model / Concept → View settings → Visible height**, immediately below Floor. The existing range/output control was moved out of the hidden model toolbar, retaining its IDs and input handler. Its value stays synchronized with the viewer and floor/mode changes; Drawings or a missing model hides/disables it. Set 100% to restore full geometry. This is display-only clipping, with no source/model/evidence mutation or inference.

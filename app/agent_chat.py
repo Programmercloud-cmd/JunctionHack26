@@ -243,7 +243,7 @@ def agent_chat(store, runner, provider_factory, request, *, document=None, annot
                 result = _clarify(base, 'This supplied IFC already has original geometry. Open its saved model for inspection.')
             else:
                 job = runner.render(document.id, request.revision_id, request.message, annotation_ids=request.annotation_ids)
-                result = {**base, 'job': job, 'message': 'Building the interactive model with one Hydrogen creator and two independent reviewers. Each round uses one creation call followed by two parallel review calls. You can stop rendering at any time.'}
+                result = {**base, 'job': job, 'message': 'Building the interactive model with one creator and two independent reviewers. Each round uses one creation call followed by two parallel review calls. You can stop rendering at any time.'}
         usage = getattr(provider, 'usage', None)
         result['usage'] = usage.model_dump(mode='json') if hasattr(usage, 'model_dump') else {}
         result['usage']['latency_ms'] = round((monotonic() - started) * 1000)

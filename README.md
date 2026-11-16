@@ -1,11 +1,11 @@
 # Concrete
 
-Concrete turns building drawings into an interactive workspace. Upload a floor plan, ask the Gemini vision-language model questions about what it shows, and reconstruct a schematic 3D model you can inspect alongside the original.
+Concrete turns building drawings into an interactive workspace. Upload a floor plan, ask the configured vision-language model questions about what it shows, and reconstruct a schematic 3D model you can inspect alongside the original.
 
 ## Get started
 
 - **Hosted demo.** Open the [Concrete demo](https://agentic.95.133.254.90.sslip.io/). You can browse the saved examples from **Buildings**. To upload, build a model, or ask a question, enter the demo code under **Access code** and select **Unlock workspace** if prompted. The hosted workspace is shared, so use a sample drawing or a file you can share.
-- **Local app.** Follow [Run Concrete locally](#run-concrete-locally) to use your own Gemini credentials.
+- **Local app.** Follow [Run Concrete locally](#run-concrete-locally) to use your own OpenAI or Gemini credentials.
 - **Sample floor plan.** For a quick hosted test, open the matching cached Building from **Buildings**. For local upload tests, download [cubicasa5k-preview.zip](https://github.com/Programmercloud-cmd/JunctionHack26/releases/download/v0.1.0/cubicasa5k-preview.zip), unzip it, and try `cubicasa5k/colorful-11397.png`. The hosted demo protects its pinned examples from re-upload; use your own independent drawing for a hosted upload. The archive includes all 241 CubiCasa5K PNGs in the Junction preview dataset and their credits in `LICENSE.md`. The images are licensed [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).
 
 ## Upload an image, build a model, and ask a question
@@ -54,17 +54,30 @@ cd JunctionHack26
 bash scripts/bootstrap.sh
 ```
 
-In the repository root, create or edit `.env.local` and set `GEMINI_API_KEY` to your Gemini API key. Keep the key in that local file. If your account uses different model IDs, set the corresponding overrides listed in [`.env.example`](.env.example). Then start the server and open [http://127.0.0.1:8000](http://127.0.0.1:8000).
+In the repository root, create or edit `.env.local`. Choose `AI_PROVIDER=openai` with `OPENAI_API_KEY`, or `AI_PROVIDER=gemini` with `GEMINI_API_KEY` (the default). Keep keys in that local file. Provider errors never switch providers automatically. If your account uses different model IDs, set the corresponding overrides listed in [`.env.example`](.env.example). Then start the server and open [http://127.0.0.1:8000](http://127.0.0.1:8000).
 
 ```sh
 bash scripts/dev.sh
 ```
 
-Restart the server after editing `.env.local`. Uploads, drawing previews, and native IFC viewing work without a key. Automatic interpretation, 3D reconstruction, and answers use server-side Gemini. Drawing requests send source images to Gemini, and native IFC questions can send extracted records. Local originals, models, and chats are saved under `.runtime` by default. Run `.venv/bin/python scripts/doctor.py` to check dependencies and whether credentials are configured.
+Restart the server after editing `.env.local`. Uploads, drawing previews, and native IFC viewing work without a key. Automatic interpretation, 3D reconstruction, and answers use the selected server-side provider. Drawing requests send source images to that provider, and native IFC questions can send extracted records. Local originals, models, and chats are saved under `.runtime` by default. Run `.venv/bin/python scripts/doctor.py` to check dependencies and whether credentials are configured.
 
 ## Models and rendering
 
-The following are the defaults in [`.env.example`](.env.example), not a claim about every deployment’s configured models. Set IDs available to your Gemini account; existing server environment overrides take precedence. The hosted demo’s release/configuration is tracked separately in [agentic deployment](docs/AGENTIC_DEPLOYMENT.md).
+OpenAI mode uses **`gpt-6.1-sol`** for advanced QA, interpretation and rendering, and **`gpt-6-luna`** for conversation, basic QA, routing, UI and clarification. An ordinary `gpt-6-luna` request substitutes for Gemini Decisions, returning the same decision choices with `confidence=null`. Model agreement remains corroboration, not proof of accuracy. Each role has an `OPENAI_*_MODEL` override in [`.env.example`](.env.example).
+
+```dotenv
+AI_PROVIDER=openai
+OPENAI_API_KEY=your-server-side-key
+OPENAI_MODEL=gpt-6.1-sol
+OPENAI_BASIC_MODEL=gpt-6-luna
+OPENAI_DECISION_MODEL=gpt-6-luna
+OPENAI_TRANSCRIPTION_MODEL=gpt-transcribe
+```
+
+Restart after changing providers. Set `AI_PROVIDER=gemini` to use the Gemini configuration below; saved sources, models, annotations and chats are shared across provider choices. [OpenAI setup and verification](docs/OPENAI_PROVIDER.md)
+
+The following are the Gemini defaults in [`.env.example`](.env.example), not a claim about every deployment’s configured models. Set IDs available to your Gemini account; existing server environment overrides take precedence. The hosted demo’s release/configuration is tracked separately in [agentic deployment](docs/AGENTIC_DEPLOYMENT.md).
 
 | Capability | Setting | Template default |
 | --- | --- | --- |
@@ -81,7 +94,7 @@ The router receives the original message and chooses a capability. There is no s
 
 **Build model** uses one fixed creator followed by **two independent reviewers in parallel**: three model calls per valid full round, separate from routing and upload interpretation. Both reviewers must support the same reopened IFC candidate before publication, and both must be satisfied to finish. Otherwise combined feedback returns to the creator. The loop has no total time, round or cost cap; individual provider-call limits still apply. Operational failures retry visibly while retaining originals and the last usable model. **Stop task**, shutdown or a source/revision interruption prevents late publication. Reviewer agreement does not establish building accuracy. [Rendering contract](docs/AGENTIC_CHAT_CONTRACT.md#rendering)
 
-For voice output, set `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` in the server environment (`.env.local` locally) and restart. `ELEVENLABS_MODEL_ID` defaults to `eleven_multilingual_v2`; transcription uses `GEMINI_API_KEY`. Visitors to the configured shared demo do not supply personal provider keys. Readiness checks report configuration, not verified provider access. [Voice behavior and setup](docs/VOICE.md)
+For voice output, set `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` in the server environment (`.env.local` locally) and restart. `ELEVENLABS_MODEL_ID` defaults to `eleven_multilingual_v2`; transcription follows `AI_PROVIDER`: OpenAI uses `gpt-transcribe` after Stop, while Gemini uses its Live transcription model. Both leave an editable draft before sending. Visitors to the configured shared demo do not supply personal provider keys. Readiness checks report configuration, not verified provider access. [Voice behavior and setup](docs/VOICE.md)
 
 ## Storage and public access
 
@@ -92,7 +105,7 @@ Public-demo mode exposes exact pinned examples for inspection. Uploads, paid que
 ## Limits and troubleshooting
 
 - Drawings are limited to 10 MiB each, with up to five pages per PDF. Input images over 40 megapixels are rejected. Uncompressed IFC STEP uploads are limited to 25 MiB, 4,000 render-catalog elements, and one million triangles. For DWG, export to a supported format before uploading. [Source formats](docs/SOURCE_FORMATS.md)
-- If Gemini reports an error, check your key and model access. The agentic path has separately configurable models for interpretation, routing, basic and advanced QA, UI actions, reconstruction, and support review. The doctor checks key presence only. [Model settings](.env.example)
+- If a provider reports an error, check its selected key and model access. The agentic path has separately configurable models for interpretation, routing, basic and advanced QA, UI actions, reconstruction, and support review. The doctor checks key presence only. [Model settings](.env.example)
 - Generated IFC and Concept styling are derived visualizations, not original-source facts. Unknown scale stays unscaled; assumed heights, missing features and uncertain alignment remain disclosed. Room polygons do not imply walls or enclosure. Source comparison uses the actual reopened IFC to expose omissions or invented geometry; a valid file or reviewer agreement does not prove fidelity.
 - User measurements remain attributed inputs. A supplied vertical height does not establish horizontal scale; generated dimensions are not measured drawing facts. Operational/provider errors never mean insufficient evidence.
 - QA keeps its separate execution budget: advanced answers can use the remaining overall QA budget, while basic drafts retain their per-call ceiling. Advanced thinking uses the model default unless explicitly overridden. Render loops and legacy reconstruction settings are separate; see [`.env.example`](.env.example).
@@ -101,7 +114,7 @@ Public-demo mode exposes exact pinned examples for inspection. Uploads, paid que
 ## Development checks
 
 ```sh
-bash scripts/test.sh
+AI_PROVIDER=gemini bash scripts/test.sh
 ```
 
 To run browser checks with injected providers and Chromium, install the optional browser requirements.
@@ -109,7 +122,7 @@ To run browser checks with injected providers and Chromium, install the optional
 ```sh
 .venv/bin/python -m pip install -r requirements-browser.txt
 .venv/bin/python -m playwright install chromium
-RUN_BROWSER_TESTS=1 bash scripts/test.sh \
+AI_PROVIDER=gemini RUN_BROWSER_TESTS=1 bash scripts/test.sh \
   tests/test_buildings_shared_browser.py tests/test_drawing_navigation_browser.py \
   tests/test_public_workspace_controls_browser.py tests/test_chat_speech_browser.py \
   tests/test_agent_e2e_browser.py

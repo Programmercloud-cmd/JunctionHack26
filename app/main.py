@@ -135,12 +135,15 @@ def create_app(*, provider_factory=create_provider, storage_root=None,
 
     @application.get("/api/health")
     def health(http_request: Request):
-        config = settings()
+        try:
+            config = settings()
+        except ProviderError as error:
+            raise HTTPException(error.status, error.message) from None
         return {"status": "ok", "project_deletion_ready": True, "building_scopes_ready": True, "native_file_picker": native_picker_allowed(http_request) and native_picker.available(), "provider_ready": bool(config["api_key"]), "model": config["model"],
                 "interpretation_model": config["interpretation_model"], "clarification_model": config["clarification_model"],
                 "basic_model": config["basic_model"], "advanced_model": config["advanced_model"],
                 "router_model": config["router_model"], "ui_model": config["ui_model"],
-                "render_model": os.getenv("GEMINI_RENDER_MODEL", "gemini-4-hydrogen"), "chat_gate_kind": "answer_time",
+                "render_model": config["render_model"], "chat_gate_kind": "answer_time",
                 "reconstruction_model": config["reconstruction_model"],
                 "provider": config["name"], "provider_label": config["label"],
                 "credential_env": config["credential_env"], "gate_kind": config["gate_kind"],

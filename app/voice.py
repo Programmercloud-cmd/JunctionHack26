@@ -9,7 +9,7 @@ from fastapi.responses import Response
 
 from .documents import DocumentError
 from .voice_config import VoiceError, voice_settings
-from .voice_providers import ElevenLabsSpeechProvider, GeminiTranscriptionProvider
+from .voice_providers import ElevenLabsSpeechProvider, create_transcription_provider
 
 GOOGLE_VOCABULARY_LIMIT = 1000
 SPEECH_TEXT_LIMIT = 6000  # Existing DraftAnswer bound; longer final answers stay readable.
@@ -27,7 +27,7 @@ def normalized_terms(terms):
     return result
 
 
-def document_vocabulary(document):
+def document_vocabulary(document, *, provider="gemini"):
     scene = document.scene
     if scene is None:
         return {"terms": [], "rooms": [], "warnings": [
@@ -49,7 +49,7 @@ def document_vocabulary(document):
         warnings.append("Drawing-derived room names may be misread. Vocabulary hints are not factual evidence.")
     if not rooms:
         warnings.append("No room names are available in this model. Add custom words if needed.")
-    if len(terms) > GOOGLE_VOCABULARY_LIMIT:
+    if provider == "gemini" and len(terms) > GOOGLE_VOCABULARY_LIMIT:
         warnings.append("This building exceeds Google's 1,000-phrase vocabulary limit; live transcription cannot start with all its hints.")
     return {"terms": terms, "rooms": rooms, "warnings": warnings}
 
@@ -84,7 +84,7 @@ async def _cancel_tasks(tasks):
 
 
 def attach_voice_routes(application, transcription_factory=None, speech_factory=None, *, project_selector=None):
-    transcription_factory = transcription_factory or GeminiTranscriptionProvider
+    transcription_factory = transcription_factory or create_transcription_provider
     speech_factory = speech_factory or ElevenLabsSpeechProvider
 
     @application.get("/api/voice/config")
@@ -97,8 +97,8 @@ def attach_voice_routes(application, transcription_factory=None, speech_factory=
     @application.get("/api/documents/{document_id}/voice-vocabulary")
     async def vocabulary(document_id: str):
         try:
-            return document_vocabulary(application.state.documents.get(document_id))
-        except DocumentError as error:
+            return document_vocabulary(application.state.documents.get(document_id), provider=voice_settings().transcription_provider)
+        except (DocumentError, VoiceError) as error:
             raise HTTPException(error.status, error.message) from None
 
     @application.websocket("/api/voice/transcribe")
@@ -123,8 +123,8 @@ def attach_voice_routes(application, transcription_factory=None, speech_factory=
             if start.get("type") != "start" or not isinstance(start.get("document_id"), str) or not isinstance(start.get("custom_vocabulary", []), list):
                 raise VoiceError("Start voice input with a document and a list of custom vocabulary.", 400)
             document = application.state.documents.get(start["document_id"])
-            terms = normalized_terms(document_vocabulary(document)["terms"] + start.get("custom_vocabulary", []))
-            if len(terms) > GOOGLE_VOCABULARY_LIMIT:
+            terms = normalized_terms(document_vocabulary(document, provider=config.transcription_provider)["terms"] + start.get("custom_vocabulary", []))
+            if config.transcription_provider == "gemini" and len(terms) > GOOGLE_VOCABULARY_LIMIT:
                 raise VoiceError("Google accepts at most 1,000 vocabulary phrases. Remove custom words or use a building with fewer room-name hints.", 400)
             session = None
             stopped = asyncio.Event()
@@ -163,7 +163,7 @@ def attach_voice_routes(application, transcription_factory=None, speech_factory=
                             provider = transcription_factory()
                             session = await stack.enter_async_context(provider.connect(terms, config.language_codes))
                     except TimeoutError:
-                        raise VoiceError("Google transcription connection timed out. Try recording again.") from None
+                        raise VoiceError("Transcription connection timed out. Try recording again.") from None
                     await websocket.send_json({"type": "ready"})
                     async for event in session.events():
                         if event.text:
@@ -172,7 +172,7 @@ def attach_voice_routes(application, transcription_factory=None, speech_factory=
                             finished.set()
                             await websocket.send_json({"type": "done"})
                             return
-                    raise VoiceError("Google transcription ended before confirming the final transcript. Review the received text or record again.")
+                    raise VoiceError("Transcription ended before confirming the final transcript. Review the received text or record again.")
 
             async def finalization_deadline():
                 await stopped.wait()
@@ -194,7 +194,7 @@ def attach_voice_routes(application, transcription_factory=None, speech_factory=
             pass
         except Exception:
             with suppress(WebSocketDisconnect, RuntimeError):
-                await websocket.send_json({"type": "error", "message": "Live transcription failed. Check the server credentials, model access and connection. Received text may be incomplete; you can still type your question."})
+                await websocket.send_json({"type": "error", "message": "Transcription failed. Check the server credentials, model access and connection. Received text may be incomplete; you can still type your question."})
         finally:
             await _cancel_tasks(tasks)
             with suppress(WebSocketDisconnect, RuntimeError):
